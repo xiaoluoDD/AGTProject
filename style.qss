@@ -1,0 +1,255 @@
+/* AGT滑槽记录表 - 现代化样式表 */
+
+/* 主窗口样式 */
+QWidget {
+    font-family: 'Microsoft YaHei', 'Segoe UI', Arial, sans-serif;
+    font-size: 9pt;
+    background: qlineargradient(
+        x1: 0, y1: 0, x2: 0, y2: 1,
+        stop: 0 #e3efff,
+        stop: 1 #b3d1f7
+    );
+}
+
+/* 主要容器透明，保证渐变能透出 */
+QGroupBox, QFrame, QWidget#centralWidget, QWidget#mainWidget {
+    background: transparent;
+}
+
+/* 输入框、文本框半透明白色，保证可读性 */
+QTextEdit, QLineEdit, QPlainTextEdit {
+    background: rgba(255,255,255,0.7);
+    border-radius: 6px;
+}
+
+/* 表格区域透明，和背景融合 */
+QTableWidget {
+    background: transparent;
+    alternate-background-color: rgba(255,255,255,0.3);
+    border: 1px solid #b3d1f7;
+    gridline-color: #dee2e6;
+    border-radius: 6px;
+    selection-background-color: #3498db;
+    selection-color: white;
+}
+
+QTableWidget::item {
+    padding: 8px;
+    border-bottom: 1px solid #dee2e6;
+}
+
+QTableWidget::item:selected {
+    background-color: #3498db;
+    color: white;
+}
+
+/* 表头样式 */
+QHeaderView::section {
+    background-color: #e3efff;
+    color: #2c3e50;
+    font-weight: bold;
+    border: none;
+    padding: 10px;
+}
+
+QHeaderView::section:hover {
+    background-color: #5d6d7e;
+}
+
+/* 数据表格特定列样式 */
+QTableWidget#tableWidget QHeaderView::section:nth-child(1) {
+    /* 滑槽号列 */
+    min-width: 80px;
+    max-width: 80px;
+}
+
+QTableWidget#tableWidget QHeaderView::section:nth-child(2) {
+    /* 送入送出状态列 */
+    min-width: 120px;
+    max-width: 120px;
+}
+
+QTableWidget#tableWidget QHeaderView::section:nth-child(3) {
+    /* 车型代码列 */
+    min-width: 100px;
+    max-width: 100px;
+}
+
+QTableWidget#tableWidget QHeaderView::section:nth-child(4) {
+    /* 车型名称列 */
+    min-width: 120px;
+    max-width: 120px;
+}
+
+QTableWidget#tableWidget QHeaderView::section:nth-child(5) {
+    /* 数量列 */
+    min-width: 100px;
+    max-width: 100px;
+}
+
+QTableWidget#tableWidget QHeaderView::section:nth-child(6) {
+    /* 时间列 - 自适应宽度 */
+    min-width: 180px;
+}
+
+/* 只读表格样式 */
+QTableWidget#tableWidget::item {
+    background-color: #f8f9fa;
+    color: #495057;
+}
+
+QTableWidget#tableWidget::item:selected {
+    background-color: #3498db;
+    color: white;
+}
+
+/* 可编辑表格样式 */
+QTableWidget#tableWidgetVehicleBinding::item:selected {
+    background-color: #3498db;
+    color: white;
+}
+
+QTableWidget#tableWidgetVehicleBinding::item:focus {
+    border: 2px solid #3498db;
+    background-color: white;
+}
+
+/* 标签样式 */
+QLabel {
+    color: #2c3e50;
+}
+
+/* 滚动条样式 */
+QScrollBar:vertical {
+    background: #f0f0f0;
+    width: 12px;
+    border-radius: 6px;
+}
+
+QScrollBar::handle:vertical {
+    background: #c0c0c0;
+    border-radius: 6px;
+    min-height: 20px;
+}
+
+QScrollBar::handle:vertical:hover {
+    background: #a0a0a0;
+}
+
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+    height: 0px;
+}
+
+/* 状态栏样式 */
+QStatusBar {
+    background: qlineargradient(
+        x1: 0, y1: 0, x2: 0, y2: 1,
+        stop: 0 #e3efff,
+        stop: 1 #b3d1f7
+    );
+    color: #2c3e50;
+    border-top: 1px solid #2c3e50;
+}
+
+/* 工具提示样式 */
+QToolTip {
+    background-color: #2c3e50;
+    color: white;
+    border: 1px solid #34495e;
+    border-radius: 4px;
+    padding: 4px;
+}
+
+/* 通用按钮样式 */
+QPushButton {
+    background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1,
+                              stop: 0 #3498db, stop: 1 #2980b9);
+    border: none;
+    color: white;
+    padding: 8px 16px;
+    border-radius: 6px;
+    font-weight: bold;
+    min-height: 20px;
+}
+
+QPushButton:hover {
+    background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1,
+                              stop: 0 #5dade2, stop: 1 #3498db);
+}
+
+QPushButton:pressed {
+    background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1,
+                              stop: 0 #2980b9, stop: 1 #21618c);
+}
+
+QPushButton:disabled {
+    background: #bdc3c7;
+    color: #7f8c8d;
+}
+
+/* 连接按钮特殊样式 */
+QPushButton#pushButtonConnect {
+    background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1,
+                              stop: 0 #27ae60, stop: 1 #229954);
+}
+
+QPushButton#pushButtonConnect:hover {
+    background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1,
+                              stop: 0 #58d68d, stop: 1 #27ae60);
+}
+
+QPushButton#pushButtonDisconnect {
+    background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1,
+                              stop: 0 #e74c3c, stop: 1 #c0392b);
+}
+
+QPushButton#pushButtonDisconnect:hover {
+    background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1,
+                              stop: 0 #ec7063, stop: 1 #e74c3c);
+}
+
+/* 危险操作按钮样式 */
+QPushButton#pushButtonClearTable,
+QPushButton#pushButtonDeleteTable,
+QPushButton#pushButtonClearVehicleTable,
+QPushButton#pushButtonDeleteVehicle {
+    background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1,
+                              stop: 0 #e74c3c, stop: 1 #c0392b);
+}
+
+QPushButton#pushButtonClearTable:hover,
+QPushButton#pushButtonDeleteTable:hover,
+QPushButton#pushButtonClearVehicleTable:hover,
+QPushButton#pushButtonDeleteVehicle:hover {
+    background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1,
+                              stop: 0 #ec7063, stop: 1 #e74c3c);
+}
+
+/* 导航按钮样式 */
+QPushButton#pushButtonConnectionPage,
+QPushButton#pushButtonTablePage,
+QPushButton#pushButtonVehicleBindingPage {
+    background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1,
+                              stop: 0 #34495e, stop: 1 #2c3e50);
+    border: none;
+    color: white;
+    padding: 10px 20px;
+    border-radius: 6px;
+    font-weight: bold;
+    min-height: 25px;
+}
+
+QPushButton#pushButtonConnectionPage:hover,
+QPushButton#pushButtonTablePage:hover,
+QPushButton#pushButtonVehicleBindingPage:hover {
+    background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1,
+                              stop: 0 #5d6d7e, stop: 1 #34495e);
+}
+
+QPushButton#pushButtonConnectionPage:checked,
+QPushButton#pushButtonTablePage:checked,
+QPushButton#pushButtonVehicleBindingPage:checked {
+    background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1,
+                              stop: 0 #3498db, stop: 1 #2980b9);
+    border: 2px solid #2980b9;
+} 
