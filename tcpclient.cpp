@@ -1067,36 +1067,36 @@ void tcpClient::addDataToTable(int status1, unsigned int value1, unsigned int va
         case 0x04: statusStr2 = "空托送出"; break;
         default: statusStr2 = "未知"; break;
     }
-    // 车型名称用16进制字符串表示
-    QString modelName1 = QString("%1").arg(value1, 4, 16, QChar('0')).toUpper();
-    QString modelName2 = QString("%1").arg(value2, 4, 16, QChar('0')).toUpper();
-    QString modelName3 = QString("%1").arg(value3, 4, 16, QChar('0')).toUpper();
-    QString modelName4 = QString("%1").arg(value4, 4, 16, QChar('0')).toUpper();
+    // 车型代码用16进制字符串表示（70字节指令收到的值是车型代码）
+    QString modelCode1 = QString("%1").arg(value1, 4, 16, QChar('0')).toUpper();
+    QString modelCode2 = QString("%1").arg(value2, 4, 16, QChar('0')).toUpper();
+    QString modelCode3 = QString("%1").arg(value3, 4, 16, QChar('0')).toUpper();
+    QString modelCode4 = QString("%1").arg(value4, 4, 16, QChar('0')).toUpper();
     QString vehicleCode1, vehicleName1; int count1 = 0;
     QString vehicleCode2, vehicleName2; int count2 = 0;
     QString vehicleCode3, vehicleName3; int count3 = 0;
     QString vehicleCode4, vehicleName4; int count4 = 0;
-    // 滑槽1/2车型查找（第5字节）
+    // 滑槽1/2车型查找（第5字节）- 在车型代码列（列1）中查找
     for (int row = 0; row < ui->tableWidgetVehicleBinding->rowCount(); ++row) {
-        QString name = ui->tableWidgetVehicleBinding->item(row, 2)->text().toUpper();
-        if (modelName1 == name) {
-            vehicleCode1 = ui->tableWidgetVehicleBinding->item(row, 1)->text();
-            vehicleName1 = name;
+        QString code = ui->tableWidgetVehicleBinding->item(row, 1)->text().toUpper(); // 车型代码列
+        if (modelCode1 == code) {
+            vehicleCode1 = code; // 车型代码
+            vehicleName1 = ui->tableWidgetVehicleBinding->item(row, 2)->text(); // 车型名称
             count1 = ui->tableWidgetVehicleBinding->item(row, 3)->text().toInt();
         }
-        if (modelName2 == name) {
-            vehicleCode2 = ui->tableWidgetVehicleBinding->item(row, 1)->text();
-            vehicleName2 = name;
+        if (modelCode2 == code) {
+            vehicleCode2 = code; // 车型代码
+            vehicleName2 = ui->tableWidgetVehicleBinding->item(row, 2)->text(); // 车型名称
             count2 = ui->tableWidgetVehicleBinding->item(row, 3)->text().toInt();
         }
-        if (modelName3 == name) {
-            vehicleCode3 = ui->tableWidgetVehicleBinding->item(row, 1)->text();
-            vehicleName3 = name;
+        if (modelCode3 == code) {
+            vehicleCode3 = code; // 车型代码
+            vehicleName3 = ui->tableWidgetVehicleBinding->item(row, 2)->text(); // 车型名称
             count3 = ui->tableWidgetVehicleBinding->item(row, 3)->text().toInt();
         }
-        if (modelName4 == name) {
-            vehicleCode4 = ui->tableWidgetVehicleBinding->item(row, 1)->text();
-            vehicleName4 = name;
+        if (modelCode4 == code) {
+            vehicleCode4 = code; // 车型代码
+            vehicleName4 = ui->tableWidgetVehicleBinding->item(row, 2)->text(); // 车型名称
             count4 = ui->tableWidgetVehicleBinding->item(row, 3)->text().toInt();
         }
     }
