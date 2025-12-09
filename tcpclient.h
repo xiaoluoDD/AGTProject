@@ -83,6 +83,10 @@ private slots:
 
     // 密码管理槽函数
     void onSetPasswordClicked();  ///< 设置密码按钮点击处理
+    
+    // 数据库配置槽函数
+    void onSaveDatabaseConfigClicked(); ///< 保存数据库配置按钮点击处理
+    void onTestDatabaseConnectionClicked(); ///< 测试数据库连接按钮点击处理
 
 private:
     // UI和状态管理
@@ -102,6 +106,10 @@ private:
                         const QString &currentTime); ///< 添加数据到表格
 
     void initDatabase();
+    void loadDatabaseConfig(); ///< 从配置文件加载数据库配置
+    void saveDatabaseConfig(); ///< 保存数据库配置到配置文件
+    bool testDatabaseConnection(const QString &host, int port, const QString &database, 
+                                const QString &username, const QString &password); ///< 测试数据库连接
     void loadModelBindingsFromDb();
     void loadDataRecordsFromDb();
     void insertDataRecord(int slotNo, const QString &status, const QString &modelName, const QString &modelCode, int count, const QString &currentTime);
@@ -141,6 +149,13 @@ private:
     QLabel* labelConnectionStatus;
     QString m_password;           ///< 存储的密码
     bool m_isPasswordSet;         ///< 密码是否已设置
+    
+    // 数据库配置
+    QString m_dbHost;             ///< 数据库主机地址
+    int m_dbPort;                 ///< 数据库端口
+    QString m_dbName;             ///< 数据库名称
+    QString m_dbUsername;         ///< 数据库用户名
+    QString m_dbPassword;         ///< 数据库密码
 
     // 日志系统成员变量
     QString m_logDirectory;       ///< 日志目录路径

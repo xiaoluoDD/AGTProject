@@ -24,6 +24,7 @@
 #include <QFileInfo>
 #include <QMutexLocker>
 #include <QStandardPaths>
+#include <QSettings>
 
 /**
  * @brief 构造函数
@@ -38,6 +39,11 @@ tcpClient::tcpClient(QWidget *parent)
     , m_fullTrayCount(0)
     , m_password("")
     , m_isPasswordSet(false)
+    , m_dbHost("localhost")
+    , m_dbPort(3306)
+    , m_dbName("agt_database")
+    , m_dbUsername("agt_user1")
+    , m_dbPassword("root123")
     , m_logFile(nullptr)
     , m_logStream(nullptr)
 {
@@ -172,6 +178,13 @@ void tcpClient::setupUI()
     connect(ui->pushButtonSend, &QPushButton::clicked, this, &tcpClient::onSendClicked);
     connect(ui->pushButtonClear, &QPushButton::clicked, this, &tcpClient::onClearClicked);
     connect(ui->pushButtonSetPassword, &QPushButton::clicked, this, &tcpClient::onSetPasswordClicked);
+    
+    // 连接数据库配置按钮信号槽
+    connect(ui->pushButtonSaveDbConfig, &QPushButton::clicked, this, &tcpClient::onSaveDatabaseConfigClicked);
+    connect(ui->pushButtonTestDbConnection, &QPushButton::clicked, this, &tcpClient::onTestDatabaseConnectionClicked);
+    
+    // 加载数据库配置到界面
+    loadDatabaseConfig();
 
     // 连接表格操作按钮信号槽
     connect(ui->pushButtonClearTable, &QPushButton::clicked, this, &tcpClient::onClearTableClicked);
@@ -1463,12 +1476,15 @@ void tcpClient::initDatabase() {
         QSqlDatabase::removeDatabase("qt_sql_default_connection");
     }
 
+    // 从配置加载数据库连接参数
+    loadDatabaseConfig();
+    
     QSqlDatabase db = QSqlDatabase::addDatabase("QMYSQL");
-    db.setHostName("localhost");        // MySQL服务器地址
-    db.setPort(3306);                   // MySQL端口（默认3306）
-    db.setDatabaseName("agt_database");  // 数据库名称
-    db.setUserName("agt_user1");         // 用户名
-    db.setPassword("root123.");           // 密码
+    db.setHostName(m_dbHost);        // MySQL服务器地址（从配置读取）
+    db.setPort(m_dbPort);            // MySQL端口（从配置读取）
+    db.setDatabaseName(m_dbName);    // 数据库名称（从配置读取）
+    db.setUserName(m_dbUsername);    // 用户名（从配置读取）
+    db.setPassword(m_dbPassword);    // 密码（从配置读取）
 
     appendToLog(QString("尝试连接MySQL: %1@%2:%3/%4").arg(db.userName()).arg(db.hostName()).arg(db.port()).arg(db.databaseName()));
 
@@ -2003,5 +2019,199 @@ void tcpClient::logMessageHandler(QtMsgType type, const QMessageLogContext &cont
 #ifdef QT_DEBUG
     QTextStream consoleStream(stdout);
     consoleStream << logMessage << Qt::endl;
-#endif
+    #endif
+}
+
+// 数据库配置管理函数实现
+
+/**
+ * @brief 从配置文件加载数据库配置
+ */
+void tcpClient::loadDatabaseConfig()
+{
+    QSettings settings(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
+    
+    // 从配置文件读取，如果没有则使用默认值
+    m_dbHost = settings.value("Database/Host", "localhost").toString();
+    m_dbPort = settings.value("Database/Port", 3306).toInt();
+    m_dbName = settings.value("Database/Name", "agt_database").toString();
+    m_dbUsername = settings.value("Database/Username", "agt_user1").toString();
+    m_dbPassword = settings.value("Database/Password", "root123").toString();
+    
+    // 更新UI界面显示
+    if (ui) {
+        ui->lineEditDbHost->setText(m_dbHost);
+        ui->lineEditDbPort->setText(QString::number(m_dbPort));
+        ui->lineEditDbName->setText(m_dbName);
+        ui->lineEditDbUsername->setText(m_dbUsername);
+        ui->lineEditDbPassword->setText(m_dbPassword);
+    }
+    
+    qDebug() << "数据库配置已加载:" << m_dbHost << m_dbPort << m_dbName << m_dbUsername;
+}
+
+/**
+ * @brief 保存数据库配置到配置文件
+ */
+void tcpClient::saveDatabaseConfig()
+{
+    // 从UI获取配置
+    QString host = ui->lineEditDbHost->text().trimmed();
+    QString portStr = ui->lineEditDbPort->text().trimmed();
+    QString database = ui->lineEditDbName->text().trimmed();
+    QString username = ui->lineEditDbUsername->text().trimmed();
+    QString password = ui->lineEditDbPassword->text();
+    
+    // 验证输入
+    if (host.isEmpty()) {
+        QMessageBox::warning(this, "配置错误", "主机地址不能为空！");
+        return;
+    }
+    
+    bool ok;
+    int port = portStr.toInt(&ok);
+    if (!ok || port <= 0 || port > 65535) {
+        QMessageBox::warning(this, "配置错误", "端口号必须是1-65535之间的数字！");
+        return;
+    }
+    
+    if (database.isEmpty()) {
+        QMessageBox::warning(this, "配置错误", "数据库名称不能为空！");
+        return;
+    }
+    
+    if (username.isEmpty()) {
+        QMessageBox::warning(this, "配置错误", "用户名不能为空！");
+        return;
+    }
+    
+    // 保存到配置文件
+    QSettings settings(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
+    settings.setValue("Database/Host", host);
+    settings.setValue("Database/Port", port);
+    settings.setValue("Database/Name", database);
+    settings.setValue("Database/Username", username);
+    settings.setValue("Database/Password", password);
+    settings.sync();
+    
+    // 更新成员变量
+    m_dbHost = host;
+    m_dbPort = port;
+    m_dbName = database;
+    m_dbUsername = username;
+    m_dbPassword = password;
+    
+    appendToLog(QString("数据库配置已保存: %1@%2:%3/%4").arg(username).arg(host).arg(port).arg(database));
+    QMessageBox::information(this, "保存成功", 
+                            QString("数据库配置已保存！\n\n"
+                                   "配置将在下次启动程序时生效。\n"
+                                   "如需立即生效，请重启程序。"));
+}
+
+/**
+ * @brief 测试数据库连接
+ */
+bool tcpClient::testDatabaseConnection(const QString &host, int port, const QString &database, 
+                                       const QString &username, const QString &password)
+{
+    // 检查可用的数据库驱动
+    QStringList drivers = QSqlDatabase::drivers();
+    if (!drivers.contains("QMYSQL")) {
+        QMessageBox::critical(this, "驱动错误", "QMYSQL驱动不可用！");
+        return false;
+    }
+    
+    // 创建临时连接进行测试
+    QString testConnectionName = "test_connection_" + QString::number(QDateTime::currentMSecsSinceEpoch());
+    QSqlDatabase testDb = QSqlDatabase::addDatabase("QMYSQL", testConnectionName);
+    testDb.setHostName(host);
+    testDb.setPort(port);
+    testDb.setDatabaseName(database);
+    testDb.setUserName(username);
+    testDb.setPassword(password);
+    
+    bool success = testDb.open();
+    QString errorMsg = testDb.lastError().text();
+    
+    // 关闭测试连接
+    testDb.close();
+    QSqlDatabase::removeDatabase(testConnectionName);
+    
+    return success;
+}
+
+/**
+ * @brief 保存数据库配置按钮点击处理
+ */
+void tcpClient::onSaveDatabaseConfigClicked()
+{
+    saveDatabaseConfig();
+}
+
+/**
+ * @brief 测试数据库连接按钮点击处理
+ */
+void tcpClient::onTestDatabaseConnectionClicked()
+{
+    // 从UI获取配置
+    QString host = ui->lineEditDbHost->text().trimmed();
+    QString portStr = ui->lineEditDbPort->text().trimmed();
+    QString database = ui->lineEditDbName->text().trimmed();
+    QString username = ui->lineEditDbUsername->text().trimmed();
+    QString password = ui->lineEditDbPassword->text();
+    
+    // 验证输入
+    if (host.isEmpty()) {
+        QMessageBox::warning(this, "配置错误", "主机地址不能为空！");
+        return;
+    }
+    
+    bool ok;
+    int port = portStr.toInt(&ok);
+    if (!ok || port <= 0 || port > 65535) {
+        QMessageBox::warning(this, "配置错误", "端口号必须是1-65535之间的数字！");
+        return;
+    }
+    
+    if (database.isEmpty()) {
+        QMessageBox::warning(this, "配置错误", "数据库名称不能为空！");
+        return;
+    }
+    
+    if (username.isEmpty()) {
+        QMessageBox::warning(this, "配置错误", "用户名不能为空！");
+        return;
+    }
+    
+    // 显示测试中提示
+    appendToLog(QString("正在测试数据库连接: %1@%2:%3/%4...").arg(username).arg(host).arg(port).arg(database));
+    ui->pushButtonTestDbConnection->setEnabled(false);
+    ui->pushButtonTestDbConnection->setText("测试中...");
+    
+    // 测试连接
+    bool success = testDatabaseConnection(host, port, database, username, password);
+    
+    // 恢复按钮状态
+    ui->pushButtonTestDbConnection->setEnabled(true);
+    ui->pushButtonTestDbConnection->setText("测试连接");
+    
+    if (success) {
+        appendToLog("数据库连接测试成功！", false);
+        QMessageBox::information(this, "连接成功", 
+                                QString("数据库连接测试成功！\n\n"
+                                       "主机: %1\n"
+                                       "端口: %2\n"
+                                       "数据库: %3\n"
+                                       "用户名: %4").arg(host).arg(port).arg(database).arg(username));
+    } else {
+        appendToLog("数据库连接测试失败！", true);
+        QMessageBox::critical(this, "连接失败", 
+                             QString("数据库连接测试失败！\n\n"
+                                    "请检查:\n"
+                                    "1. MySQL服务是否运行\n"
+                                    "2. 主机地址、端口是否正确\n"
+                                    "3. 数据库名称、用户名、密码是否正确\n"
+                                    "4. 防火墙是否允许连接\n"
+                                    "5. 用户是否有访问权限"));
+    }
 }
