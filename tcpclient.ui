@@ -259,9 +259,6 @@
           </item>
           <item>
            <widget class="QLabel" name="labelPassword">
-            <property name="styleSheet">
-             <string>color: #666; font-weight: bold; padding: 4px 8px; background-color: #f0f0f0; border-radius: 4px;</string>
-            </property>
             <property name="text">
              <string>密码: 未设置</string>
             </property>
@@ -269,9 +266,6 @@
           </item>
           <item>
            <widget class="QLabel" name="labelStatus">
-            <property name="styleSheet">
-             <string>color: red; font-weight: bold;</string>
-            </property>
             <property name="text">
              <string>未连接</string>
             </property>

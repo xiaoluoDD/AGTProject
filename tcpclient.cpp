@@ -1,4 +1,4 @@
-#include "tcpclient.h"
+﻿#include "tcpclient.h"
 #include "./ui_tcpclient.h"
 #include <QMessageBox>
 #include <QDateTime>
@@ -43,7 +43,7 @@ tcpClient::tcpClient(QWidget *parent)
     , m_dbPort(3306)
     , m_dbName("agt_database")
     , m_dbUsername("agt_user1")
-    , m_dbPassword("root123")
+    , m_dbPassword("root123.")
     , m_logFile(nullptr)
     , m_logStream(nullptr)
 {
@@ -218,7 +218,7 @@ void tcpClient::setupUI()
     labelConnectionStatus = new QLabel(this);
     labelConnectionStatus->setText("未连接");
     labelConnectionStatus->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-    labelConnectionStatus->setStyleSheet("color: red; font-weight: bold;");
+    // 浣跨敤Qt榛樿鏍峰紡`r`n    labelConnectionStatus->setStyleSheet("");
     ui->verticalLayout->addWidget(labelConnectionStatus);
 
     // 应用现代化样式
@@ -242,27 +242,28 @@ void tcpClient::applyModernStyle()
         });
     } else {
         // 如果外部文件不存在，使用内置样式
-        applyBuiltinStyle();
-        // 延迟记录日志，确保UI已准备好
+        // 宸茬鐢ㄥ唴缃牱寮忥紝浣跨敤Qt榛樿鏍峰紡
+        // applyBuiltinStyle();
+        this->setStyleSheet("");
+
+        // 鏄惧紡閲嶇疆鎵€鏈夋寜閽殑鏍峰紡
+        if (ui) {
+            ui->pushButtonConnectionPage->setStyleSheet("");
+            ui->pushButtonTablePage->setStyleSheet("");
+            ui->pushButtonVehicleBindingPage->setStyleSheet("");
+            ui->pushButtonClearTable->setStyleSheet("");
+            ui->pushButtonDeleteTable->setStyleSheet("");
+            ui->pushButtonConnect->setStyleSheet("");
+            ui->pushButtonDisconnect->setStyleSheet("");
+        }
+
+        // 寤惰繜璁板綍鏃ュ織
         QTimer::singleShot(100, this, [this]() {
-            appendToLog("使用内置样式表");
+            appendToLog("宸叉竻绌鸿嚜瀹氫箟鏍峰紡锛屼娇鐢≦t榛樿鏍峰紡");
         });
+
     }
-
-    // 设置窗口最小尺寸
-    setMinimumSize(800, 600);
-
-    // 设置窗口居中显示
-    QScreen *screen = QGuiApplication::primaryScreen();
-    QRect screenGeometry = screen->geometry();
-    int x = (screenGeometry.width() - width()) / 2;
-    int y = (screenGeometry.height() - height()) / 2;
-    move(x, y);
 }
-
-/**
- * @brief 应用内置样式
- */
 void tcpClient::applyBuiltinStyle()
 {
     // 主窗口样式
@@ -815,20 +816,14 @@ void tcpClient::updateConnectionStatus(bool connected)
 {
     if (connected) {
         labelConnectionStatus->setText("已连接");
-        labelConnectionStatus->setStyleSheet(
-            "color: white; font-weight: bold; background-color: #27ae60; "
-            "padding: 8px 12px; border-radius: 6px; border: 2px solid #229954;"
-            );
+        // 浣跨敤Qt榛樿鏍峰紡`r`n        labelConnectionStatus->setStyleSheet("");
         ui->pushButtonConnect->setEnabled(false);
         ui->pushButtonDisconnect->setEnabled(true);
         ui->lineEditServerIP->setEnabled(false);
         ui->lineEditPort->setEnabled(false);
     } else {
         labelConnectionStatus->setText("未连接");
-        labelConnectionStatus->setStyleSheet(
-            "color: white; font-weight: bold; background-color: #e74c3c; "
-            "padding: 8px 12px; border-radius: 6px; border: 2px solid #c0392b;"
-            );
+        // 浣跨敤Qt榛樿鏍峰紡`r`n        labelConnectionStatus->setStyleSheet("");
         ui->pushButtonConnect->setEnabled(true);
         ui->pushButtonDisconnect->setEnabled(false);
         ui->lineEditServerIP->setEnabled(true);
@@ -1791,10 +1786,10 @@ void tcpClient::updatePasswordDisplay()
         // 显示密码的前3位和后1位，中间用*代替
         QString displayPassword = m_password.left(3) + QString("*").repeated(m_password.length() - 4) + m_password.right(1);
         ui->labelPassword->setText(QString("密码: %1").arg(displayPassword));
-        ui->labelPassword->setStyleSheet("color: #27ae60; font-weight: bold; padding: 4px 8px; background-color: #d5f4e6; border-radius: 4px;");
+        // 浣跨敤Qt榛樿鏍峰紡`r`n        ui->labelPassword->setStyleSheet("");
     } else {
         ui->labelPassword->setText("密码: 未设置");
-        ui->labelPassword->setStyleSheet("color: #666; font-weight: bold; padding: 4px 8px; background-color: #f0f0f0; border-radius: 4px;");
+        // 浣跨敤Qt榛樿鏍峰紡`r`n        ui->labelPassword->setStyleSheet("");
     }
 }
 
