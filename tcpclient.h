@@ -16,6 +16,7 @@
 #include <QTextStream>
 #include <QMutex>
 #include <QStandardPaths>
+#include <QMap>
 
 // 前向声明
 class QTableWidgetItem;
@@ -144,8 +145,9 @@ private:
     QTimer *m_connectionTimer;    ///< 连接超时定时器
     bool m_isConnected;           ///< 连接状态标志
     int m_fullTrayCount;          ///< 满托盘时数量
-    QDateTime m_lastStatus1Time;
-    QDateTime m_lastStatus2Time;
+    QDateTime m_lastStatus1Time;  ///< 旧版本兼容，已废弃
+    QDateTime m_lastStatus2Time; ///< 旧版本兼容，已废弃
+    QMap<QString, QDateTime> m_lastTrayTime; ///< 每个托盘的最后处理时间（key格式: "real_1" 或 "empty_1"）
     QLabel* labelConnectionStatus;
     QString m_password;           ///< 存储的密码
     bool m_isPasswordSet;         ///< 密码是否已设置

@@ -901,20 +901,20 @@ void tcpClient::processHexData(const QByteArray &data)
 {
     qDebug() << "接收到数据，长度:" << data.size() << "字节";
 
-    // 检查数据长度是否为70字节
-    if (data.size() != 70) {
-        QString errorMsg = QString("接收数据长度不正确: %1 字节，期望: 70 字节").arg(data.size());
+    // 检查数据长度是否为78字节
+    if (data.size() != 78) {
+        QString errorMsg = QString("接收数据长度不正确: %1 字节，期望: 78 字节").arg(data.size());
         appendToLog(errorMsg, true);
         qWarning() << errorMsg;
         return;
     }
 
-    // 检查前4个字节是否为固定的 60 00 42 00
+    // 检查前4个字节是否为固定的 60 00 4A 00
     QByteArray header = data.left(4);
-    QByteArray expectedHeader = QByteArray::fromHex("60004200");
+    QByteArray expectedHeader = QByteArray::fromHex("60004A00");
 
     if (header != expectedHeader) {
-        QString errorMsg = QString("接收数据头部不匹配，期望: 60 00 42 00，实际: %1")
+        QString errorMsg = QString("接收数据头部不匹配，期望: 60 00 4A 00，实际: %1")
                                .arg(header.toHex(' ').toUpper());
         appendToLog(errorMsg, true);
         qWarning() << errorMsg;
@@ -923,129 +923,200 @@ void tcpClient::processHexData(const QByteArray &data)
 
     qDebug() << "数据格式验证通过，开始解析数据";
 
-    // 解析第5个字节（载荷的第1个字节）
-    unsigned char statusByte = static_cast<unsigned char>(data.at(4));
-    QString statusDescription;
-    unsigned int value1 = 0, value2 = 0;
+    // 定义托盘信息结构
+    struct TrayInfo {
+        int slotNo;           // 托盘号（1-6）
+        unsigned char status; // 状态字节
+        unsigned int modelCode; // 车型代码
+        QString statusStr;    // 状态字符串
+        bool isRealTray;      // 是否为实托盘
+    };
 
-    switch (statusByte) {
-    case 0x00:
-        statusDescription = "空";
-        appendToLog(QString("状态: %1 (0x%2) - 空").arg(statusByte).arg(statusByte, 2, 16, QChar('0')).toUpper(), false);
-        break;
-    case 0x01:
-        statusDescription = "满托送入";
-        appendToLog(QString("状态: %1 (0x%2) - 满托送入").arg(statusByte).arg(statusByte, 2, 16, QChar('0')).toUpper(), false);
-        break;
-    case 0x04:
-        statusDescription = "满托送出";
-        appendToLog(QString("状态: %1 (0x%2) - 满托送出").arg(statusByte).arg(statusByte, 2, 16, QChar('0')).toUpper(), false);
-        break;
-    default:
-        statusDescription = QString("未知状态(0x%1)").arg(statusByte, 2, 16, QChar('0')).toUpper();
-        appendToLog(QString("状态: %1 (0x%2) - 未知状态").arg(statusByte).arg(statusByte, 2, 16, QChar('0')).toUpper(), true);
-        break;
-    }
+    QList<TrayInfo> trayList;
+    QString currentTime = QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss");
 
-    // 如果状态不为00，解析第7-8字节和第9-10字节
-    if (statusByte != 0x00) {
-        // 检查数据长度是否足够
-        if (data.size() >= 10) {
-            // 解析第7-8字节（高低位颠倒组合）- 滑槽1的车型
-            unsigned char byte7 = static_cast<unsigned char>(data.at(6));  // 第7字节
-            unsigned char byte8 = static_cast<unsigned char>(data.at(7));  // 第8字节
-            value1 = (byte8 << 8) | byte7;  // 高低位颠倒组合
+    // 解析实托盘状态（第5、6、7字节）
+    for (int i = 0; i < 3; ++i) {
+        unsigned char statusByte = static_cast<unsigned char>(data.at(4 + i)); // 第5、6、7字节
+        TrayInfo tray;
+        tray.slotNo = i + 1;
+        tray.status = statusByte;
+        tray.isRealTray = true;
+        tray.modelCode = 0;
 
-            // 解析第9-10字节（高低位颠倒组合）- 滑槽2的车型
-            unsigned char byte9 = static_cast<unsigned char>(data.at(8));  // 第9字节
-            unsigned char byte10 = static_cast<unsigned char>(data.at(9)); // 第10字节
-            value2 = (byte10 << 8) | byte9;  // 高低位颠倒组合
-
-            appendToLog(QString("滑槽1车型: 0x%1%2 (DEC: %3)").arg(byte8, 2, 16, QChar('0')).arg(byte7, 2, 16, QChar('0')).arg(value1).toUpper(), false);
-            appendToLog(QString("滑槽2车型: 0x%1%2 (DEC: %3)").arg(byte10, 2, 16, QChar('0')).arg(byte9, 2, 16, QChar('0')).arg(value2).toUpper(), false);
-
-            // 打印组合后的值
-            appendToLog(QString("解析结果 - 状态: %1, 滑槽1车型: %2, 滑槽2车型: %3").arg(statusDescription).arg(value1, 4, 16, QChar('0')).arg(value2, 4, 16, QChar('0')).toUpper(), false);
+        if (statusByte == 0x00) {
+            tray.statusStr = "空";
+            appendToLog(QString("实托盘%1: 空 (0x%2)").arg(tray.slotNo).arg(statusByte, 2, 16, QChar('0')).toUpper(), false);
+        } else if (statusByte == 0x01) {
+            tray.statusStr = "实托盘搬入";
+            // 解析车型代码：第15、16字节对应第5字节，第17、18字节对应第6字节，第19、20字节对应第7字节
+            if (data.size() >= 20) {
+                unsigned char byteLow = static_cast<unsigned char>(data.at(14 + i * 2));   // 第15、17、19字节
+                unsigned char byteHigh = static_cast<unsigned char>(data.at(15 + i * 2));  // 第16、18、20字节
+                tray.modelCode = (byteHigh << 8) | byteLow;  // 高低位颠倒组合
+                appendToLog(QString("实托盘%1: 搬入，车型代码: 0x%2%3 (DEC: %4)")
+                           .arg(tray.slotNo)
+                           .arg(byteHigh, 2, 16, QChar('0'))
+                           .arg(byteLow, 2, 16, QChar('0'))
+                           .arg(tray.modelCode).toUpper(), false);
+            }
+        } else if (statusByte == 0x02) {
+            tray.statusStr = "实托盘搬出";
+            // 解析车型代码
+            if (data.size() >= 20) {
+                unsigned char byteLow = static_cast<unsigned char>(data.at(14 + i * 2));   // 第15、17、19字节
+                unsigned char byteHigh = static_cast<unsigned char>(data.at(15 + i * 2));  // 第16、18、20字节
+                tray.modelCode = (byteHigh << 8) | byteLow;  // 高低位颠倒组合
+                appendToLog(QString("实托盘%1: 搬出，车型代码: 0x%2%3 (DEC: %4)")
+                           .arg(tray.slotNo)
+                           .arg(byteHigh, 2, 16, QChar('0'))
+                           .arg(byteLow, 2, 16, QChar('0'))
+                           .arg(tray.modelCode).toUpper(), false);
+            }
         } else {
-            appendToLog("数据长度不足，无法解析第7-10字节", true);
+            tray.statusStr = QString("未知状态(0x%1)").arg(statusByte, 2, 16, QChar('0')).toUpper();
+            appendToLog(QString("实托盘%1: 未知状态 (0x%2)").arg(tray.slotNo).arg(statusByte, 2, 16, QChar('0')).toUpper(), true);
         }
-    } else {
-        appendToLog("状态为空，跳过第7-10字节解析", false);
+
+        if (statusByte != 0x00) {
+            trayList.append(tray);
+        }
     }
 
-    // 解析第6个字节（载荷的第2个字节）
-    unsigned char statusByte2 = static_cast<unsigned char>(data.at(5));
-    QString statusDescription2;
-    unsigned int value3 = 0, value4 = 0;
+    // 解析空托盘状态（第8、9、10字节）
+    for (int i = 0; i < 3; ++i) {
+        unsigned char statusByte = static_cast<unsigned char>(data.at(7 + i)); // 第8、9、10字节
+        TrayInfo tray;
+        tray.slotNo = i + 4; // 空托盘编号为4、5、6
+        tray.status = statusByte;
+        tray.isRealTray = false;
+        tray.modelCode = 0;
 
-    switch (statusByte2) {
-    case 0x00:
-        statusDescription2 = "空";
-        appendToLog(QString("状态2: %1 (0x%2) - 空").arg(statusByte2).arg(statusByte2, 2, 16, QChar('0')).toUpper(), false);
-        break;
-    case 0x01:
-        statusDescription2 = "空托送入";
-        appendToLog(QString("状态2: %1 (0x%2) - 空托送入").arg(statusByte2).arg(statusByte2, 2, 16, QChar('0')).toUpper(), false);
-        break;
-    case 0x04:
-        statusDescription2 = "空托送出";
-        appendToLog(QString("状态2: %1 (0x%2) - 空托送出").arg(statusByte2).arg(statusByte2, 2, 16, QChar('0')).toUpper(), false);
-        break;
-    default:
-        statusDescription2 = QString("未知状态(0x%1)").arg(statusByte2, 2, 16, QChar('0')).toUpper();
-        appendToLog(QString("状态2: %1 (0x%2) - 未知状态").arg(statusByte2).arg(statusByte2, 2, 16, QChar('0')).toUpper(), true);
-        break;
-    }
-
-    // 如果状态2不为00，解析第39-40字节和第41-42字节
-    if (statusByte2 != 0x00) {
-        // 检查数据长度是否足够
-        if (data.size() >= 42) {
-            // 解析第39-40字节（高低位颠倒组合）
-            unsigned char byte39 = static_cast<unsigned char>(data.at(38)); // 第39字节
-            unsigned char byte40 = static_cast<unsigned char>(data.at(39)); // 第40字节
-            value3 = (byte40 << 8) | byte39;  // 高低位颠倒组合
-
-            // 解析第41-42字节（高低位颠倒组合）
-            unsigned char byte41 = static_cast<unsigned char>(data.at(40)); // 第41字节
-            unsigned char byte42 = static_cast<unsigned char>(data.at(41)); // 第42字节
-            value4 = (byte42 << 8) | byte41;  // 高低位颠倒组合
-
-            appendToLog(QString("第39-40字节: 0x%1%2 (DEC: %3)").arg(byte40, 2, 16, QChar('0')).arg(byte39, 2, 16, QChar('0')).arg(value3).toUpper(), false);
-            appendToLog(QString("第41-42字节: 0x%1%2 (DEC: %3)").arg(byte42, 2, 16, QChar('0')).arg(byte41, 2, 16, QChar('0')).arg(value4).toUpper(), false);
-
-            // 打印组合后的值
-            appendToLog(QString("解析结果2 - 状态: %1, 值3: %2, 值4: %3").arg(statusDescription2).arg(value3, 4, 16, QChar('0')).arg(value4, 4, 16, QChar('0')).toUpper(), false);
+        if (statusByte == 0x00) {
+            tray.statusStr = "空";
+            appendToLog(QString("空托盘%1: 空 (0x%2)").arg(tray.slotNo).arg(statusByte, 2, 16, QChar('0')).toUpper(), false);
+        } else if (statusByte == 0x01) {
+            tray.statusStr = "空托盘搬入";
+            // 解析车型代码：第21、22字节对应第8字节，第23、24字节对应第9字节，第25、26字节对应第10字节
+            if (data.size() >= 26) {
+                unsigned char byteLow = static_cast<unsigned char>(data.at(20 + i * 2));   // 第21、23、25字节
+                unsigned char byteHigh = static_cast<unsigned char>(data.at(21 + i * 2)); // 第22、24、26字节
+                tray.modelCode = (byteHigh << 8) | byteLow;  // 高低位颠倒组合
+                appendToLog(QString("空托盘%1: 搬入，车型代码: 0x%2%3 (DEC: %4)")
+                           .arg(tray.slotNo)
+                           .arg(byteHigh, 2, 16, QChar('0'))
+                           .arg(byteLow, 2, 16, QChar('0'))
+                           .arg(tray.modelCode).toUpper(), false);
+            }
+        } else if (statusByte == 0x02) {
+            tray.statusStr = "空托盘搬出";
+            // 解析车型代码
+            if (data.size() >= 26) {
+                unsigned char byteLow = static_cast<unsigned char>(data.at(20 + i * 2));   // 第21、23、25字节
+                unsigned char byteHigh = static_cast<unsigned char>(data.at(21 + i * 2)); // 第22、24、26字节
+                tray.modelCode = (byteHigh << 8) | byteLow;  // 高低位颠倒组合
+                appendToLog(QString("空托盘%1: 搬出，车型代码: 0x%2%3 (DEC: %4)")
+                           .arg(tray.slotNo)
+                           .arg(byteHigh, 2, 16, QChar('0'))
+                           .arg(byteLow, 2, 16, QChar('0'))
+                           .arg(tray.modelCode).toUpper(), false);
+            }
         } else {
-            appendToLog("数据长度不足，无法解析第39-42字节", true);
+            tray.statusStr = QString("未知状态(0x%1)").arg(statusByte, 2, 16, QChar('0')).toUpper();
+            appendToLog(QString("空托盘%1: 未知状态 (0x%2)").arg(tray.slotNo).arg(statusByte, 2, 16, QChar('0')).toUpper(), true);
         }
-    } else {
-        appendToLog("状态2为空，跳过第39-42字节解析", false);
+
+        if (statusByte != 0x00) {
+            trayList.append(tray);
+        }
     }
 
+    // 防抖处理：检查5秒内是否已处理
     QDateTime now = QDateTime::currentDateTime();
-    bool processStatus1 = false, processStatus2 = false;
-    if (statusByte != 0x00) {
-        if (m_lastStatus1Time.isNull() || m_lastStatus1Time.secsTo(now) >= 5) {
-            processStatus1 = true;
-            m_lastStatus1Time = now;
+    QList<TrayInfo> processedTrays;
+
+    for (const TrayInfo& tray : trayList) {
+        bool shouldProcess = false;
+        QString timeKey = QString("%1_%2").arg(tray.isRealTray ? "real" : "empty").arg(tray.slotNo);
+        
+        // 检查该托盘是否在5秒内已处理
+        if (!m_lastTrayTime.contains(timeKey) || 
+            m_lastTrayTime[timeKey].secsTo(now) >= 5) {
+            shouldProcess = true;
+            m_lastTrayTime[timeKey] = now;
         } else {
-            appendToLog("第5字节5秒内已处理，忽略本次数据");
+            appendToLog(QString("托盘%1在5秒内已处理，忽略本次数据").arg(tray.slotNo), false);
+        }
+
+        if (shouldProcess) {
+            processedTrays.append(tray);
         }
     }
-    if (statusByte2 != 0x00) {
-        if (m_lastStatus2Time.isNull() || m_lastStatus2Time.secsTo(now) >= 5) {
-            processStatus2 = true;
-            m_lastStatus2Time = now;
-        } else {
-            appendToLog("第6字节5秒内已处理，忽略本次数据");
+
+    // 处理所有需要处理的托盘数据
+    if (!processedTrays.isEmpty()) {
+        for (const TrayInfo& tray : processedTrays) {
+            // 查找车型信息：将16进制的车型代码转换为10进制字符串进行匹配
+            // tray.modelCode 已经是10进制的unsigned int值，直接转换为10进制字符串
+            QString modelCodeStr = QString::number(tray.modelCode);
+            QString vehicleCode, vehicleName;
+            int count = 0;
+
+            for (int row = 0; row < ui->tableWidgetVehicleBinding->rowCount(); ++row) {
+                // 绑定表中的车型代码是10进制格式，直接比较
+                QString code = ui->tableWidgetVehicleBinding->item(row, 1)->text().trimmed();
+                if (modelCodeStr == code) {
+                    vehicleCode = code;
+                    vehicleName = ui->tableWidgetVehicleBinding->item(row, 2)->text();
+                    count = ui->tableWidgetVehicleBinding->item(row, 3)->text().toInt();
+                    break;
+                }
+            }
+
+            // 如果找到车型信息，添加到表格
+            if (!vehicleName.isEmpty()) {
+                int tableRow = ui->tableWidget->rowCount();
+                ui->tableWidget->insertRow(tableRow);
+                
+                // 滑槽号（实托盘1-3显示为1-3，空托盘1-3显示为4-6）
+                QString slotNoStr = tray.isRealTray ? QString::number(tray.slotNo) : QString::number(tray.slotNo);
+                QTableWidgetItem* item0 = new QTableWidgetItem(slotNoStr);
+                item0->setTextAlignment(Qt::AlignCenter);
+                ui->tableWidget->setItem(tableRow, 0, item0);
+                
+                // 状态
+                QTableWidgetItem* item1 = new QTableWidgetItem(tray.statusStr);
+                item1->setTextAlignment(Qt::AlignCenter);
+                ui->tableWidget->setItem(tableRow, 1, item1);
+                
+                // 车型代码
+                QTableWidgetItem* item2 = new QTableWidgetItem(vehicleCode);
+                item2->setTextAlignment(Qt::AlignCenter);
+                ui->tableWidget->setItem(tableRow, 2, item2);
+                
+                // 车型名称
+                QTableWidgetItem* item3 = new QTableWidgetItem(vehicleName);
+                item3->setTextAlignment(Qt::AlignCenter);
+                ui->tableWidget->setItem(tableRow, 3, item3);
+                
+                // 数量
+                QTableWidgetItem* item4 = new QTableWidgetItem(QString::number(count));
+                item4->setTextAlignment(Qt::AlignCenter);
+                ui->tableWidget->setItem(tableRow, 4, item4);
+                
+                // 时间
+                QTableWidgetItem* item5 = new QTableWidgetItem(currentTime);
+                item5->setTextAlignment(Qt::AlignCenter);
+                ui->tableWidget->setItem(tableRow, 5, item5);
+                
+                // 保存到数据库
+                insertDataRecord(slotNoStr.toInt(), tray.statusStr, vehicleName, vehicleCode, count, currentTime);
+                
+                appendToLog(QString("托盘%1数据已添加到表格 - %2, 车型: %3").arg(slotNoStr).arg(tray.statusStr).arg(vehicleName), false);
+            } else if (tray.modelCode != 0) {
+                appendToLog(QString("托盘%1的车型代码 %2 未在绑定表中找到").arg(tray.slotNo).arg(modelCodeStr), true);
+            }
         }
-    }
-    // 只有需要处理的才emit
-    if (processStatus1 || processStatus2) {
-        QString currentTime = QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss");
-        emit dataParsed(processStatus1 ? statusByte : 0x00, processStatus1 ? value1 : 0, processStatus1 ? value2 : 0,
-                        processStatus2 ? statusByte2 : 0x00, processStatus2 ? value3 : 0, processStatus2 ? value4 : 0, currentTime);
     }
 
     // 收到正确数据后立即返回E0 00
@@ -1085,18 +1156,18 @@ void tcpClient::addDataToTable(int status1, unsigned int value1, unsigned int va
     case 0x04: statusStr2 = "空托送出"; break;
     default: statusStr2 = "未知"; break;
     }
-    // 车型代码用16进制字符串表示（70字节指令收到的值是车型代码）
-    QString modelCode1 = QString("%1").arg(value1, 4, 16, QChar('0')).toUpper();
-    QString modelCode2 = QString("%1").arg(value2, 4, 16, QChar('0')).toUpper();
-    QString modelCode3 = QString("%1").arg(value3, 4, 16, QChar('0')).toUpper();
-    QString modelCode4 = QString("%1").arg(value4, 4, 16, QChar('0')).toUpper();
+    // 车型代码用10进制字符串表示（绑定表中的车型代码是10进制格式）
+    QString modelCode1 = QString::number(value1);
+    QString modelCode2 = QString::number(value2);
+    QString modelCode3 = QString::number(value3);
+    QString modelCode4 = QString::number(value4);
     QString vehicleCode1, vehicleName1; int count1 = 0;
     QString vehicleCode2, vehicleName2; int count2 = 0;
     QString vehicleCode3, vehicleName3; int count3 = 0;
     QString vehicleCode4, vehicleName4; int count4 = 0;
     // 滑槽1/2车型查找（第5字节）- 在车型代码列（列1）中查找
     for (int row = 0; row < ui->tableWidgetVehicleBinding->rowCount(); ++row) {
-        QString code = ui->tableWidgetVehicleBinding->item(row, 1)->text().toUpper(); // 车型代码列
+        QString code = ui->tableWidgetVehicleBinding->item(row, 1)->text().trimmed(); // 车型代码列（10进制格式）
         if (modelCode1 == code) {
             vehicleCode1 = code; // 车型代码
             vehicleName1 = ui->tableWidgetVehicleBinding->item(row, 2)->text(); // 车型名称
