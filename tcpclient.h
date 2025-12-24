@@ -17,9 +17,11 @@
 #include <QMutex>
 #include <QStandardPaths>
 #include <QMap>
+#include <QVector>
 
 // 前向声明
 class QTableWidgetItem;
+class QPushButton;
 
 QT_BEGIN_NAMESPACE
 namespace Ui {
@@ -50,6 +52,7 @@ private slots:
     // 界面切换槽函数
     void onConnectionPageClicked(); ///< 切换到连接界面
     void onTablePageClicked();      ///< 切换到表格界面
+    void onVisualizationPageClicked(); ///< 切换到可视化记录界面
     void onVehicleBindingPageClicked(); ///< 切换到车型绑定界面
 
     // 连接管理槽函数
@@ -102,6 +105,8 @@ private:
     // 数据处理
     void sendData(const QByteArray &data); ///< 发送数据到服务器
     void processHexData(const QByteArray &data); ///< 处理16进制数据
+    void updateVisualization(const QString &vehicleName, bool isRealTray); ///< 更新可视化界面
+    void advanceVisualization(); ///< 推进可视化显示
     void addDataToTable(int status1, unsigned int value1, unsigned int value2,
                         int status2, unsigned int value3, unsigned int value4,
                         const QString &currentTime); ///< 添加数据到表格
@@ -120,6 +125,8 @@ private:
     void deleteModelBinding(const QString &modelName);
     void clearModelBindings();
     void clearDataRecords();
+    void saveVisualizationRecords(); ///< 保存可视化记录到数据库
+    void loadVisualizationRecords(); ///< 从数据库加载可视化记录
 
     // 密码管理函数
     void initPasswordTable();     ///< 初始化密码表
@@ -149,6 +156,11 @@ private:
     QDateTime m_lastStatus2Time; ///< 旧版本兼容，已废弃
     QMap<QString, QDateTime> m_lastTrayTime; ///< 每个托盘的最后处理时间（key格式: "real_1" 或 "empty_1"）
     QLabel* labelConnectionStatus;
+    QPushButton* pushButtonVisualizationPage; ///< 可视化记录页面按钮
+    QWidget* visualizationPage; ///< 可视化记录页面
+    QVector<QLabel*> m_realTrayLabels; ///< 实滑槽标签（12个）
+    QVector<QLabel*> m_emptyTrayLabels; ///< 空滑槽标签（12个）
+    QVector<QString> m_realTraySlots; ///< 实滑槽每个位置显示的车型名称（10个槽位，位置1-10）
     QString m_password;           ///< 存储的密码
     bool m_isPasswordSet;         ///< 密码是否已设置
     

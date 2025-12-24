@@ -25,6 +25,11 @@
 #include <QMutexLocker>
 #include <QStandardPaths>
 #include <QSettings>
+#include <QVBoxLayout>
+#include <QHBoxLayout>
+#include <QPushButton>
+#include <QGroupBox>
+#include <QVector>
 
 /**
  * @brief 构造函数
@@ -97,6 +102,10 @@ tcpClient::tcpClient(QWidget *parent)
         loadDataRecordsFromDb();
         qDebug() << "loadDataRecordsFromDb completed";
 
+        // 加载可视化记录（在数据库初始化完成后，且可视化页面已创建）
+        loadVisualizationRecords();
+        qDebug() << "loadVisualizationRecords completed";
+
         // 连接Socket信号槽
         connect(m_socket, &QTcpSocket::connected, this, &tcpClient::onSocketConnected);
         connect(m_socket, &QTcpSocket::disconnected, this, &tcpClient::onSocketDisconnected);
@@ -110,6 +119,12 @@ tcpClient::tcpClient(QWidget *parent)
         // 设置连接超时时间（5秒）
         m_connectionTimer->setSingleShot(true);
         m_connectionTimer->setInterval(5000);
+        
+        // 初始化可视化数组（10个槽位，位置1-10，不包括入口和出口）
+        m_realTraySlots.resize(10);
+        for (int i = 0; i < 10; ++i) {
+            m_realTraySlots[i] = "";
+        }
 
         updateConnectionStatus(false);
 
@@ -167,9 +182,139 @@ void tcpClient::setupUI()
     ui->textEditLog->setReadOnly(true);
     ui->textEditSend->setPlaceholderText("请输入要发送的数据...");
 
+    // 创建可视化记录页面和按钮
+    pushButtonVisualizationPage = new QPushButton(this);
+    pushButtonVisualizationPage->setText("可视化记录");
+    pushButtonVisualizationPage->setCheckable(true);
+    pushButtonVisualizationPage->setObjectName("pushButtonVisualizationPage");
+    
+    // 将可视化记录按钮插入到数据表格和车型绑定按钮之间
+    ui->horizontalLayout_4->insertWidget(2, pushButtonVisualizationPage);
+    
+    // 创建可视化记录页面
+    visualizationPage = new QWidget();
+    visualizationPage->setObjectName("visualizationPage");
+    QVBoxLayout* visualizationLayout = new QVBoxLayout(visualizationPage);
+    visualizationLayout->setObjectName("visualizationLayout");
+    visualizationLayout->setSpacing(15);
+    visualizationLayout->setContentsMargins(20, 20, 20, 20);
+    
+    // 创建实滑槽记录GroupBox（第一行）
+    QGroupBox* realTrayGroupBox = new QGroupBox(visualizationPage);
+    realTrayGroupBox->setTitle("实滑槽记录");
+    realTrayGroupBox->setStyleSheet(
+        "QGroupBox {"
+        "font-size: 14pt;"
+        "font-weight: bold;"
+        "border: 2px solid #d0d0d0;"
+        "border-radius: 8px;"
+        "margin-top: 10px;"
+        "padding-top: 15px;"
+        "}"
+        "QGroupBox::title {"
+        "subcontrol-origin: margin;"
+        "left: 15px;"
+        "padding: 0 8px 0 8px;"
+        "}"
+    );
+    
+    QHBoxLayout* realTrayLayout = new QHBoxLayout(realTrayGroupBox);
+    realTrayLayout->setSpacing(8);
+    realTrayLayout->setContentsMargins(15, 20, 15, 15);
+    m_realTrayLabels.clear();
+    for (int i = 0; i < 12; ++i) {
+        QLabel* label = new QLabel(realTrayGroupBox);
+        label->setAlignment(Qt::AlignCenter);
+        label->setMinimumSize(60, 80);
+        label->setStyleSheet(
+            "QLabel {"
+            "border: 2px solid #d0d0d0;"
+            "border-radius: 8px;"
+            "font-size: 12pt;"
+            "font-weight: bold;"
+            "padding: 10px;"
+            "}"
+        );
+        
+        // 设置标签文本
+        if (i == 0) {
+            label->setText("实滑槽\n入口");
+        } else if (i == 11) {
+            label->setText("出口");
+        } else {
+            label->setText("");  // 滑槽1到滑槽10显示为空
+        }
+        
+        m_realTrayLabels.append(label);
+        realTrayLayout->addWidget(label);
+    }
+    visualizationLayout->addWidget(realTrayGroupBox);
+    
+    // 创建空滑槽记录GroupBox（第二行）
+    QGroupBox* emptyTrayGroupBox = new QGroupBox(visualizationPage);
+    emptyTrayGroupBox->setTitle("空滑槽记录");
+    emptyTrayGroupBox->setStyleSheet(
+        "QGroupBox {"
+        "font-size: 14pt;"
+        "font-weight: bold;"
+        "border: 2px solid #d0d0d0;"
+        "border-radius: 8px;"
+        "margin-top: 10px;"
+        "padding-top: 15px;"
+        "}"
+        "QGroupBox::title {"
+        "subcontrol-origin: margin;"
+        "left: 15px;"
+        "padding: 0 8px 0 8px;"
+        "}"
+    );
+    
+    QHBoxLayout* emptyTrayLayout = new QHBoxLayout(emptyTrayGroupBox);
+    emptyTrayLayout->setSpacing(8);
+    emptyTrayLayout->setContentsMargins(15, 20, 15, 15);
+    m_emptyTrayLabels.clear();
+    for (int i = 0; i < 12; ++i) {
+        QLabel* label = new QLabel(emptyTrayGroupBox);
+        label->setAlignment(Qt::AlignCenter);
+        label->setMinimumSize(60, 80);
+        label->setStyleSheet(
+            "QLabel {"
+            "border: 2px solid #d0d0d0;"
+            "border-radius: 8px;"
+            "font-size: 12pt;"
+            "font-weight: bold;"
+            "padding: 10px;"
+            "}"
+        );
+        
+        // 设置标签文本
+        if (i == 0) {
+            label->setText("空滑槽\n入口");
+        } else if (i == 11) {
+            label->setText("出口");
+        } else {
+            label->setText("");  // 滑槽1到滑槽10显示为空
+        }
+        
+        m_emptyTrayLabels.append(label);
+        emptyTrayLayout->addWidget(label);
+    }
+    visualizationLayout->addWidget(emptyTrayGroupBox);
+    
+    // 添加弹性空间
+    visualizationLayout->addStretch();
+    
+    // 注意：可视化记录的加载将在数据库初始化完成后进行
+    // 不在这里调用 loadVisualizationRecords()，避免数据库未初始化的问题
+    
+    // 将可视化记录页面插入到stackedWidget中（Index 2位置）
+    // 原来的车型绑定页面会变成Index 3
+    ui->stackedWidget->insertWidget(2, visualizationPage);
+    
     // 连接界面切换按钮信号槽
     connect(ui->pushButtonConnectionPage, &QPushButton::clicked, this, &tcpClient::onConnectionPageClicked);
     connect(ui->pushButtonTablePage, &QPushButton::clicked, this, &tcpClient::onTablePageClicked);
+    connect(pushButtonVisualizationPage, &QPushButton::clicked, this, &tcpClient::onVisualizationPageClicked);
     connect(ui->pushButtonVehicleBindingPage, &QPushButton::clicked, this, &tcpClient::onVehicleBindingPageClicked);
 
     // 连接按钮信号槽
@@ -209,6 +354,7 @@ void tcpClient::setupUI()
     ui->stackedWidget->setCurrentIndex(1);
     ui->pushButtonConnectionPage->setChecked(false);
     ui->pushButtonTablePage->setChecked(true);
+    pushButtonVisualizationPage->setChecked(false);
     ui->pushButtonVehicleBindingPage->setChecked(false);
 
     ui->pushButtonExportTable->setVisible(false);
@@ -250,6 +396,7 @@ void tcpClient::applyModernStyle()
         if (ui) {
             ui->pushButtonConnectionPage->setStyleSheet("");
             ui->pushButtonTablePage->setStyleSheet("");
+            pushButtonVisualizationPage->setStyleSheet("");
             ui->pushButtonVehicleBindingPage->setStyleSheet("");
             ui->pushButtonClearTable->setStyleSheet("");
             ui->pushButtonDeleteTable->setStyleSheet("");
@@ -367,6 +514,7 @@ void tcpClient::applyBuiltinStyle()
     QString navButtonStyle = R"(
         QPushButton#pushButtonConnectionPage,
         QPushButton#pushButtonTablePage,
+        QPushButton#pushButtonVisualizationPage,
         QPushButton#pushButtonVehicleBindingPage {
             background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1,
                                       stop: 0 #34495e, stop: 1 #2c3e50);
@@ -380,6 +528,7 @@ void tcpClient::applyBuiltinStyle()
 
         QPushButton#pushButtonConnectionPage:hover,
         QPushButton#pushButtonTablePage:hover,
+        QPushButton#pushButtonVisualizationPage:hover,
         QPushButton#pushButtonVehicleBindingPage:hover {
             background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1,
                                       stop: 0 #5d6d7e, stop: 1 #34495e);
@@ -387,6 +536,7 @@ void tcpClient::applyBuiltinStyle()
 
         QPushButton#pushButtonConnectionPage:checked,
         QPushButton#pushButtonTablePage:checked,
+        QPushButton#pushButtonVisualizationPage:checked,
         QPushButton#pushButtonVehicleBindingPage:checked {
             background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1,
                                       stop: 0 #3498db, stop: 1 #2980b9);
@@ -570,6 +720,7 @@ void tcpClient::onConnectionPageClicked()
     ui->stackedWidget->setCurrentIndex(0);
     ui->pushButtonConnectionPage->setChecked(true);
     ui->pushButtonTablePage->setChecked(false);
+    pushButtonVisualizationPage->setChecked(false);
     ui->pushButtonVehicleBindingPage->setChecked(false);
 }
 
@@ -581,6 +732,19 @@ void tcpClient::onTablePageClicked()
     ui->stackedWidget->setCurrentIndex(1);
     ui->pushButtonConnectionPage->setChecked(false);
     ui->pushButtonTablePage->setChecked(true);
+    pushButtonVisualizationPage->setChecked(false);
+    ui->pushButtonVehicleBindingPage->setChecked(false);
+}
+
+/**
+ * @brief 切换到可视化记录界面
+ */
+void tcpClient::onVisualizationPageClicked()
+{
+    ui->stackedWidget->setCurrentIndex(2);
+    ui->pushButtonConnectionPage->setChecked(false);
+    ui->pushButtonTablePage->setChecked(false);
+    pushButtonVisualizationPage->setChecked(true);
     ui->pushButtonVehicleBindingPage->setChecked(false);
 }
 
@@ -589,9 +753,10 @@ void tcpClient::onTablePageClicked()
  */
 void tcpClient::onVehicleBindingPageClicked()
 {
-    ui->stackedWidget->setCurrentIndex(2);
+    ui->stackedWidget->setCurrentIndex(3);  // 更新索引：可视化记录页面在Index 2，车型绑定在Index 3
     ui->pushButtonConnectionPage->setChecked(false);
     ui->pushButtonTablePage->setChecked(false);
+    pushButtonVisualizationPage->setChecked(false);
     ui->pushButtonVehicleBindingPage->setChecked(true);
 }
 
@@ -1113,6 +1278,11 @@ void tcpClient::processHexData(const QByteArray &data)
                 insertDataRecord(slotNoStr.toInt(), tray.statusStr, vehicleName, vehicleCode, count, currentTime);
                 
                 appendToLog(QString("托盘%1数据已添加到表格 - %2, 车型: %3").arg(slotNoStr).arg(tray.statusStr).arg(vehicleName), false);
+                
+                // 如果是实托盘搬出，更新可视化界面
+                if (tray.isRealTray && tray.statusStr == "实托盘搬出" && !vehicleName.isEmpty()) {
+                    updateVisualization(vehicleName, true);
+                }
             } else if (tray.modelCode != 0) {
                 appendToLog(QString("托盘%1的车型代码 %2 未在绑定表中找到").arg(tray.slotNo).arg(modelCodeStr), true);
             }
@@ -1594,6 +1764,17 @@ void tcpClient::initDatabase() {
         qDebug() << "车型绑定表创建/检查成功";
     } else {
         qWarning() << "车型绑定表创建失败:" << query.lastError().text();
+    }
+
+    // 可视化记录表
+    if (query.exec("CREATE TABLE IF NOT EXISTS visualization_records ("
+                   "id INT PRIMARY KEY AUTO_INCREMENT,"
+                   "slot_position INT,"
+                   "vehicle_name VARCHAR(255),"
+                   "update_time VARCHAR(255))")) {
+        qDebug() << "可视化记录表创建/检查成功";
+    } else {
+        qWarning() << "可视化记录表创建失败:" << query.lastError().text();
     }
 
     qInfo() << "数据库初始化完成";
@@ -2280,4 +2461,185 @@ void tcpClient::onTestDatabaseConnectionClicked()
                                     "4. 防火墙是否允许连接\n"
                                     "5. 用户是否有访问权限"));
     }
+}
+
+/**
+ * @brief 更新可视化界面
+ * @param vehicleName 车型名称
+ * @param isRealTray 是否为实托盘
+ */
+void tcpClient::updateVisualization(const QString &vehicleName, bool isRealTray)
+{
+    if (!isRealTray) {
+        return; // 目前只处理实托盘
+    }
+    
+    // 先推进所有槽位（向右移动一格）
+    advanceVisualization();
+    
+    // 在入口右边第一个槽（位置1，对应标签索引1）添加车型名称
+    // 如果第一个槽已有内容，说明所有槽都满了，记录日志
+    if (m_realTraySlots[0].isEmpty()) {
+        m_realTraySlots[0] = vehicleName;
+        
+        // 更新第一个槽的标签显示（标签索引1）
+        if (m_realTrayLabels.size() > 1 && m_realTrayLabels[1]) {
+            m_realTrayLabels[1]->setText(vehicleName);
+        }
+        
+        // 保存到数据库
+        saveVisualizationRecords();
+        
+        appendToLog(QString("可视化界面：实滑槽第一个槽添加车型 %1").arg(vehicleName), false);
+    } else {
+        // 如果第一个槽已有内容，说明所有槽都满了
+        appendToLog(QString("可视化界面：所有槽位已满，无法添加车型: %1").arg(vehicleName), true);
+    }
+}
+
+/**
+ * @brief 推进可视化显示
+ */
+void tcpClient::advanceVisualization()
+{
+    // 从右向左推进，避免覆盖
+    // 数组索引0-9对应滑槽1-10（标签索引1-10）
+    // 从最后一个槽（索引9，滑槽10）开始，依次向右移动到出口
+    
+    // 如果最后一个槽（滑槽10）有内容，移动到出口（标签索引11）
+    if (!m_realTraySlots[9].isEmpty()) {
+        // 更新出口标签显示
+        if (m_realTrayLabels.size() > 11 && m_realTrayLabels[11]) {
+            m_realTrayLabels[11]->setText("出口\n" + m_realTraySlots[9]);
+        }
+        // 清除最后一个槽
+        m_realTraySlots[9] = "";
+    }
+    
+    // 从右向左推进（从索引8到索引0）
+    for (int i = 8; i >= 0; --i) {
+        if (!m_realTraySlots[i].isEmpty()) {
+            // 向右移动一格
+            m_realTraySlots[i + 1] = m_realTraySlots[i];
+            m_realTraySlots[i] = "";
+        }
+    }
+    
+    // 更新所有滑槽标签显示（标签索引1-10对应数组索引0-9）
+    for (int i = 0; i < 10 && i < m_realTrayLabels.size() - 1; ++i) {
+        int labelIndex = i + 1; // 标签索引从1开始（跳过入口标签0）
+        if (m_realTrayLabels[labelIndex]) {
+            m_realTrayLabels[labelIndex]->setText(m_realTraySlots[i]);
+        }
+    }
+    
+    // 清除出口标签（如果之前有显示）
+    if (m_realTraySlots[9].isEmpty() && m_realTrayLabels.size() > 11 && m_realTrayLabels[11]) {
+        m_realTrayLabels[11]->setText("出口");
+    }
+    
+    // 保存可视化记录到数据库
+    saveVisualizationRecords();
+}
+
+/**
+ * @brief 保存可视化记录到数据库
+ */
+void tcpClient::saveVisualizationRecords()
+{
+    // 检查数据库是否已打开
+    QSqlDatabase db = QSqlDatabase::database();
+    if (!db.isOpen()) {
+        qDebug() << "数据库未打开，跳过保存可视化记录";
+        return;
+    }
+    
+    QSqlQuery query;
+    
+    // 先清空旧记录
+    if (!query.exec("DELETE FROM visualization_records")) {
+        appendToLog("清空可视化记录表失败: " + query.lastError().text(), true);
+        return;
+    }
+    
+    // 插入当前所有槽位的记录
+    QString currentTime = QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss");
+    query.prepare("INSERT INTO visualization_records (slot_position, vehicle_name, update_time) VALUES (?, ?, ?)");
+    
+    for (int i = 0; i < m_realTraySlots.size(); ++i) {
+        if (!m_realTraySlots[i].isEmpty()) {
+            query.addBindValue(i + 1); // 槽位位置（1-10）
+            query.addBindValue(m_realTraySlots[i]);
+            query.addBindValue(currentTime);
+            if (!query.exec()) {
+                appendToLog(QString("保存可视化记录失败（槽位%1）: %2").arg(i + 1).arg(query.lastError().text()), true);
+            }
+        }
+    }
+    
+    qDebug() << "可视化记录已保存到数据库";
+}
+
+/**
+ * @brief 从数据库加载可视化记录
+ */
+void tcpClient::loadVisualizationRecords()
+{
+    // 检查数据库是否已打开
+    QSqlDatabase db = QSqlDatabase::database();
+    if (!db.isOpen()) {
+        qDebug() << "数据库未打开，跳过加载可视化记录";
+        return;
+    }
+    
+    // 确保数组已初始化
+    if (m_realTraySlots.size() != 10) {
+        m_realTraySlots.resize(10);
+        for (int i = 0; i < 10; ++i) {
+            m_realTraySlots[i] = "";
+        }
+    }
+    
+    // 先清空当前数组
+    for (int i = 0; i < m_realTraySlots.size(); ++i) {
+        m_realTraySlots[i] = "";
+    }
+    
+    QSqlQuery query("SELECT slot_position, vehicle_name FROM visualization_records ORDER BY slot_position");
+    
+    if (query.lastError().isValid()) {
+        qDebug() << "查询可视化记录失败:" << query.lastError().text();
+        return;
+    }
+    
+    while (query.next()) {
+        int slotPosition = query.value(0).toInt();
+        QString vehicleName = query.value(1).toString();
+        
+        // 槽位位置是1-10，数组索引是0-9
+        if (slotPosition >= 1 && slotPosition <= 10) {
+            int arrayIndex = slotPosition - 1;
+            if (arrayIndex < m_realTraySlots.size()) {
+                m_realTraySlots[arrayIndex] = vehicleName;
+            }
+        }
+    }
+    
+    // 更新标签显示（确保标签数组已创建）
+    if (m_realTrayLabels.size() >= 12) {
+        for (int i = 0; i < 10 && i < m_realTraySlots.size(); ++i) {
+            int labelIndex = i + 1; // 标签索引从1开始（跳过入口标签0）
+            if (labelIndex < m_realTrayLabels.size() && m_realTrayLabels[labelIndex]) {
+                m_realTrayLabels[labelIndex]->setText(m_realTraySlots[i]);
+            }
+        }
+        
+        // 检查最后一个槽是否有内容，如果有则显示在出口
+        if (m_realTraySlots.size() > 9 && !m_realTraySlots[9].isEmpty() && 
+            m_realTrayLabels.size() > 11 && m_realTrayLabels[11]) {
+            m_realTrayLabels[11]->setText("出口\n" + m_realTraySlots[9]);
+        }
+    }
+    
+    qDebug() << "可视化记录已从数据库加载";
 }
