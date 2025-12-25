@@ -29,7 +29,13 @@
 #include <QHBoxLayout>
 #include <QPushButton>
 #include <QGroupBox>
+#include <QLineEdit>
+#include <QLabel>
+#include <QSpacerItem>
 #include <QVector>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonParseError>
 
 /**
  * @brief 构造函数
@@ -39,8 +45,11 @@ tcpClient::tcpClient(QWidget *parent)
     : QWidget(parent)
     , ui(new Ui::tcpClient)
     , m_socket(new QTcpSocket(this))
+    , m_serverSocket(new QTcpSocket(this))
     , m_connectionTimer(new QTimer(this))
+    , m_serverConnectionTimer(new QTimer(this))
     , m_isConnected(false)
+    , m_isServerConnected(false)
     , m_fullTrayCount(0)
     , m_password("")
     , m_isPasswordSet(false)
@@ -103,27 +112,58 @@ tcpClient::tcpClient(QWidget *parent)
         qDebug() << "loadDataRecordsFromDb completed";
 
         // 加载可视化记录（在数据库初始化完成后，且可视化页面已创建）
-        loadVisualizationRecords();
-        qDebug() << "loadVisualizationRecords completed";
+        // 使用延迟加载，确保UI完全初始化
+        QTimer::singleShot(200, this, [this]() {
+            loadVisualizationRecords();
+            qDebug() << "loadVisualizationRecords completed";
+            
+            // 加载空托盘可视化记录
+            loadEmptyTrayVisualizationRecords();
+            qDebug() << "loadEmptyTrayVisualizationRecords completed";
+        });
 
-        // 连接Socket信号槽
+        // 加载连接配置
+        loadConnectionConfig();
+        qDebug() << "loadConnectionConfig completed";
+
+        // 连接PLC Socket信号槽
         connect(m_socket, &QTcpSocket::connected, this, &tcpClient::onSocketConnected);
         connect(m_socket, &QTcpSocket::disconnected, this, &tcpClient::onSocketDisconnected);
         connect(m_socket, QOverload<QAbstractSocket::SocketError>::of(&QTcpSocket::errorOccurred),
                 this, &tcpClient::onSocketError);
         connect(m_socket, &QTcpSocket::readyRead, this, &tcpClient::onSocketReadyRead);
 
-        // 连接超时定时器
+        // 连接PLC超时定时器
         connect(m_connectionTimer, &QTimer::timeout, this, &tcpClient::onConnectionTimeout);
 
-        // 设置连接超时时间（5秒）
+        // 设置PLC连接超时时间（5秒）
         m_connectionTimer->setSingleShot(true);
         m_connectionTimer->setInterval(5000);
+        
+        // 连接服务端Socket信号槽
+        connect(m_serverSocket, &QTcpSocket::connected, this, &tcpClient::onServerSocketConnected);
+        connect(m_serverSocket, &QTcpSocket::disconnected, this, &tcpClient::onServerSocketDisconnected);
+        connect(m_serverSocket, QOverload<QAbstractSocket::SocketError>::of(&QTcpSocket::errorOccurred),
+                this, &tcpClient::onServerSocketError);
+        connect(m_serverSocket, &QTcpSocket::readyRead, this, &tcpClient::onServerSocketReadyRead);
+
+        // 连接服务端超时定时器
+        connect(m_serverConnectionTimer, &QTimer::timeout, this, &tcpClient::onServerConnectionTimeout);
+
+        // 设置服务端连接超时时间（5秒）
+        m_serverConnectionTimer->setSingleShot(true);
+        m_serverConnectionTimer->setInterval(5000);
         
         // 初始化可视化数组（10个槽位，位置1-10，不包括入口和出口）
         m_realTraySlots.resize(10);
         for (int i = 0; i < 10; ++i) {
             m_realTraySlots[i] = "";
+        }
+        
+        // 初始化空托盘可视化数组（10个槽位，位置1-10，不包括入口和出口）
+        m_emptyTraySlots.resize(10);
+        for (int i = 0; i < 10; ++i) {
+            m_emptyTraySlots[i] = "";
         }
 
         updateConnectionStatus(false);
@@ -148,6 +188,9 @@ tcpClient::~tcpClient()
     // 断开连接并清理资源
     if (m_socket->state() == QAbstractSocket::ConnectedState) {
         m_socket->disconnectFromHost();
+    }
+    if (m_serverSocket && m_serverSocket->state() == QAbstractSocket::ConnectedState) {
+        m_serverSocket->disconnectFromHost();
     }
 
     // 清理日志系统资源
@@ -327,6 +370,72 @@ void tcpClient::setupUI()
     // 连接数据库配置按钮信号槽
     connect(ui->pushButtonSaveDbConfig, &QPushButton::clicked, this, &tcpClient::onSaveDatabaseConfigClicked);
     connect(ui->pushButtonTestDbConnection, &QPushButton::clicked, this, &tcpClient::onTestDatabaseConnectionClicked);
+    
+    // 在PLC连接设置区域添加保存按钮
+    pushButtonSavePlcConfig = new QPushButton(ui->groupBoxConnection);
+    pushButtonSavePlcConfig->setText("保存配置");
+    pushButtonSavePlcConfig->setObjectName("pushButtonSavePlcConfig");
+    ui->horizontalLayout->addWidget(pushButtonSavePlcConfig);
+    connect(pushButtonSavePlcConfig, &QPushButton::clicked, this, &tcpClient::onSavePlcConnectionConfigClicked);
+    
+    // 创建服务端连接设置区域
+    groupBoxServerConnection = new QGroupBox(ui->connectionPage);
+    groupBoxServerConnection->setTitle("服务端连接设置");
+    groupBoxServerConnection->setObjectName("groupBoxServerConnection");
+    
+    QHBoxLayout* serverConnectionLayout = new QHBoxLayout(groupBoxServerConnection);
+    serverConnectionLayout->setObjectName("serverConnectionLayout");
+    
+    QLabel* labelServerIP = new QLabel(groupBoxServerConnection);
+    labelServerIP->setText("服务器IP:");
+    serverConnectionLayout->addWidget(labelServerIP);
+    
+    lineEditServerIP = new QLineEdit(groupBoxServerConnection);
+    lineEditServerIP->setMinimumSize(120, 0);
+    lineEditServerIP->setPlaceholderText("服务端IP地址");
+    serverConnectionLayout->addWidget(lineEditServerIP);
+    
+    QLabel* labelServerPort = new QLabel(groupBoxServerConnection);
+    labelServerPort->setText("端口:");
+    serverConnectionLayout->addWidget(labelServerPort);
+    
+    lineEditServerPort = new QLineEdit(groupBoxServerConnection);
+    lineEditServerPort->setMinimumSize(80, 0);
+    lineEditServerPort->setPlaceholderText("端口号");
+    serverConnectionLayout->addWidget(lineEditServerPort);
+    
+    pushButtonServerConnect = new QPushButton(groupBoxServerConnection);
+    pushButtonServerConnect->setText("连接");
+    pushButtonServerConnect->setObjectName("pushButtonServerConnect");
+    serverConnectionLayout->addWidget(pushButtonServerConnect);
+    
+    pushButtonServerDisconnect = new QPushButton(groupBoxServerConnection);
+    pushButtonServerDisconnect->setText("断开");
+    pushButtonServerDisconnect->setObjectName("pushButtonServerDisconnect");
+    pushButtonServerDisconnect->setEnabled(false);
+    serverConnectionLayout->addWidget(pushButtonServerDisconnect);
+    
+    pushButtonSaveServerConfig = new QPushButton(groupBoxServerConnection);
+    pushButtonSaveServerConfig->setText("保存配置");
+    pushButtonSaveServerConfig->setObjectName("pushButtonSaveServerConfig");
+    serverConnectionLayout->addWidget(pushButtonSaveServerConfig);
+    
+    // 创建服务端连接状态标签
+    labelServerConnectionStatus = new QLabel(groupBoxServerConnection);
+    labelServerConnectionStatus->setText("未连接");
+    labelServerConnectionStatus->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    serverConnectionLayout->addWidget(labelServerConnectionStatus);
+    
+    QSpacerItem* serverSpacer = new QSpacerItem(40, 20, QSizePolicy::Policy::Expanding, QSizePolicy::Policy::Minimum);
+    serverConnectionLayout->addItem(serverSpacer);
+    
+    // 将服务端连接设置插入到PLC连接设置之后
+    ui->verticalLayout_2->insertWidget(1, groupBoxServerConnection);
+    
+    // 连接服务端连接配置按钮信号槽
+    connect(pushButtonSaveServerConfig, &QPushButton::clicked, this, &tcpClient::onSaveServerConnectionConfigClicked);
+    connect(pushButtonServerConnect, &QPushButton::clicked, this, &tcpClient::onServerConnectClicked);
+    connect(pushButtonServerDisconnect, &QPushButton::clicked, this, &tcpClient::onServerDisconnectClicked);
     
     // 加载数据库配置到界面
     loadDatabaseConfig();
@@ -1283,6 +1392,10 @@ void tcpClient::processHexData(const QByteArray &data)
                 if (tray.isRealTray && tray.statusStr == "实托盘搬出" && !vehicleName.isEmpty()) {
                     updateVisualization(vehicleName, true);
                 }
+                // 如果是空托盘搬入，处理空托盘搬入逻辑
+                if (!tray.isRealTray && tray.statusStr == "空托盘搬入" && !vehicleName.isEmpty()) {
+                    handleEmptyTrayIn(vehicleName);
+                }
             } else if (tray.modelCode != 0) {
                 appendToLog(QString("托盘%1的车型代码 %2 未在绑定表中找到").arg(tray.slotNo).arg(modelCodeStr), true);
             }
@@ -1775,6 +1888,29 @@ void tcpClient::initDatabase() {
         qDebug() << "可视化记录表创建/检查成功";
     } else {
         qWarning() << "可视化记录表创建失败:" << query.lastError().text();
+    }
+    
+    // 空托盘可视化记录表
+    if (query.exec("CREATE TABLE IF NOT EXISTS empty_tray_visualization_records ("
+                   "id INT PRIMARY KEY AUTO_INCREMENT,"
+                   "slot_position INT,"
+                   "vehicle_name VARCHAR(255),"
+                   "update_time VARCHAR(255))")) {
+        qDebug() << "空托盘可视化记录表创建/检查成功";
+    } else {
+        qWarning() << "空托盘可视化记录表创建失败:" << query.lastError().text();
+    }
+
+    // 连接配置表
+    if (query.exec("CREATE TABLE IF NOT EXISTS connection_configs ("
+                   "id INT PRIMARY KEY AUTO_INCREMENT,"
+                   "config_type VARCHAR(50),"
+                   "ip_address VARCHAR(50),"
+                   "port INT,"
+                   "update_time VARCHAR(255))")) {
+        qDebug() << "连接配置表创建/检查成功";
+    } else {
+        qWarning() << "连接配置表创建失败:" << query.lastError().text();
     }
 
     qInfo() << "数据库初始化完成";
@@ -2554,30 +2690,108 @@ void tcpClient::saveVisualizationRecords()
         return;
     }
     
-    QSqlQuery query;
-    
-    // 先清空旧记录
-    if (!query.exec("DELETE FROM visualization_records")) {
-        appendToLog("清空可视化记录表失败: " + query.lastError().text(), true);
-        return;
+    // 检查是否有数据需要保存（先从数组检查，因为数组可能比标签更新得更早）
+    bool hasData = false;
+    for (int i = 0; i < m_realTraySlots.size() && i < 10; ++i) {
+        if (!m_realTraySlots[i].isEmpty()) {
+            hasData = true;
+            break;
+        }
     }
     
-    // 插入当前所有槽位的记录
-    QString currentTime = QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss");
-    query.prepare("INSERT INTO visualization_records (slot_position, vehicle_name, update_time) VALUES (?, ?, ?)");
-    
-    for (int i = 0; i < m_realTraySlots.size(); ++i) {
-        if (!m_realTraySlots[i].isEmpty()) {
-            query.addBindValue(i + 1); // 槽位位置（1-10）
-            query.addBindValue(m_realTraySlots[i]);
-            query.addBindValue(currentTime);
-            if (!query.exec()) {
-                appendToLog(QString("保存可视化记录失败（槽位%1）: %2").arg(i + 1).arg(query.lastError().text()), true);
+    // 如果数组没有数据，再从标签检查
+    if (!hasData) {
+        for (int i = 0; i < 10; ++i) {
+            int labelIndex = i + 1;
+            if (labelIndex < m_realTrayLabels.size() && m_realTrayLabels[labelIndex]) {
+                QString labelText = m_realTrayLabels[labelIndex]->text().trimmed();
+                if (!labelText.isEmpty()) {
+                    hasData = true;
+                    break;
+                }
             }
         }
     }
     
-    qDebug() << "可视化记录已保存到数据库";
+    // 也检查出口标签
+    if (!hasData && m_realTrayLabels.size() > 11 && m_realTrayLabels[11]) {
+        QString exitText = m_realTrayLabels[11]->text().trimmed();
+        if (!exitText.isEmpty() && exitText != "出口") {
+            hasData = true;
+        }
+    }
+    
+    // 如果没有数据，不执行保存操作，避免清空数据库
+    if (!hasData) {
+        qDebug() << "没有可视化记录需要保存，跳过保存操作";
+        return;
+    }
+    
+    QSqlQuery query;
+    
+    // 尝试开始事务（如果失败，继续执行，不使用事务）
+    bool useTransaction = db.transaction();
+    if (!useTransaction) {
+        qDebug() << "开始事务失败，将不使用事务保存: " << db.lastError().text();
+    }
+    
+    // 先清空旧记录
+    if (!query.exec("DELETE FROM visualization_records")) {
+        if (useTransaction) {
+            db.rollback();
+        }
+        appendToLog("清空可视化记录表失败: " + query.lastError().text(), true);
+        return;
+    }
+    
+    // 插入当前所有槽位的记录（从标签读取，确保与显示一致）
+    QString currentTime = QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss");
+    query.prepare("INSERT INTO visualization_records (slot_position, vehicle_name, update_time) VALUES (?, ?, ?)");
+    
+    int savedCount = 0;
+    for (int i = 0; i < 10; ++i) {
+        int labelIndex = i + 1;
+        QString vehicleName = "";
+        
+        // 从标签读取数据
+        if (labelIndex < m_realTrayLabels.size() && m_realTrayLabels[labelIndex]) {
+            vehicleName = m_realTrayLabels[labelIndex]->text().trimmed();
+        }
+        
+        // 如果标签为空，也从数组读取（作为备份）
+        if (vehicleName.isEmpty() && i < m_realTraySlots.size()) {
+            vehicleName = m_realTraySlots[i].trimmed();
+        }
+        
+        if (!vehicleName.isEmpty()) {
+            query.addBindValue(i + 1); // 槽位位置（1-10）
+            query.addBindValue(vehicleName);
+            query.addBindValue(currentTime);
+            if (!query.exec()) {
+                if (useTransaction) {
+                    db.rollback();
+                }
+                appendToLog(QString("保存可视化记录失败（槽位%1）: %2").arg(i + 1).arg(query.lastError().text()), true);
+                return;
+            }
+            savedCount++;
+            // 同步到数组
+            if (i < m_realTraySlots.size()) {
+                m_realTraySlots[i] = vehicleName;
+            }
+        }
+    }
+    
+    // 提交事务（如果使用了事务）
+    if (useTransaction) {
+        if (!db.commit()) {
+            appendToLog("提交事务失败: " + db.lastError().text(), true);
+            return;
+        }
+    }
+    
+    qDebug() << "可视化记录已保存到数据库，共保存" << savedCount << "条记录";
+    appendToLog(QString("可视化记录已保存到数据库，共保存%1条记录").arg(savedCount), false);
 }
 
 /**
@@ -2609,6 +2823,737 @@ void tcpClient::loadVisualizationRecords()
     
     if (query.lastError().isValid()) {
         qDebug() << "查询可视化记录失败:" << query.lastError().text();
+        appendToLog(QString("查询可视化记录失败: %1").arg(query.lastError().text()), true);
+        return;
+    }
+    
+    int loadedCount = 0;
+    while (query.next()) {
+        int slotPosition = query.value(0).toInt();
+        QString vehicleName = query.value(1).toString();
+        
+        // 槽位位置是1-10，数组索引是0-9
+        if (slotPosition >= 1 && slotPosition <= 10) {
+            int arrayIndex = slotPosition - 1;
+            if (arrayIndex < m_realTraySlots.size()) {
+                m_realTraySlots[arrayIndex] = vehicleName;
+                loadedCount++;
+                qDebug() << "加载可视化记录: 槽位" << slotPosition << "=" << vehicleName;
+            }
+        }
+    }
+    
+    qDebug() << "从数据库加载了" << loadedCount << "条可视化记录";
+    appendToLog(QString("从数据库加载了%1条可视化记录").arg(loadedCount), false);
+    
+    // 更新标签显示（确保标签数组已创建）
+    qDebug() << "标签数组大小:" << m_realTrayLabels.size();
+    if (m_realTrayLabels.size() >= 12) {
+        for (int i = 0; i < 10 && i < m_realTraySlots.size(); ++i) {
+            int labelIndex = i + 1; // 标签索引从1开始（跳过入口标签0）
+            if (labelIndex < m_realTrayLabels.size() && m_realTrayLabels[labelIndex]) {
+                m_realTrayLabels[labelIndex]->setText(m_realTraySlots[i]);
+                if (!m_realTraySlots[i].isEmpty()) {
+                    qDebug() << "更新标签" << labelIndex << "(槽位" << (i + 1) << ")=" << m_realTraySlots[i];
+                }
+            }
+        }
+        
+        // 检查最后一个槽是否有内容，如果有则显示在出口
+        if (m_realTraySlots.size() > 9 && !m_realTraySlots[9].isEmpty() && 
+            m_realTrayLabels.size() > 11 && m_realTrayLabels[11]) {
+            m_realTrayLabels[11]->setText("出口\n" + m_realTraySlots[9]);
+            qDebug() << "更新出口标签=" << m_realTraySlots[9];
+        } else if (m_realTrayLabels.size() > 11 && m_realTrayLabels[11]) {
+            // 确保出口标签显示"出口"
+            m_realTrayLabels[11]->setText("出口");
+        }
+    } else {
+        qWarning() << "标签数组未完全初始化，大小=" << m_realTrayLabels.size() << "，期望>=12";
+        appendToLog(QString("标签数组未完全初始化，大小=%1，期望>=12").arg(m_realTrayLabels.size()), true);
+    }
+    
+    qDebug() << "可视化记录已从数据库加载";
+}
+
+/**
+ * @brief 保存连接配置到数据库
+ * @param configType 配置类型（"plc" 或 "server"）
+ * @param ip IP地址
+ * @param port 端口号
+ */
+void tcpClient::saveConnectionConfig(const QString &configType, const QString &ip, int port)
+{
+    // 检查数据库是否已打开
+    QSqlDatabase db = QSqlDatabase::database();
+    if (!db.isOpen()) {
+        qDebug() << "数据库未打开，跳过保存连接配置";
+        return;
+    }
+    
+    QSqlQuery query;
+    
+    // 先删除该类型的旧配置
+    query.prepare("DELETE FROM connection_configs WHERE config_type = ?");
+    query.addBindValue(configType);
+    if (!query.exec()) {
+        appendToLog(QString("删除旧连接配置失败: %1").arg(query.lastError().text()), true);
+        return;
+    }
+    
+    // 插入新配置
+    QString currentTime = QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss");
+    query.prepare("INSERT INTO connection_configs (config_type, ip_address, port, update_time) VALUES (?, ?, ?, ?)");
+    query.addBindValue(configType);
+    query.addBindValue(ip);
+    query.addBindValue(port);
+    query.addBindValue(currentTime);
+    
+    if (!query.exec()) {
+        appendToLog(QString("保存连接配置失败: %1").arg(query.lastError().text()), true);
+    } else {
+        appendToLog(QString("连接配置已保存: %1 - %2:%3").arg(configType).arg(ip).arg(port), false);
+    }
+}
+
+/**
+ * @brief 从数据库加载连接配置
+ */
+void tcpClient::loadConnectionConfig()
+{
+    // 检查数据库是否已打开
+    QSqlDatabase db = QSqlDatabase::database();
+    if (!db.isOpen()) {
+        qDebug() << "数据库未打开，跳过加载连接配置";
+        return;
+    }
+    
+    QSqlQuery query("SELECT config_type, ip_address, port FROM connection_configs");
+    
+    if (query.lastError().isValid()) {
+        qDebug() << "查询连接配置失败:" << query.lastError().text();
+        return;
+    }
+    
+    while (query.next()) {
+        QString configType = query.value(0).toString();
+        QString ip = query.value(1).toString();
+        int port = query.value(2).toInt();
+        
+        if (configType == "plc") {
+            // 加载PLC连接配置
+            if (!ip.isEmpty()) {
+                ui->lineEditServerIP->setText(ip);
+            }
+            if (port > 0) {
+                ui->lineEditPort->setText(QString::number(port));
+            }
+        } else if (configType == "server") {
+            // 加载服务端连接配置
+            if (!ip.isEmpty() && lineEditServerIP) {
+                lineEditServerIP->setText(ip);
+            }
+            if (port > 0 && lineEditServerPort) {
+                lineEditServerPort->setText(QString::number(port));
+            }
+        }
+    }
+    
+    qDebug() << "连接配置已从数据库加载";
+}
+
+/**
+ * @brief 保存PLC连接配置按钮点击处理
+ */
+void tcpClient::onSavePlcConnectionConfigClicked()
+{
+    QString ip = ui->lineEditServerIP->text().trimmed();
+    QString portStr = ui->lineEditPort->text().trimmed();
+    
+    // 验证输入
+    if (ip.isEmpty()) {
+        QMessageBox::warning(this, "配置错误", "PLC服务器IP地址不能为空！");
+        return;
+    }
+    
+    bool ok;
+    int port = portStr.toInt(&ok);
+    if (!ok || port <= 0 || port > 65535) {
+        QMessageBox::warning(this, "配置错误", "端口号必须是1-65535之间的数字！");
+        return;
+    }
+    
+    // 保存到数据库
+    saveConnectionConfig("plc", ip, port);
+    QMessageBox::information(this, "保存成功", QString("PLC连接配置已保存！\n\nIP: %1\n端口: %2").arg(ip).arg(port));
+}
+
+/**
+ * @brief 保存服务端连接配置按钮点击处理
+ */
+void tcpClient::onSaveServerConnectionConfigClicked()
+{
+    if (!lineEditServerIP || !lineEditServerPort) {
+        QMessageBox::warning(this, "错误", "服务端连接设置未初始化！");
+        return;
+    }
+    
+    QString ip = lineEditServerIP->text().trimmed();
+    QString portStr = lineEditServerPort->text().trimmed();
+    
+    // 验证输入
+    if (ip.isEmpty()) {
+        QMessageBox::warning(this, "配置错误", "服务端IP地址不能为空！");
+        return;
+    }
+    
+    bool ok;
+    int port = portStr.toInt(&ok);
+    if (!ok || port <= 0 || port > 65535) {
+        QMessageBox::warning(this, "配置错误", "端口号必须是1-65535之间的数字！");
+        return;
+    }
+    
+    // 保存到数据库
+    saveConnectionConfig("server", ip, port);
+    QMessageBox::information(this, "保存成功", QString("服务端连接配置已保存！\n\nIP: %1\n端口: %2").arg(ip).arg(port));
+}
+
+/**
+ * @brief 服务端连接按钮点击处理
+ */
+void tcpClient::onServerConnectClicked()
+{
+    if (!lineEditServerIP || !lineEditServerPort) {
+        QMessageBox::warning(this, "错误", "服务端连接设置未初始化！");
+        return;
+    }
+    
+    QString serverIP = lineEditServerIP->text().trimmed();
+    QString portStr = lineEditServerPort->text().trimmed();
+
+    qInfo() << "用户尝试连接服务端:" << serverIP << ":" << portStr;
+
+    // 验证IP地址
+    if (serverIP.isEmpty()) {
+        QString errorMsg = "请输入服务端IP地址";
+        QMessageBox::warning(this, "警告", errorMsg);
+        qWarning() << errorMsg;
+        return;
+    }
+
+    // 验证端口号
+    bool ok;
+    int port = portStr.toInt(&ok);
+    if (!ok || port <= 0 || port > 65535) {
+        QString errorMsg = "请输入有效的端口号(1-65535)";
+        QMessageBox::warning(this, "警告", errorMsg);
+        qWarning() << errorMsg << "输入值:" << portStr;
+        return;
+    }
+
+    // 开始连接
+    QString connectMsg = QString("正在连接到服务端 %1:%2...").arg(serverIP).arg(port);
+    appendToLog(connectMsg);
+    qInfo() << connectMsg;
+
+    m_serverSocket->connectToHost(serverIP, port);
+    m_serverConnectionTimer->start();
+
+    pushButtonServerConnect->setEnabled(false);
+}
+
+/**
+ * @brief 服务端断开按钮点击处理
+ */
+void tcpClient::onServerDisconnectClicked()
+{
+    if (m_serverSocket->state() == QAbstractSocket::ConnectedState) {
+        m_serverSocket->disconnectFromHost();
+        appendToLog("正在断开服务端连接...");
+    }
+}
+
+/**
+ * @brief 服务端Socket连接成功处理
+ */
+void tcpClient::onServerSocketConnected()
+{
+    m_serverConnectionTimer->stop();
+    m_isServerConnected = true;
+    updateServerConnectionStatus(true);
+
+    QString successMsg = "服务端连接成功！";
+    appendToLog(successMsg, false);
+    qInfo() << successMsg << "服务端地址:" << m_serverSocket->peerAddress().toString() << "端口:" << m_serverSocket->peerPort();
+}
+
+/**
+ * @brief 服务端Socket断开连接处理
+ */
+void tcpClient::onServerSocketDisconnected()
+{
+    m_serverConnectionTimer->stop();
+    m_isServerConnected = false;
+    updateServerConnectionStatus(false);
+    appendToLog("服务端连接已断开", false);
+}
+
+/**
+ * @brief 服务端Socket错误处理
+ * @param error 错误类型
+ */
+void tcpClient::onServerSocketError(QAbstractSocket::SocketError error)
+{
+    m_serverConnectionTimer->stop();
+    m_isServerConnected = false;
+    updateServerConnectionStatus(false);
+
+    QString errorMsg = m_serverSocket->errorString();
+    appendToLog(QString("服务端连接错误: %1").arg(errorMsg), true);
+}
+
+/**
+ * @brief 服务端Socket数据可读处理
+ */
+void tcpClient::onServerSocketReadyRead()
+{
+    QByteArray data = m_serverSocket->readAll();
+    appendToLog(QString("收到服务端数据: %1 字节").arg(data.size()), false);
+    qDebug() << "服务端数据:" << data;
+    
+    // 处理JSON数据
+    processServerJsonData(data);
+}
+
+/**
+ * @brief 服务端连接超时处理
+ */
+void tcpClient::onServerConnectionTimeout()
+{
+    m_serverSocket->abort();
+    appendToLog("服务端连接超时", true);
+    updateServerConnectionStatus(false);
+}
+
+/**
+ * @brief 更新服务端连接状态显示
+ * @param connected 连接状态
+ */
+void tcpClient::updateServerConnectionStatus(bool connected)
+{
+    if (!labelServerConnectionStatus || !pushButtonServerConnect || !pushButtonServerDisconnect) {
+        return;
+    }
+    
+    if (connected) {
+        labelServerConnectionStatus->setText("已连接");
+        pushButtonServerConnect->setEnabled(false);
+        pushButtonServerDisconnect->setEnabled(true);
+        if (lineEditServerIP) lineEditServerIP->setEnabled(false);
+        if (lineEditServerPort) lineEditServerPort->setEnabled(false);
+    } else {
+        labelServerConnectionStatus->setText("未连接");
+        pushButtonServerConnect->setEnabled(true);
+        pushButtonServerDisconnect->setEnabled(false);
+        if (lineEditServerIP) lineEditServerIP->setEnabled(true);
+        if (lineEditServerPort) lineEditServerPort->setEnabled(true);
+    }
+}
+
+/**
+ * @brief 处理服务端JSON数据
+ */
+void tcpClient::processServerJsonData(const QByteArray &data)
+{
+    // 清理数据：移除可能的控制字符和空白字符
+    QByteArray cleanedData = data;
+    
+    // 移除开头的反引号、单引号或其他控制字符
+    while (!cleanedData.isEmpty()) {
+        char firstChar = cleanedData[0];
+        if (firstChar == '`' || firstChar == '\'' || firstChar == '\0' || 
+            (firstChar < 0x20 && firstChar != '\n' && firstChar != '\r' && firstChar != '\t')) {
+            cleanedData.remove(0, 1);
+        } else {
+            break;
+        }
+    }
+    
+    // 移除末尾的控制字符
+    while (!cleanedData.isEmpty()) {
+        char lastChar = cleanedData[cleanedData.size() - 1];
+        if (lastChar == '\0' || (lastChar < 0x20 && lastChar != '\n' && lastChar != '\r' && lastChar != '\t')) {
+            cleanedData.remove(cleanedData.size() - 1, 1);
+        } else {
+            break;
+        }
+    }
+    
+    // 转换为QString，尝试使用UTF-8编码
+    QString jsonString = QString::fromUtf8(cleanedData);
+    
+    // 如果UTF-8解析失败或包含乱码，尝试使用本地编码（Windows中文系统通常是GBK）
+    if (jsonString.contains(QChar::ReplacementCharacter) || 
+        (jsonString.isEmpty() && !cleanedData.isEmpty())) {
+        // 尝试使用本地编码（在Windows中文系统上通常是GBK）
+        jsonString = QString::fromLocal8Bit(cleanedData);
+        qDebug() << "使用本地编码解析JSON数据";
+        
+        // 如果本地编码也失败，尝试直接使用Latin1然后转换
+        if (jsonString.contains(QChar::ReplacementCharacter)) {
+            jsonString = QString::fromLatin1(cleanedData);
+            qDebug() << "使用Latin1编码解析JSON数据";
+        }
+    }
+    
+    // 记录清理后的数据用于调试
+    qDebug() << "清理后的JSON数据:" << jsonString;
+    qDebug() << "清理后的JSON数据(hex):" << cleanedData.toHex(' ');
+    
+    QJsonParseError error;
+    QJsonDocument doc = QJsonDocument::fromJson(jsonString.toUtf8(), &error);
+    
+    if (error.error != QJsonParseError::NoError) {
+        // 尝试直接使用原始数据解析
+        QJsonParseError error2;
+        QJsonDocument doc2 = QJsonDocument::fromJson(cleanedData, &error2);
+        
+        if (error2.error == QJsonParseError::NoError) {
+            doc = doc2;
+            error = error2;
+        } else {
+            appendToLog(QString("JSON解析错误: %1, 错误位置: %2").arg(error.errorString()).arg(error.offset), true);
+            appendToLog(QString("原始数据长度: %1 字节").arg(data.size()), true);
+            appendToLog(QString("清理后数据长度: %1 字节").arg(cleanedData.size()), true);
+            appendToLog(QString("清理后数据(前100字符): %1").arg(jsonString.left(100)), true);
+            return;
+        }
+    }
+    
+    if (!doc.isObject()) {
+        appendToLog("JSON数据格式错误: 不是对象", true);
+        return;
+    }
+    
+    QJsonObject obj = doc.object();
+    QString instructionType = obj.value("instructionType").toString();
+    
+    // 只处理"AGT滑槽指令"
+    if (instructionType != "AGT滑槽指令") {
+        appendToLog(QString("忽略非AGT滑槽指令: %1").arg(instructionType), false);
+        return;
+    }
+    
+    QString status = obj.value("status").toString();
+    QString modelName = obj.value("modelName").toString();
+    QString modelCode = obj.value("modelCode").toString();
+    int slotNumber = obj.value("slotNumber").toInt();
+    QString timestamp = obj.value("timestamp").toString();
+    
+    appendToLog(QString("收到AGT滑槽指令: 状态=%1, 车型=%2, 车型代码=%3, 槽位=%4")
+                .arg(status).arg(modelName).arg(modelCode).arg(slotNumber), false);
+    
+    // 根据状态处理
+    if (status == "实托盘搬入") {
+        handleRealTrayIn(modelName);
+    } else if (status == "空托盘搬出") {
+        handleEmptyTrayOut(modelName);
+    } else {
+        appendToLog(QString("未处理的状态: %1").arg(status), false);
+    }
+}
+
+/**
+ * @brief 处理实托盘搬入
+ * 从出口开始向前查找，找到最靠近出口且不为空的槽位，匹配该位置的车型
+ * 如果匹配就清空该槽位，不匹配则跳过
+ * 因为这是按顺序出的，所以只检查最靠近出口且不为空的位置
+ */
+void tcpClient::handleRealTrayIn(const QString &modelName)
+{
+    QString trimmedModel = modelName.trimmed();
+    
+    // 首先检查出口标签（索引11），这是最靠近出口的位置
+    if (m_realTrayLabels.size() > 11 && m_realTrayLabels[11]) {
+        QString exitText = m_realTrayLabels[11]->text().trimmed();
+        // 如果出口标签包含车型信息（格式可能是"出口\n车型"或只有车型）
+        if (!exitText.isEmpty() && exitText != "出口") {
+            // 提取车型名称（去除"出口"前缀）
+            QString vehicleName = exitText;
+            if (vehicleName.startsWith("出口")) {
+                vehicleName = vehicleName.mid(vehicleName.indexOf("\n") + 1).trimmed();
+            }
+            
+            if (!vehicleName.isEmpty()) {
+                // 找到最靠近出口且不为空的位置（出口标签）
+                if (vehicleName == trimmedModel) {
+                    // 匹配成功，清空出口标签
+                    m_realTrayLabels[11]->setText("出口");
+                    // 清空对应的数组（最后一个槽位，索引9）
+                    m_realTraySlots[9] = "";
+                    saveVisualizationRecords();
+                    appendToLog(QString("实托盘搬入: 匹配到出口的车型%1，已清空").arg(modelName), false);
+                    return;
+                } else {
+                    // 出口位置的车型不匹配，直接跳过
+                    appendToLog(QString("实托盘搬入: 最靠近出口的车型%1与%2不匹配，跳过").arg(vehicleName).arg(modelName), false);
+                    return;
+                }
+            }
+        }
+    }
+    
+    // 如果出口标签为空，从槽位10开始向前查找，找到第一个不为空的槽位
+    // 从标签读取数据，确保与显示一致
+    for (int i = 9; i >= 0; --i) {
+        int labelIndex = i + 1; // 标签索引 = 数组索引 + 1（标签0是入口）
+        
+        if (labelIndex < m_realTrayLabels.size() && m_realTrayLabels[labelIndex]) {
+            QString labelText = m_realTrayLabels[labelIndex]->text().trimmed();
+            
+            // 如果标签不为空，说明该槽位有车型
+            if (!labelText.isEmpty()) {
+                // 找到最靠近出口且不为空的槽位
+                appendToLog(QString("实托盘搬入: 找到最靠近出口的槽位%1，车型=%2").arg(i + 1).arg(labelText), false);
+                
+                if (labelText == trimmedModel) {
+                    // 匹配成功，清空该槽位
+                    m_realTraySlots[i] = "";
+                    m_realTrayLabels[labelIndex]->setText("");
+                    
+                    // 保存到数据库
+                    saveVisualizationRecords();
+                    
+                    appendToLog(QString("实托盘搬入: 匹配到槽位%1的车型%2，已清空").arg(i + 1).arg(modelName), false);
+                    return;
+                } else {
+                    // 最靠近出口且不为空的槽位车型不匹配，直接跳过
+                    appendToLog(QString("实托盘搬入: 最靠近出口的槽位%1的车型%2与%3不匹配，跳过").arg(i + 1).arg(labelText).arg(modelName), false);
+                    return;
+                }
+            }
+        }
+    }
+    
+    // 如果所有槽位都为空，说明没有车型，直接跳过
+    appendToLog(QString("实托盘搬入: 所有槽位为空，无法匹配车型%1，跳过").arg(modelName), false);
+}
+
+/**
+ * @brief 处理空托盘搬入
+ * 从出口开始向前查找，找到最靠近出口且不为空的空托盘槽位，匹配该位置的车型
+ * 如果匹配就清空该槽位，不匹配则跳过
+ * 因为这是按顺序出的，所以只检查最靠近出口且不为空的位置
+ */
+void tcpClient::handleEmptyTrayIn(const QString &modelName)
+{
+    QString trimmedModel = modelName.trimmed();
+    
+    // 首先检查出口标签（索引11），这是最靠近出口的位置
+    if (m_emptyTrayLabels.size() > 11 && m_emptyTrayLabels[11]) {
+        QString exitText = m_emptyTrayLabels[11]->text().trimmed();
+        // 如果出口标签包含车型信息（格式可能是"出口\n车型"或只有车型）
+        if (!exitText.isEmpty() && exitText != "出口") {
+            // 提取车型名称（去除"出口"前缀）
+            QString vehicleName = exitText;
+            if (vehicleName.startsWith("出口")) {
+                vehicleName = vehicleName.mid(vehicleName.indexOf("\n") + 1).trimmed();
+            }
+            
+            if (!vehicleName.isEmpty()) {
+                // 找到最靠近出口且不为空的位置（出口标签）
+                appendToLog(QString("空托盘搬入: 找到最靠近出口的出口标签，车型=%1").arg(vehicleName), false);
+                
+                if (vehicleName == trimmedModel) {
+                    // 匹配成功，清空出口标签
+                    m_emptyTrayLabels[11]->setText("出口");
+                    // 清空对应的数组（最后一个槽位，索引9）
+                    m_emptyTraySlots[9] = "";
+                    saveEmptyTrayVisualizationRecords();
+                    appendToLog(QString("空托盘搬入: 匹配到出口的车型%1，已清空").arg(modelName), false);
+                    return;
+                } else {
+                    // 出口位置的车型不匹配，直接跳过
+                    appendToLog(QString("空托盘搬入: 最靠近出口的车型%1与%2不匹配，跳过").arg(vehicleName).arg(modelName), false);
+                    return;
+                }
+            }
+        }
+    }
+    
+    // 如果出口标签为空，从槽位10开始向前查找，找到第一个不为空的槽位
+    // 从标签读取数据，确保与显示一致
+    for (int i = 9; i >= 0; --i) {
+        int labelIndex = i + 1; // 标签索引 = 数组索引 + 1（标签0是入口）
+        
+        if (labelIndex < m_emptyTrayLabels.size() && m_emptyTrayLabels[labelIndex]) {
+            QString labelText = m_emptyTrayLabels[labelIndex]->text().trimmed();
+            
+            // 如果标签不为空，说明该槽位有车型
+            if (!labelText.isEmpty()) {
+                // 找到最靠近出口且不为空的槽位
+                appendToLog(QString("空托盘搬入: 找到最靠近出口的槽位%1，车型=%2").arg(i + 1).arg(labelText), false);
+                
+                if (labelText == trimmedModel) {
+                    // 匹配成功，清空该槽位
+                    m_emptyTraySlots[i] = "";
+                    m_emptyTrayLabels[labelIndex]->setText("");
+                    
+                    // 保存到数据库
+                    saveEmptyTrayVisualizationRecords();
+                    
+                    appendToLog(QString("空托盘搬入: 匹配到槽位%1的车型%2，已清空").arg(i + 1).arg(modelName), false);
+                    return;
+                } else {
+                    // 最靠近出口且不为空的槽位车型不匹配，直接跳过
+                    appendToLog(QString("空托盘搬入: 最靠近出口的槽位%1的车型%2与%3不匹配，跳过").arg(i + 1).arg(labelText).arg(modelName), false);
+                    return;
+                }
+            }
+        }
+    }
+    
+    // 如果所有槽位都为空，说明没有车型，直接跳过
+    appendToLog(QString("空托盘搬入: 所有槽位为空，无法匹配车型%1，跳过").arg(modelName), false);
+}
+
+/**
+ * @brief 处理空托盘搬出
+ * 在空托盘记录最靠近入口的槽位增加当前车型，然后其余车型往前推进一个
+ */
+void tcpClient::handleEmptyTrayOut(const QString &modelName)
+{
+    // 先检查是否有任何槽位有内容，如果有就需要推进
+    bool hasContent = false;
+    for (int i = 0; i < m_emptyTraySlots.size(); ++i) {
+        if (!m_emptyTraySlots[i].isEmpty()) {
+            hasContent = true;
+            break;
+        }
+    }
+    
+    // 如果有内容，先推进所有车型
+    if (hasContent) {
+        advanceEmptyTrayVisualization();
+    }
+    
+    // 在第一个槽位（索引0）添加新车型
+    m_emptyTraySlots[0] = modelName;
+    
+    // 更新标签显示（槽位1对应标签索引1，因为标签0是入口）
+    if (1 < m_emptyTrayLabels.size()) {
+        m_emptyTrayLabels[1]->setText(modelName);
+    }
+    
+    appendToLog(QString("空托盘搬出: 车型%1已添加到槽位1%2").arg(modelName).arg(hasContent ? "（已推进）" : ""), false);
+    
+    // 保存到数据库
+    saveEmptyTrayVisualizationRecords();
+}
+
+/**
+ * @brief 推进空托盘可视化显示
+ * 将所有车型向右推进一个位置（从入口向出口方向）
+ */
+void tcpClient::advanceEmptyTrayVisualization()
+{
+    // 如果最后一个槽位（索引9）有内容，先移动到出口（标签索引11）
+    if (!m_emptyTraySlots[9].isEmpty()) {
+        if (11 < m_emptyTrayLabels.size() && m_emptyTrayLabels[11]) {
+            m_emptyTrayLabels[11]->setText("出口\n" + m_emptyTraySlots[9]);
+        }
+    }
+    
+    // 从右到左推进（从索引9到1），每个位置的内容移动到下一个位置
+    // 这样索引0的内容会移动到索引1，索引1的内容会移动到索引2，以此类推
+    for (int i = 9; i >= 1; --i) {
+        m_emptyTraySlots[i] = m_emptyTraySlots[i - 1];
+    }
+    
+    // 清空第一个槽位（索引0），准备放入新车型
+    m_emptyTraySlots[0] = "";
+    
+    // 更新所有标签显示（槽位1-10对应标签索引1-10）
+    for (int i = 0; i < 10; ++i) {
+        if (i + 1 < m_emptyTrayLabels.size() && m_emptyTrayLabels[i + 1]) {
+            m_emptyTrayLabels[i + 1]->setText(m_emptyTraySlots[i]);
+        }
+    }
+    
+    // 如果最后一个槽位（索引9）现在为空，清空出口标签
+    if (m_emptyTraySlots[9].isEmpty() && 11 < m_emptyTrayLabels.size() && m_emptyTrayLabels[11]) {
+        m_emptyTrayLabels[11]->setText("出口");
+    }
+}
+
+/**
+ * @brief 保存空托盘可视化记录到数据库
+ */
+void tcpClient::saveEmptyTrayVisualizationRecords()
+{
+    // 检查数据库是否已打开
+    QSqlDatabase db = QSqlDatabase::database();
+    if (!db.isOpen()) {
+        qDebug() << "数据库未打开，跳过保存空托盘可视化记录";
+        return;
+    }
+    
+    QSqlQuery query;
+    
+    // 先清空旧记录
+    if (!query.exec("DELETE FROM empty_tray_visualization_records")) {
+        appendToLog("清空空托盘可视化记录表失败: " + query.lastError().text(), true);
+        return;
+    }
+    
+    // 插入当前所有槽位的记录
+    QString currentTime = QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss");
+    query.prepare("INSERT INTO empty_tray_visualization_records (slot_position, vehicle_name, update_time) VALUES (?, ?, ?)");
+    
+    for (int i = 0; i < m_emptyTraySlots.size(); ++i) {
+        if (!m_emptyTraySlots[i].isEmpty()) {
+            query.addBindValue(i + 1); // 槽位位置（1-10）
+            query.addBindValue(m_emptyTraySlots[i]);
+            query.addBindValue(currentTime);
+            if (!query.exec()) {
+                appendToLog(QString("保存空托盘可视化记录失败（槽位%1）: %2").arg(i + 1).arg(query.lastError().text()), true);
+            }
+        }
+    }
+    
+    qDebug() << "空托盘可视化记录已保存到数据库";
+}
+
+/**
+ * @brief 从数据库加载空托盘可视化记录
+ */
+void tcpClient::loadEmptyTrayVisualizationRecords()
+{
+    // 检查数据库是否已打开
+    QSqlDatabase db = QSqlDatabase::database();
+    if (!db.isOpen()) {
+        qDebug() << "数据库未打开，跳过加载空托盘可视化记录";
+        return;
+    }
+    
+    // 确保数组已初始化
+    if (m_emptyTraySlots.size() != 10) {
+        m_emptyTraySlots.resize(10);
+        for (int i = 0; i < 10; ++i) {
+            m_emptyTraySlots[i] = "";
+        }
+    }
+    
+    // 先清空当前数组
+    for (int i = 0; i < m_emptyTraySlots.size(); ++i) {
+        m_emptyTraySlots[i] = "";
+    }
+    
+    QSqlQuery query("SELECT slot_position, vehicle_name FROM empty_tray_visualization_records ORDER BY slot_position");
+    
+    if (query.lastError().isValid()) {
+        qDebug() << "查询空托盘可视化记录失败:" << query.lastError().text();
         return;
     }
     
@@ -2619,27 +3564,24 @@ void tcpClient::loadVisualizationRecords()
         // 槽位位置是1-10，数组索引是0-9
         if (slotPosition >= 1 && slotPosition <= 10) {
             int arrayIndex = slotPosition - 1;
-            if (arrayIndex < m_realTraySlots.size()) {
-                m_realTraySlots[arrayIndex] = vehicleName;
+            if (arrayIndex < m_emptyTraySlots.size()) {
+                m_emptyTraySlots[arrayIndex] = vehicleName;
             }
         }
     }
     
-    // 更新标签显示（确保标签数组已创建）
-    if (m_realTrayLabels.size() >= 12) {
-        for (int i = 0; i < 10 && i < m_realTraySlots.size(); ++i) {
-            int labelIndex = i + 1; // 标签索引从1开始（跳过入口标签0）
-            if (labelIndex < m_realTrayLabels.size() && m_realTrayLabels[labelIndex]) {
-                m_realTrayLabels[labelIndex]->setText(m_realTraySlots[i]);
-            }
-        }
-        
-        // 检查最后一个槽是否有内容，如果有则显示在出口
-        if (m_realTraySlots.size() > 9 && !m_realTraySlots[9].isEmpty() && 
-            m_realTrayLabels.size() > 11 && m_realTrayLabels[11]) {
-            m_realTrayLabels[11]->setText("出口\n" + m_realTraySlots[9]);
+    // 更新标签显示（槽位1-10对应标签索引1-10，因为标签0是入口）
+    for (int i = 0; i < 10; ++i) {
+        if (i + 1 < m_emptyTrayLabels.size()) {
+            m_emptyTrayLabels[i + 1]->setText(m_emptyTraySlots[i]);
         }
     }
     
-    qDebug() << "可视化记录已从数据库加载";
+    // 如果最后一个槽位（索引9）有内容，也显示在出口（标签索引11）
+    if (!m_emptyTraySlots[9].isEmpty() && 11 < m_emptyTrayLabels.size()) {
+        m_emptyTrayLabels[11]->setText(m_emptyTraySlots[9]);
+    }
+    
+    qDebug() << "空托盘可视化记录已从数据库加载";
 }
+

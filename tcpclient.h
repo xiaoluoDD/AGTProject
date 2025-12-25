@@ -18,6 +18,8 @@
 #include <QStandardPaths>
 #include <QMap>
 #include <QVector>
+#include <QGroupBox>
+#include <QLineEdit>
 
 // 前向声明
 class QTableWidgetItem;
@@ -84,6 +86,11 @@ private slots:
     void onSocketError(QAbstractSocket::SocketError error); ///< Socket错误处理
     void onSocketReadyRead();     ///< Socket数据可读处理
     void onConnectionTimeout();   ///< 连接超时处理
+    void onServerSocketConnected();     ///< 服务端Socket连接成功处理
+    void onServerSocketDisconnected();  ///< 服务端Socket断开连接处理
+    void onServerSocketError(QAbstractSocket::SocketError error); ///< 服务端Socket错误处理
+    void onServerSocketReadyRead();     ///< 服务端Socket数据可读处理
+    void onServerConnectionTimeout();   ///< 服务端连接超时处理
 
     // 密码管理槽函数
     void onSetPasswordClicked();  ///< 设置密码按钮点击处理
@@ -91,6 +98,12 @@ private slots:
     // 数据库配置槽函数
     void onSaveDatabaseConfigClicked(); ///< 保存数据库配置按钮点击处理
     void onTestDatabaseConnectionClicked(); ///< 测试数据库连接按钮点击处理
+    
+    // 连接配置槽函数
+    void onSavePlcConnectionConfigClicked(); ///< 保存PLC连接配置按钮点击处理
+    void onSaveServerConnectionConfigClicked(); ///< 保存服务端连接配置按钮点击处理
+    void onServerConnectClicked(); ///< 服务端连接按钮点击处理
+    void onServerDisconnectClicked(); ///< 服务端断开按钮点击处理
 
 private:
     // UI和状态管理
@@ -127,6 +140,16 @@ private:
     void clearDataRecords();
     void saveVisualizationRecords(); ///< 保存可视化记录到数据库
     void loadVisualizationRecords(); ///< 从数据库加载可视化记录
+    void saveConnectionConfig(const QString &configType, const QString &ip, int port); ///< 保存连接配置到数据库
+    void loadConnectionConfig(); ///< 从数据库加载连接配置
+    void updateServerConnectionStatus(bool connected); ///< 更新服务端连接状态显示
+    void processServerJsonData(const QByteArray &data); ///< 处理服务端JSON数据
+    void handleRealTrayIn(const QString &modelName); ///< 处理实托盘搬入
+    void handleEmptyTrayIn(const QString &modelName); ///< 处理空托盘搬入
+    void handleEmptyTrayOut(const QString &modelName); ///< 处理空托盘搬出
+    void advanceEmptyTrayVisualization(); ///< 推进空托盘可视化显示
+    void saveEmptyTrayVisualizationRecords(); ///< 保存空托盘可视化记录到数据库
+    void loadEmptyTrayVisualizationRecords(); ///< 从数据库加载空托盘可视化记录
 
     // 密码管理函数
     void initPasswordTable();     ///< 初始化密码表
@@ -148,9 +171,12 @@ private:
 
 private:
     Ui::tcpClient *ui;            ///< UI界面指针
-    QTcpSocket *m_socket;         ///< TCP Socket对象
-    QTimer *m_connectionTimer;    ///< 连接超时定时器
-    bool m_isConnected;           ///< 连接状态标志
+    QTcpSocket *m_socket;         ///< PLC TCP Socket对象
+    QTcpSocket *m_serverSocket;  ///< 服务端 TCP Socket对象
+    QTimer *m_connectionTimer;    ///< PLC连接超时定时器
+    QTimer *m_serverConnectionTimer; ///< 服务端连接超时定时器
+    bool m_isConnected;           ///< PLC连接状态标志
+    bool m_isServerConnected;     ///< 服务端连接状态标志
     int m_fullTrayCount;          ///< 满托盘时数量
     QDateTime m_lastStatus1Time;  ///< 旧版本兼容，已废弃
     QDateTime m_lastStatus2Time; ///< 旧版本兼容，已废弃
@@ -161,6 +187,15 @@ private:
     QVector<QLabel*> m_realTrayLabels; ///< 实滑槽标签（12个）
     QVector<QLabel*> m_emptyTrayLabels; ///< 空滑槽标签（12个）
     QVector<QString> m_realTraySlots; ///< 实滑槽每个位置显示的车型名称（10个槽位，位置1-10）
+    QVector<QString> m_emptyTraySlots; ///< 空滑槽每个位置显示的车型名称（10个槽位，位置1-10）
+    QGroupBox* groupBoxServerConnection; ///< 服务端连接设置GroupBox
+    QLineEdit* lineEditServerIP; ///< 服务端IP输入框
+    QLineEdit* lineEditServerPort; ///< 服务端端口输入框
+    QPushButton* pushButtonSavePlcConfig; ///< 保存PLC连接配置按钮
+    QPushButton* pushButtonSaveServerConfig; ///< 保存服务端连接配置按钮
+    QPushButton* pushButtonServerConnect; ///< 服务端连接按钮
+    QPushButton* pushButtonServerDisconnect; ///< 服务端断开按钮
+    QLabel* labelServerConnectionStatus; ///< 服务端连接状态标签
     QString m_password;           ///< 存储的密码
     bool m_isPasswordSet;         ///< 密码是否已设置
     
