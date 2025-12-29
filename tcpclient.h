@@ -157,9 +157,10 @@ private:
     void updateServerConnectionStatus(bool connected); ///< 更新服务端连接状态显示
     void processServerJsonData(const QByteArray &data); ///< 处理服务端JSON数据
     void handleRealTrayIn(const QString &modelName, int slotNumber = -1); ///< 处理实托盘搬入，slotNumber为-1时使用原逻辑，否则根据slotNumber确定位置
-    void handleEmptyTrayIn(const QString &modelName); ///< 处理空托盘搬入
-    void handleEmptyTrayOut(const QString &modelName); ///< 处理空托盘搬出
+    void handleEmptyTrayIn(const QString &modelName, int slotNo = -1); ///< 处理空托盘搬入，slotNo为-1时使用原逻辑，否则根据slotNo确定位置
+    void handleEmptyTrayOut(const QString &modelName, int slotNumber = -1); ///< 处理空托盘搬出，slotNumber为-1时使用原逻辑，否则根据slotNumber确定位置
     void advanceEmptyTrayVisualization(); ///< 推进空托盘可视化显示
+    void advanceEmptyTrayVisualizationBy3(); ///< 推进空托盘可视化显示3个位置
     void saveEmptyTrayVisualizationRecords(); ///< 保存空托盘可视化记录到数据库
     void loadEmptyTrayVisualizationRecords(); ///< 从数据库加载空托盘可视化记录
 
@@ -223,6 +224,9 @@ private:
     // 实托盘批次处理相关
     int m_realTrayBatchCount;     ///< 当前批次已搬入的车型数量（0-3），0表示新批次开始
     QDateTime m_lastRealTrayOutTime; ///< 最后一次实托盘搬出的时间
+    
+    // 空托盘批次处理相关
+    int m_emptyTrayBatchCount;    ///< 当前批次已搬出的车型数量（0-3），0表示新批次开始
     
     // 数据库配置
     QString m_dbHost;             ///< 数据库主机地址
