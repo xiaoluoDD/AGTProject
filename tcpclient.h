@@ -126,8 +126,9 @@ private:
     // 数据处理
     void sendData(const QByteArray &data); ///< 发送数据到服务器
     void processHexData(const QByteArray &data); ///< 处理16进制数据
-    void updateVisualization(const QString &vehicleName, bool isRealTray); ///< 更新可视化界面
+    void updateVisualization(const QString &vehicleName, bool isRealTray, int slotIndex = -1); ///< 更新可视化界面，slotIndex为-1时使用批次计数，0-2时直接指定位置
     void advanceVisualization(); ///< 推进可视化显示
+    void advanceVisualizationBy3(); ///< 推进可视化显示3个位置
     void addDataToTable(int status1, unsigned int value1, unsigned int value2,
                         int status2, unsigned int value3, unsigned int value4,
                         const QString &currentTime); ///< 添加数据到表格
@@ -155,7 +156,7 @@ private:
     void loadConnectionConfig(); ///< 从数据库加载连接配置
     void updateServerConnectionStatus(bool connected); ///< 更新服务端连接状态显示
     void processServerJsonData(const QByteArray &data); ///< 处理服务端JSON数据
-    void handleRealTrayIn(const QString &modelName); ///< 处理实托盘搬入
+    void handleRealTrayIn(const QString &modelName, int slotNumber = -1); ///< 处理实托盘搬入，slotNumber为-1时使用原逻辑，否则根据slotNumber确定位置
     void handleEmptyTrayIn(const QString &modelName); ///< 处理空托盘搬入
     void handleEmptyTrayOut(const QString &modelName); ///< 处理空托盘搬出
     void advanceEmptyTrayVisualization(); ///< 推进空托盘可视化显示
@@ -218,6 +219,10 @@ private:
     int m_plannedCount;           ///< 计划便次数值
     int m_actualCount;            ///< 实际便次数值
     int m_delayedCount;           ///< 延迟便次数值
+    
+    // 实托盘批次处理相关
+    int m_realTrayBatchCount;     ///< 当前批次已搬入的车型数量（0-3），0表示新批次开始
+    QDateTime m_lastRealTrayOutTime; ///< 最后一次实托盘搬出的时间
     
     // 数据库配置
     QString m_dbHost;             ///< 数据库主机地址

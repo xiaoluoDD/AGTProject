@@ -65,6 +65,7 @@ tcpClient::tcpClient(QWidget *parent)
     , m_plannedCount(100)
     , m_actualCount(89)
     , m_delayedCount(0)
+    , m_realTrayBatchCount(0)
     , m_dbHost("localhost")
     , m_dbPort(3306)
     , m_dbName("agt_database")
@@ -1560,8 +1561,11 @@ void tcpClient::processHexData(const QByteArray &data)
                 appendToLog(QString("托盘%1数据已添加到表格 - %2, 车型: %3").arg(slotNoStr).arg(tray.statusStr).arg(vehicleName), false);
                 
                 // 如果是实托盘搬出，更新可视化界面
+                // 根据字节位置确定放置位置：第5个字节->位置0，第6个字节->位置1，第7个字节->位置2
                 if (tray.isRealTray && tray.statusStr == "实托盘搬出" && !vehicleName.isEmpty()) {
-                    updateVisualization(vehicleName, true);
+                    // tray.slotNo是1-3，对应第5-7个字节，转换为位置索引0-2
+                    int slotIndex = tray.slotNo - 1;
+                    updateVisualization(vehicleName, true, slotIndex);
                 }
                 // 如果是空托盘搬入，处理空托盘搬入逻辑
                 if (!tray.isRealTray && tray.statusStr == "空托盘搬入" && !vehicleName.isEmpty()) {
@@ -3014,33 +3018,185 @@ void tcpClient::onTestDatabaseConnectionClicked()
  * @param vehicleName 车型名称
  * @param isRealTray 是否为实托盘
  */
-void tcpClient::updateVisualization(const QString &vehicleName, bool isRealTray)
+void tcpClient::updateVisualization(const QString &vehicleName, bool isRealTray, int slotIndex)
 {
     if (!isRealTray) {
         return; // 目前只处理实托盘
     }
     
-    // 先推进所有槽位（向右移动一格）
-    advanceVisualization();
-    
-    // 在入口右边第一个槽（数组索引0，对应标签索引1）添加车型名称
-    // 如果第一个槽已有内容，说明所有槽都满了，记录日志
-    if (m_realTraySlots.size() > 0 && m_realTraySlots[0].isEmpty()) {
-        m_realTraySlots[0] = vehicleName;
-        
-        // 更新第一个槽的标签显示（标签索引1，跳过入口标签0）
-        if (m_realTrayLabels.size() > 1 && m_realTrayLabels[1]) {
-            m_realTrayLabels[1]->setText(vehicleName);
+    // 如果指定了位置（slotIndex >= 0），直接使用该位置
+    if (slotIndex >= 0 && slotIndex <= 2) {
+        // 如果是第一次（批次计数为0），先推进3个位置
+        if (m_realTrayBatchCount == 0) {
+            advanceVisualizationBy3();
         }
         
-        // 保存到数据库
-        saveVisualizationRecords();
-        
-        appendToLog(QString("可视化界面：实滑槽第一个槽添加车型 %1").arg(vehicleName), false);
-    } else {
-        // 如果第一个槽已有内容，说明所有槽都满了
-        appendToLog(QString("可视化界面：所有槽位已满，无法添加车型: %1").arg(vehicleName), true);
+        // 根据位置索引写入对应的槽位
+        if (m_realTraySlots.size() > slotIndex) {
+            m_realTraySlots[slotIndex] = vehicleName;
+            
+            // 更新对应槽的标签显示（标签索引slotIndex+1，跳过入口标签0）
+            if (m_realTrayLabels.size() > (slotIndex + 1) && m_realTrayLabels[slotIndex + 1]) {
+                m_realTrayLabels[slotIndex + 1]->setText(vehicleName);
+            }
+            
+            // 更新批次计数
+            m_realTrayBatchCount = (m_realTrayBatchCount + 1) % 3;
+            
+            // 保存到数据库
+            saveVisualizationRecords();
+            
+            appendToLog(QString("可视化界面：实滑槽第%1个槽添加车型 %2（来自第%3个字节）")
+                       .arg(slotIndex + 1)
+                       .arg(vehicleName)
+                       .arg(5 + slotIndex), false);
+        } else {
+            appendToLog(QString("可视化界面：无法添加车型到第%1个槽: %2").arg(slotIndex + 1).arg(vehicleName), true);
+        }
+        return;
     }
+    
+    // 如果没有指定位置，使用原来的批次计数逻辑
+    // 判断是否是第一次搬入（批次计数为0）
+    if (m_realTrayBatchCount == 0) {
+        // 第一次搬入：推进3个位置，然后写入位置0
+        advanceVisualizationBy3();
+        
+        // 写入位置0（第一个槽）
+        if (m_realTraySlots.size() > 0) {
+            m_realTraySlots[0] = vehicleName;
+            
+            // 更新第一个槽的标签显示（标签索引1，跳过入口标签0）
+            if (m_realTrayLabels.size() > 1 && m_realTrayLabels[1]) {
+                m_realTrayLabels[1]->setText(vehicleName);
+            }
+            
+            // 批次计数+1
+            m_realTrayBatchCount = 1;
+            
+            // 保存到数据库
+            saveVisualizationRecords();
+            
+            appendToLog(QString("可视化界面：实滑槽第一个槽添加车型 %1（批次第1个）").arg(vehicleName), false);
+        } else {
+            appendToLog(QString("可视化界面：所有槽位已满，无法添加车型: %1").arg(vehicleName), true);
+        }
+    } else if (m_realTrayBatchCount == 1) {
+        // 第二次搬入：不移动，直接写入位置1
+        if (m_realTraySlots.size() > 1) {
+            m_realTraySlots[1] = vehicleName;
+            
+            // 更新第二个槽的标签显示（标签索引2）
+            if (m_realTrayLabels.size() > 2 && m_realTrayLabels[2]) {
+                m_realTrayLabels[2]->setText(vehicleName);
+            }
+            
+            // 批次计数+1
+            m_realTrayBatchCount = 2;
+            
+            // 保存到数据库
+            saveVisualizationRecords();
+            
+            appendToLog(QString("可视化界面：实滑槽第二个槽添加车型 %1（批次第2个）").arg(vehicleName), false);
+        } else {
+            appendToLog(QString("可视化界面：无法添加车型到第二个槽: %1").arg(vehicleName), true);
+        }
+    } else if (m_realTrayBatchCount == 2) {
+        // 第三次搬入：不移动，直接写入位置2，然后重置批次计数
+        if (m_realTraySlots.size() > 2) {
+            m_realTraySlots[2] = vehicleName;
+            
+            // 更新第三个槽的标签显示（标签索引3）
+            if (m_realTrayLabels.size() > 3 && m_realTrayLabels[3]) {
+                m_realTrayLabels[3]->setText(vehicleName);
+            }
+            
+            // 批次计数重置为0，准备下一批次
+            m_realTrayBatchCount = 0;
+            
+            // 保存到数据库
+            saveVisualizationRecords();
+            
+            appendToLog(QString("可视化界面：实滑槽第三个槽添加车型 %1（批次第3个，批次完成）").arg(vehicleName), false);
+        } else {
+            appendToLog(QString("可视化界面：无法添加车型到第三个槽: %1").arg(vehicleName), true);
+        }
+    }
+}
+
+/**
+ * @brief 推进可视化显示3个位置
+ */
+void tcpClient::advanceVisualizationBy3()
+{
+    // 从右向左推进3个位置，避免覆盖
+    // 数组索引0-20对应21个槽位
+    
+    // 先保存当前状态到临时数组，避免覆盖
+    QVector<QString> tempSlots = m_realTraySlots;
+    
+    // 处理最后3个槽位（索引18、19、20）的内容
+    // 如果索引20有内容，移动到出口（标签索引22）
+    if (tempSlots.size() > 20 && !tempSlots[20].isEmpty()) {
+        if (m_realTrayLabels.size() > 22 && m_realTrayLabels[22]) {
+            m_realTrayLabels[22]->setText("出口\n" + tempSlots[20]);
+        }
+        m_realTraySlots[20] = "";
+    }
+    
+    // 如果索引19有内容，移动到索引20
+    if (tempSlots.size() > 19 && !tempSlots[19].isEmpty()) {
+        if (m_realTraySlots.size() > 20) {
+            m_realTraySlots[20] = tempSlots[19];
+            m_realTraySlots[19] = "";
+        }
+    }
+    
+    // 如果索引18有内容，移动到索引19
+    if (tempSlots.size() > 18 && !tempSlots[18].isEmpty()) {
+        if (m_realTraySlots.size() > 19) {
+            m_realTraySlots[19] = tempSlots[18];
+            m_realTraySlots[18] = "";
+        }
+    }
+    
+    // 从右向左推进3个位置（从索引17到索引0）
+    for (int i = 17; i >= 0; --i) {
+        if (i < tempSlots.size() && !tempSlots[i].isEmpty()) {
+            // 向右移动3格
+            int targetIndex = i + 3;
+            if (targetIndex < m_realTraySlots.size()) {
+                m_realTraySlots[targetIndex] = tempSlots[i];
+                m_realTraySlots[i] = "";
+            }
+        }
+    }
+    
+    // 更新所有滑槽标签显示（标签索引1-21对应数组索引0-20）
+    for (int i = 0; i < 21 && i < m_realTraySlots.size(); ++i) {
+        int labelIndex = i + 1; // 标签索引 = 数组索引 + 1（跳过入口标签0）
+        if (labelIndex < m_realTrayLabels.size() && m_realTrayLabels[labelIndex]) {
+            m_realTrayLabels[labelIndex]->setText(m_realTraySlots[i]);
+        }
+    }
+    
+    // 清除出口标签（如果之前有显示且现在为空）
+    if ((m_realTraySlots.size() <= 20 || m_realTraySlots[20].isEmpty()) && 
+        m_realTrayLabels.size() > 22 && m_realTrayLabels[22]) {
+        QString exitText = m_realTrayLabels[22]->text().trimmed();
+        if (exitText.startsWith("出口\n")) {
+            // 如果出口标签有内容，保留；否则清空
+            QString vehicleName = exitText.mid(exitText.indexOf("\n") + 1).trimmed();
+            if (vehicleName.isEmpty()) {
+                m_realTrayLabels[22]->setText("出口");
+            }
+        } else if (exitText == "出口") {
+            // 已经是"出口"，保持不变
+        }
+    }
+    
+    // 保存可视化记录到数据库
+    saveVisualizationRecords();
 }
 
 /**
@@ -3671,7 +3827,7 @@ void tcpClient::processServerJsonData(const QByteArray &data)
     
     // 根据状态处理
     if (status == "实托盘搬入") {
-        handleRealTrayIn(modelName);
+        handleRealTrayIn(modelName, slotNumber);
     } else if (status == "空托盘搬出") {
         handleEmptyTrayOut(modelName);
     } else {
@@ -3681,14 +3837,164 @@ void tcpClient::processServerJsonData(const QByteArray &data)
 
 /**
  * @brief 处理实托盘搬入
- * 从出口开始向前查找，找到最靠近出口且不为空的槽位，匹配该位置的车型
- * 如果匹配就清空该槽位，不匹配则跳过
- * 因为这是按顺序出的，所以只检查最靠近出口且不为空的位置
+ * 如果指定了slotNumber，根据slotNumber确定要检查的槽位（最靠近出口的3个槽）
+ * slotNumber=1或4 -> 第一个槽（索引20），slotNumber=2或5 -> 第二个槽（索引19），slotNumber=3或6 -> 第三个槽（索引18）
+ * 如果未指定slotNumber，从出口开始向前查找，找到最靠近出口且不为空的槽位
+ * 匹配该位置的车型，如果匹配就清空该槽位，不匹配则跳过
  */
-void tcpClient::handleRealTrayIn(const QString &modelName)
+void tcpClient::handleRealTrayIn(const QString &modelName, int slotNumber)
 {
     QString trimmedModel = modelName.trimmed();
     
+    // 如果指定了slotNumber，先从出口往前找，找到最靠近出口且有车型的一行（3个连续槽位）
+    if (slotNumber > 0) {
+        // 确定slotNumber对应的位置（1、2、3）
+        int positionInRow = -1;
+        if (slotNumber == 1 || slotNumber == 4) {
+            positionInRow = 0; // 第一个位置
+        } else if (slotNumber == 2 || slotNumber == 5) {
+            positionInRow = 1; // 第二个位置
+        } else if (slotNumber == 3 || slotNumber == 6) {
+            positionInRow = 2; // 第三个位置
+        }
+        
+        if (positionInRow >= 0) {
+            // 从出口往前找，找到最靠近出口且有车型的一行（3个连续槽位）
+            // 最靠近出口的一行是索引18、19、20，如果没有车型，继续往前找（15、16、17等）
+            int rowStartIndex = -1;
+            
+            // 从最靠近出口的一行开始（索引18、19、20），往前查找
+            for (int startIdx = 18; startIdx >= 0; startIdx -= 3) {
+                // 检查这一行（3个连续槽位）是否至少有一个有车型
+                bool hasVehicleInRow = false;
+                
+                // 检查这一行的3个槽位
+                for (int offset = 0; offset < 3 && (startIdx + offset) <= 20; ++offset) {
+                    int slotIndex = startIdx + offset;
+                    int labelIndex = slotIndex + 1;
+                    
+                    // 如果槽位是索引20，先检查出口标签
+                    if (slotIndex == 20 && m_realTrayLabels.size() > 22 && m_realTrayLabels[22]) {
+                        QString exitText = m_realTrayLabels[22]->text().trimmed();
+                        if (!exitText.isEmpty() && exitText != "出口") {
+                            hasVehicleInRow = true;
+                            break;
+                        }
+                    }
+                    
+                    // 检查普通槽位标签
+                    if (labelIndex < m_realTrayLabels.size() && m_realTrayLabels[labelIndex]) {
+                        QString labelText = m_realTrayLabels[labelIndex]->text().trimmed();
+                        if (!labelText.isEmpty()) {
+                            hasVehicleInRow = true;
+                            break;
+                        }
+                    }
+                }
+                
+                // 如果这一行有车型，使用这一行
+                if (hasVehicleInRow) {
+                    rowStartIndex = startIdx;
+                    break;
+                }
+            }
+            
+            // 如果找到了有车型的一行
+            if (rowStartIndex >= 0 && rowStartIndex <= 18) {
+                // 计算目标槽位索引（这一行的第positionInRow个位置）
+                int targetSlotIndex = rowStartIndex + positionInRow;
+                
+                if (targetSlotIndex >= 0 && targetSlotIndex <= 20) {
+                    int labelIndex = targetSlotIndex + 1; // 标签索引 = 数组索引 + 1（标签0是入口）
+                    
+                    // 如果目标槽位是索引20，先检查出口标签
+                    if (targetSlotIndex == 20 && m_realTrayLabels.size() > 22 && m_realTrayLabels[22]) {
+                        QString exitText = m_realTrayLabels[22]->text().trimmed();
+                        if (!exitText.isEmpty() && exitText != "出口") {
+                            // 提取车型名称（去除"出口"前缀）
+                            QString vehicleName = exitText;
+                            if (vehicleName.startsWith("出口")) {
+                                vehicleName = vehicleName.mid(vehicleName.indexOf("\n") + 1).trimmed();
+                            }
+                            
+                            if (!vehicleName.isEmpty()) {
+                                if (vehicleName == trimmedModel) {
+                                    // 匹配成功，清空出口标签
+                                    m_realTrayLabels[22]->setText("出口");
+                                    // 清空对应的数组（最后一个槽位，索引20）
+                                    if (m_realTraySlots.size() > 20) {
+                                        m_realTraySlots[20] = "";
+                                    }
+                                    saveVisualizationRecords();
+                                    
+                                    // 增加实际便次
+                                    m_actualCount++;
+                                    if (actualCountLabel) {
+                                        actualCountLabel->setText(QString("实际便次：%1便").arg(m_actualCount));
+                                    }
+                                    saveStatisticsInfo(); // 保存到数据库
+                                    
+                                    appendToLog(QString("实托盘搬入: 匹配到槽位%1（slotNumber=%2，位置%3）的车型%4，已清空，实际便次+1")
+                                               .arg(targetSlotIndex + 1).arg(slotNumber).arg(positionInRow + 1).arg(modelName), false);
+                                    return;
+                                } else {
+                                    // 车型不匹配，跳过
+                                    appendToLog(QString("实托盘搬入: 槽位%1（slotNumber=%2，位置%3）的车型%4与%5不匹配，跳过")
+                                               .arg(targetSlotIndex + 1).arg(slotNumber).arg(positionInRow + 1).arg(vehicleName).arg(modelName), false);
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                    
+                    // 检查目标槽位的标签
+                    if (labelIndex < m_realTrayLabels.size() && m_realTrayLabels[labelIndex]) {
+                        QString labelText = m_realTrayLabels[labelIndex]->text().trimmed();
+                        
+                        if (!labelText.isEmpty()) {
+                            if (labelText == trimmedModel) {
+                                // 匹配成功，清空该槽位
+                                if (targetSlotIndex < m_realTraySlots.size()) {
+                                    m_realTraySlots[targetSlotIndex] = "";
+                                }
+                                m_realTrayLabels[labelIndex]->setText("");
+                                
+                                // 保存到数据库
+                                saveVisualizationRecords();
+                                
+                                // 增加实际便次
+                                m_actualCount++;
+                                if (actualCountLabel) {
+                                    actualCountLabel->setText(QString("实际便次：%1便").arg(m_actualCount));
+                                }
+                                saveStatisticsInfo(); // 保存到数据库
+                                
+                                appendToLog(QString("实托盘搬入: 匹配到槽位%1（slotNumber=%2，位置%3）的车型%4，已清空，实际便次+1")
+                                           .arg(targetSlotIndex + 1).arg(slotNumber).arg(positionInRow + 1).arg(modelName), false);
+                                return;
+                            } else {
+                                // 车型不匹配，跳过
+                                appendToLog(QString("实托盘搬入: 槽位%1（slotNumber=%2，位置%3）的车型%4与%5不匹配，跳过")
+                                           .arg(targetSlotIndex + 1).arg(slotNumber).arg(positionInRow + 1).arg(labelText).arg(modelName), false);
+                                return;
+                            }
+                        } else {
+                            // 目标槽位为空，跳过
+                            appendToLog(QString("实托盘搬入: 槽位%1（slotNumber=%2，位置%3）为空，跳过")
+                                       .arg(targetSlotIndex + 1).arg(slotNumber).arg(positionInRow + 1), false);
+                            return;
+                        }
+                    }
+                }
+            } else {
+                // 没有找到有车型的一行，跳过
+                appendToLog(QString("实托盘搬入: 未找到最靠近出口且有车型的一行（slotNumber=%1），跳过").arg(slotNumber), false);
+                return;
+            }
+        }
+    }
+    
+    // 如果未指定slotNumber或slotNumber无效，使用原来的逻辑
     // 首先检查出口标签（索引22），这是最靠近出口的位置
     if (m_realTrayLabels.size() > 22 && m_realTrayLabels[22]) {
         QString exitText = m_realTrayLabels[22]->text().trimmed();
