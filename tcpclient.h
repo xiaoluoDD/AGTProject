@@ -151,6 +151,9 @@ private:
     void loadVisualizationRecords(); ///< 从数据库加载可视化记录
     void saveStatisticsInfo(); ///< 保存统计信息到数据库
     void loadStatisticsInfo(); ///< 从数据库加载统计信息
+    void initShiftTable(); ///< 初始化班次记录表
+    void checkShiftChange(); ///< 检查班次变化
+    void saveShiftRecord(const QString &shiftType); ///< 保存班次记录到数据库
     QStringList getVehicleModelList(); ///< 获取所有绑定的车型名称列表
     void saveConnectionConfig(const QString &configType, const QString &ip, int port); ///< 保存连接配置到数据库
     void loadConnectionConfig(); ///< 从数据库加载连接配置
@@ -189,6 +192,7 @@ private:
     QTcpSocket *m_serverSocket;  ///< 服务端 TCP Socket对象
     QTimer *m_connectionTimer;    ///< PLC连接超时定时器
     QTimer *m_serverConnectionTimer; ///< 服务端连接超时定时器
+    QTimer *m_shiftCheckTimer;   ///< 班次检查定时器（每分钟检查一次）
     bool m_isConnected;           ///< PLC连接状态标志
     bool m_isServerConnected;     ///< 服务端连接状态标志
     int m_fullTrayCount;          ///< 满托盘时数量

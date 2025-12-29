@@ -54,6 +54,7 @@ tcpClient::tcpClient(QWidget *parent)
     , m_serverSocket(new QTcpSocket(this))
     , m_connectionTimer(new QTimer(this))
     , m_serverConnectionTimer(new QTimer(this))
+    , m_shiftCheckTimer(new QTimer(this))
     , m_isConnected(false)
     , m_isServerConnected(false)
     , m_fullTrayCount(0)
@@ -171,6 +172,11 @@ tcpClient::tcpClient(QWidget *parent)
         // 设置服务端连接超时时间（5秒）
         m_serverConnectionTimer->setSingleShot(true);
         m_serverConnectionTimer->setInterval(5000);
+        
+        // 初始化班次检查定时器（每分钟检查一次）
+        connect(m_shiftCheckTimer, &QTimer::timeout, this, &tcpClient::checkShiftChange);
+        m_shiftCheckTimer->setInterval(60000); // 60秒 = 1分钟
+        m_shiftCheckTimer->start();
         
         // 初始化可视化数组（21个槽位，3列7行，位置0-20）
         m_realTraySlots.resize(21);
@@ -2100,6 +2106,9 @@ void tcpClient::initDatabase() {
     } else {
         qWarning() << "统计信息表创建失败:" << query.lastError().text();
     }
+    
+    // 初始化班次记录表
+    initShiftTable();
 
     qInfo() << "数据库初始化完成";
 }
@@ -4691,6 +4700,122 @@ void tcpClient::loadStatisticsInfo()
     }
     
     qDebug() << "统计信息已从数据库加载";
+}
+
+/**
+ * @brief 初始化班次记录表
+ */
+void tcpClient::initShiftTable()
+{
+    // 检查数据库是否已打开
+    QSqlDatabase db = QSqlDatabase::database();
+    if (!db.isOpen()) {
+        qDebug() << "数据库未打开，跳过初始化班次记录表";
+        return;
+    }
+    
+    QSqlQuery query;
+    // 班次记录表
+    if (query.exec("CREATE TABLE IF NOT EXISTS shift_records ("
+                   "id INT PRIMARY KEY AUTO_INCREMENT,"
+                   "shift_type VARCHAR(20),"
+                   "actual_count INT,"
+                   "shift_date DATE,"
+                   "shift_time TIME,"
+                   "create_time DATETIME)")) {
+        qDebug() << "班次记录表创建/检查成功";
+    } else {
+        qWarning() << "班次记录表创建失败:" << query.lastError().text();
+    }
+}
+
+/**
+ * @brief 检查班次变化
+ * 在7:15时保存白班记录并清零，在17:30时保存夜班记录并清零
+ */
+void tcpClient::checkShiftChange()
+{
+    QDateTime now = QDateTime::currentDateTime();
+    QTime currentTime = now.time();
+    QDate currentDate = now.date();
+    
+    // 白班开始时间：7:15
+    QTime dayShiftStart(7, 15, 0);
+    // 夜班开始时间：17:30
+    QTime nightShiftStart(17, 30, 0);
+    
+    // 检查是否是7:15（白班开始）
+    if (currentTime.hour() == 7 && currentTime.minute() == 15) {
+        // 保存当前实际便次到数据库（夜班记录）
+        saveShiftRecord("夜班");
+        
+        // 清零实际便次，开始记录白班数据
+        m_actualCount = 0;
+        if (actualCountLabel) {
+            actualCountLabel->setText(QString("实际便次：%1便").arg(m_actualCount));
+        }
+        saveStatisticsInfo(); // 保存清零后的实际便次
+        
+        appendToLog(QString("班次切换：夜班结束，实际便次已保存。白班开始，实际便次已清零"), false);
+    }
+    // 检查是否是17:30（夜班开始）
+    else if (currentTime.hour() == 17 && currentTime.minute() == 30) {
+        // 保存当前实际便次到数据库（白班记录）
+        saveShiftRecord("白班");
+        
+        // 清零实际便次，开始记录夜班数据
+        m_actualCount = 0;
+        if (actualCountLabel) {
+            actualCountLabel->setText(QString("实际便次：%1便").arg(m_actualCount));
+        }
+        saveStatisticsInfo(); // 保存清零后的实际便次
+        
+        appendToLog(QString("班次切换：白班结束，实际便次已保存。夜班开始，实际便次已清零"), false);
+    }
+}
+
+/**
+ * @brief 保存班次记录到数据库
+ * @param shiftType 班次类型（"白班"或"夜班"）
+ */
+void tcpClient::saveShiftRecord(const QString &shiftType)
+{
+    // 检查数据库是否已打开
+    QSqlDatabase db = QSqlDatabase::database();
+    if (!db.isOpen()) {
+        qDebug() << "数据库未打开，跳过保存班次记录";
+        return;
+    }
+    
+    QDateTime now = QDateTime::currentDateTime();
+    QDate currentDate = now.date();
+    QTime currentTime = now.time();
+    
+    // 如果是保存夜班记录，且当前时间是7:15，日期应该是昨天
+    if (shiftType == "夜班" && currentTime.hour() == 7 && currentTime.minute() == 15) {
+        currentDate = currentDate.addDays(-1);
+    }
+    
+    QSqlQuery query;
+    query.prepare("INSERT INTO shift_records (shift_type, actual_count, shift_date, shift_time, create_time) "
+                  "VALUES (?, ?, ?, ?, ?)");
+    query.addBindValue(shiftType);
+    query.addBindValue(m_actualCount);
+    query.addBindValue(currentDate.toString("yyyy-MM-dd"));
+    query.addBindValue(currentTime.toString("hh:mm:ss"));
+    query.addBindValue(now.toString("yyyy-MM-dd hh:mm:ss"));
+    
+    if (!query.exec()) {
+        appendToLog(QString("保存%1记录失败: %2").arg(shiftType).arg(query.lastError().text()), true);
+        qWarning() << "保存班次记录失败:" << query.lastError().text();
+    } else {
+        appendToLog(QString("已保存%1记录：实际便次=%2便，日期=%3，时间=%4")
+                   .arg(shiftType)
+                   .arg(m_actualCount)
+                   .arg(currentDate.toString("yyyy-MM-dd"))
+                   .arg(currentTime.toString("hh:mm:ss")), false);
+        qDebug() << QString("班次记录已保存：%1，实际便次=%2").arg(shiftType).arg(m_actualCount);
+    }
 }
 
 
