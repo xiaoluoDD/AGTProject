@@ -104,6 +104,14 @@ private slots:
     void onSaveServerConnectionConfigClicked(); ///< 保存服务端连接配置按钮点击处理
     void onServerConnectClicked(); ///< 服务端连接按钮点击处理
     void onServerDisconnectClicked(); ///< 服务端断开按钮点击处理
+    
+    // 统计信息双击编辑槽函数
+    void onPlannedCountLabelDoubleClicked(); ///< 计划便次标签双击处理
+    void onActualCountLabelDoubleClicked(); ///< 实际便次标签双击处理
+    void onDelayedCountLabelDoubleClicked(); ///< 延迟便次标签双击处理
+    
+    // 滑槽标签双击编辑函数
+    void onTraySlotLabelDoubleClicked(QLabel* label, bool isRealTray, int slotIndex); ///< 滑槽标签双击处理
 
 private:
     // UI和状态管理
@@ -140,6 +148,9 @@ private:
     void clearDataRecords();
     void saveVisualizationRecords(); ///< 保存可视化记录到数据库
     void loadVisualizationRecords(); ///< 从数据库加载可视化记录
+    void saveStatisticsInfo(); ///< 保存统计信息到数据库
+    void loadStatisticsInfo(); ///< 从数据库加载统计信息
+    QStringList getVehicleModelList(); ///< 获取所有绑定的车型名称列表
     void saveConnectionConfig(const QString &configType, const QString &ip, int port); ///< 保存连接配置到数据库
     void loadConnectionConfig(); ///< 从数据库加载连接配置
     void updateServerConnectionStatus(bool connected); ///< 更新服务端连接状态显示
@@ -168,6 +179,7 @@ private:
 
     // 事件处理
     void closeEvent(QCloseEvent *event) override; ///< 重写关闭事件
+    bool eventFilter(QObject *obj, QEvent *event) override; ///< 事件过滤器，用于处理标签双击
 
 private:
     Ui::tcpClient *ui;            ///< UI界面指针
@@ -184,10 +196,10 @@ private:
     QLabel* labelConnectionStatus;
     QPushButton* pushButtonVisualizationPage; ///< 可视化记录页面按钮
     QWidget* visualizationPage; ///< 可视化记录页面
-    QVector<QLabel*> m_realTrayLabels; ///< 实滑槽标签（12个）
-    QVector<QLabel*> m_emptyTrayLabels; ///< 空滑槽标签（12个）
-    QVector<QString> m_realTraySlots; ///< 实滑槽每个位置显示的车型名称（10个槽位，位置1-10）
-    QVector<QString> m_emptyTraySlots; ///< 空滑槽每个位置显示的车型名称（10个槽位，位置1-10）
+    QVector<QLabel*> m_realTrayLabels; ///< 实滑槽标签（23个：入口1个 + 21个槽位 + 出口1个）
+    QVector<QLabel*> m_emptyTrayLabels; ///< 空滑槽标签（23个：入口1个 + 21个槽位 + 出口1个）
+    QVector<QString> m_realTraySlots; ///< 实滑槽每个位置显示的车型名称（21个槽位，位置0-20）
+    QVector<QString> m_emptyTraySlots; ///< 空滑槽每个位置显示的车型名称（21个槽位，位置0-20）
     QGroupBox* groupBoxServerConnection; ///< 服务端连接设置GroupBox
     QLineEdit* lineEditServerIP; ///< 服务端IP输入框
     QLineEdit* lineEditServerPort; ///< 服务端端口输入框
@@ -198,6 +210,14 @@ private:
     QLabel* labelServerConnectionStatus; ///< 服务端连接状态标签
     QString m_password;           ///< 存储的密码
     bool m_isPasswordSet;         ///< 密码是否已设置
+    
+    // 统计信息标签和数值
+    QLabel* plannedCountLabel;    ///< 计划便次标签
+    QLabel* actualCountLabel;      ///< 实际便次标签
+    QLabel* delayedCountLabel;     ///< 延迟便次标签
+    int m_plannedCount;           ///< 计划便次数值
+    int m_actualCount;            ///< 实际便次数值
+    int m_delayedCount;           ///< 延迟便次数值
     
     // 数据库配置
     QString m_dbHost;             ///< 数据库主机地址

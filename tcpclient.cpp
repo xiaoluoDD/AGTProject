@@ -19,6 +19,8 @@
 #include <QDebug>
 #include <QInputDialog>
 #include <QCloseEvent>
+#include <QMouseEvent>
+#include <QEvent>
 #include <QLoggingCategory>
 #include <QDir>
 #include <QFileInfo>
@@ -27,11 +29,15 @@
 #include <QSettings>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
+#include <QGridLayout>
 #include <QPushButton>
 #include <QGroupBox>
 #include <QLineEdit>
 #include <QLabel>
 #include <QSpacerItem>
+#include <QComboBox>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QVector>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -53,6 +59,12 @@ tcpClient::tcpClient(QWidget *parent)
     , m_fullTrayCount(0)
     , m_password("")
     , m_isPasswordSet(false)
+    , plannedCountLabel(nullptr)
+    , actualCountLabel(nullptr)
+    , delayedCountLabel(nullptr)
+    , m_plannedCount(100)
+    , m_actualCount(89)
+    , m_delayedCount(0)
     , m_dbHost("localhost")
     , m_dbPort(3306)
     , m_dbName("agt_database")
@@ -120,6 +132,10 @@ tcpClient::tcpClient(QWidget *parent)
             // 加载空托盘可视化记录
             loadEmptyTrayVisualizationRecords();
             qDebug() << "loadEmptyTrayVisualizationRecords completed";
+            
+            // 加载统计信息
+            loadStatisticsInfo();
+            qDebug() << "loadStatisticsInfo completed";
         });
 
         // 加载连接配置
@@ -154,15 +170,15 @@ tcpClient::tcpClient(QWidget *parent)
         m_serverConnectionTimer->setSingleShot(true);
         m_serverConnectionTimer->setInterval(5000);
         
-        // 初始化可视化数组（10个槽位，位置1-10，不包括入口和出口）
-        m_realTraySlots.resize(10);
-        for (int i = 0; i < 10; ++i) {
+        // 初始化可视化数组（21个槽位，3列7行，位置0-20）
+        m_realTraySlots.resize(21);
+        for (int i = 0; i < 21; ++i) {
             m_realTraySlots[i] = "";
         }
         
-        // 初始化空托盘可视化数组（10个槽位，位置1-10，不包括入口和出口）
-        m_emptyTraySlots.resize(10);
-        for (int i = 0; i < 10; ++i) {
+        // 初始化空托盘可视化数组（21个槽位，3列7行，位置0-20）
+        m_emptyTraySlots.resize(21);
+        for (int i = 0; i < 21; ++i) {
             m_emptyTraySlots[i] = "";
         }
 
@@ -242,7 +258,12 @@ void tcpClient::setupUI()
     visualizationLayout->setSpacing(15);
     visualizationLayout->setContentsMargins(20, 20, 20, 20);
     
-    // 创建实滑槽记录GroupBox（第一行）
+    // 创建横向布局，用于并排显示实滑槽和空滑槽记录
+    QHBoxLayout* horizontalTrayLayout = new QHBoxLayout();
+    horizontalTrayLayout->setSpacing(20);
+    horizontalTrayLayout->setContentsMargins(0, 0, 0, 0);
+    
+    // 创建实滑槽记录GroupBox（左侧）
     QGroupBox* realTrayGroupBox = new QGroupBox(visualizationPage);
     realTrayGroupBox->setTitle("实滑槽记录");
     realTrayGroupBox->setStyleSheet(
@@ -261,39 +282,71 @@ void tcpClient::setupUI()
         "}"
     );
     
-    QHBoxLayout* realTrayLayout = new QHBoxLayout(realTrayGroupBox);
+    // 使用网格布局，3列9行：入口（1行）+ 21个槽位（7行）+ 出口（1行）
+    QGridLayout* realTrayLayout = new QGridLayout(realTrayGroupBox);
     realTrayLayout->setSpacing(8);
     realTrayLayout->setContentsMargins(15, 20, 15, 15);
     m_realTrayLabels.clear();
-    for (int i = 0; i < 12; ++i) {
-        QLabel* label = new QLabel(realTrayGroupBox);
-        label->setAlignment(Qt::AlignCenter);
-        label->setMinimumSize(60, 80);
-        label->setStyleSheet(
-            "QLabel {"
-            "border: 2px solid #d0d0d0;"
-            "border-radius: 8px;"
-            "font-size: 12pt;"
-            "font-weight: bold;"
-            "padding: 10px;"
-            "}"
-        );
-        
-        // 设置标签文本
-        if (i == 0) {
-            label->setText("实滑槽\n入口");
-        } else if (i == 11) {
-            label->setText("出口");
-        } else {
-            label->setText("");  // 滑槽1到滑槽10显示为空
-        }
-        
-        m_realTrayLabels.append(label);
-        realTrayLayout->addWidget(label);
-    }
-    visualizationLayout->addWidget(realTrayGroupBox);
     
-    // 创建空滑槽记录GroupBox（第二行）
+    // 第0行：入口（居中，跨3列）
+    QLabel* entranceLabel = new QLabel(realTrayGroupBox);
+    entranceLabel->setAlignment(Qt::AlignCenter);
+    entranceLabel->setMinimumSize(100, 60);
+    entranceLabel->setStyleSheet(
+        "QLabel {"
+        "border: 2px solid #d0d0d0;"
+        "border-radius: 8px;"
+        "font-size: 12pt;"
+        "font-weight: bold;"
+        "padding: 10px;"
+        "}"
+    );
+    entranceLabel->setText("实滑槽\n入口");
+    m_realTrayLabels.append(entranceLabel);
+    realTrayLayout->addWidget(entranceLabel, 0, 0, 1, 3, Qt::AlignCenter);
+    
+    // 第1-7行：21个槽位（每行3个）
+    for (int row = 1; row <= 7; ++row) {
+        for (int col = 0; col < 3; ++col) {
+            int index = (row - 1) * 3 + col + 1; // 索引从1开始（跳过入口0）
+            QLabel* label = new QLabel(realTrayGroupBox);
+            label->setAlignment(Qt::AlignCenter);
+            label->setMinimumSize(100, 60);
+            label->setStyleSheet(
+                "QLabel {"
+                "border: 2px solid #d0d0d0;"
+                "border-radius: 8px;"
+                "font-size: 12pt;"
+                "font-weight: bold;"
+                "padding: 10px;"
+                "}"
+            );
+            label->setText("");  // 初始为空
+            label->installEventFilter(this); // 安装事件过滤器以支持双击
+            m_realTrayLabels.append(label);
+            realTrayLayout->addWidget(label, row, col);
+        }
+    }
+    
+    // 第8行：出口（居中，跨3列）
+    QLabel* exitLabel = new QLabel(realTrayGroupBox);
+    exitLabel->setAlignment(Qt::AlignCenter);
+    exitLabel->setMinimumSize(100, 60);
+    exitLabel->setStyleSheet(
+        "QLabel {"
+        "border: 2px solid #d0d0d0;"
+        "border-radius: 8px;"
+        "font-size: 12pt;"
+        "font-weight: bold;"
+        "padding: 10px;"
+        "}"
+    );
+    exitLabel->setText("出口");
+    m_realTrayLabels.append(exitLabel);
+    realTrayLayout->addWidget(exitLabel, 8, 0, 1, 3, Qt::AlignCenter);
+    horizontalTrayLayout->addWidget(realTrayGroupBox);
+    
+    // 创建空滑槽记录GroupBox（右侧）
     QGroupBox* emptyTrayGroupBox = new QGroupBox(visualizationPage);
     emptyTrayGroupBox->setTitle("空滑槽记录");
     emptyTrayGroupBox->setStyleSheet(
@@ -312,37 +365,155 @@ void tcpClient::setupUI()
         "}"
     );
     
-    QHBoxLayout* emptyTrayLayout = new QHBoxLayout(emptyTrayGroupBox);
+    // 使用网格布局，3列9行：入口（1行）+ 21个槽位（7行）+ 出口（1行）
+    QGridLayout* emptyTrayLayout = new QGridLayout(emptyTrayGroupBox);
     emptyTrayLayout->setSpacing(8);
     emptyTrayLayout->setContentsMargins(15, 20, 15, 15);
     m_emptyTrayLabels.clear();
-    for (int i = 0; i < 12; ++i) {
-        QLabel* label = new QLabel(emptyTrayGroupBox);
-        label->setAlignment(Qt::AlignCenter);
-        label->setMinimumSize(60, 80);
-        label->setStyleSheet(
-            "QLabel {"
-            "border: 2px solid #d0d0d0;"
-            "border-radius: 8px;"
-            "font-size: 12pt;"
-            "font-weight: bold;"
-            "padding: 10px;"
-            "}"
-        );
-        
-        // 设置标签文本
-        if (i == 0) {
-            label->setText("空滑槽\n入口");
-        } else if (i == 11) {
-            label->setText("出口");
-        } else {
-            label->setText("");  // 滑槽1到滑槽10显示为空
+    
+    // 第0行：入口（居中，跨3列）
+    QLabel* emptyEntranceLabel = new QLabel(emptyTrayGroupBox);
+    emptyEntranceLabel->setAlignment(Qt::AlignCenter);
+    emptyEntranceLabel->setMinimumSize(100, 60);
+    emptyEntranceLabel->setStyleSheet(
+        "QLabel {"
+        "border: 2px solid #d0d0d0;"
+        "border-radius: 8px;"
+        "font-size: 12pt;"
+        "font-weight: bold;"
+        "padding: 10px;"
+        "}"
+    );
+    emptyEntranceLabel->setText("空滑槽\n入口");
+    m_emptyTrayLabels.append(emptyEntranceLabel);
+    emptyTrayLayout->addWidget(emptyEntranceLabel, 0, 0, 1, 3, Qt::AlignCenter);
+    
+    // 第1-7行：21个槽位（每行3个）
+    for (int row = 1; row <= 7; ++row) {
+        for (int col = 0; col < 3; ++col) {
+            int index = (row - 1) * 3 + col + 1; // 索引从1开始（跳过入口0）
+            QLabel* label = new QLabel(emptyTrayGroupBox);
+            label->setAlignment(Qt::AlignCenter);
+            label->setMinimumSize(100, 60);
+            label->setStyleSheet(
+                "QLabel {"
+                "border: 2px solid #d0d0d0;"
+                "border-radius: 8px;"
+                "font-size: 12pt;"
+                "font-weight: bold;"
+                "padding: 10px;"
+                "}"
+            );
+            label->setText("");  // 初始为空
+            label->installEventFilter(this); // 安装事件过滤器以支持双击
+            m_emptyTrayLabels.append(label);
+            emptyTrayLayout->addWidget(label, row, col);
         }
-        
-        m_emptyTrayLabels.append(label);
-        emptyTrayLayout->addWidget(label);
     }
-    visualizationLayout->addWidget(emptyTrayGroupBox);
+    
+    // 第8行：出口（居中，跨3列）
+    QLabel* emptyExitLabel = new QLabel(emptyTrayGroupBox);
+    emptyExitLabel->setAlignment(Qt::AlignCenter);
+    emptyExitLabel->setMinimumSize(100, 60);
+    emptyExitLabel->setStyleSheet(
+        "QLabel {"
+        "border: 2px solid #d0d0d0;"
+        "border-radius: 8px;"
+        "font-size: 12pt;"
+        "font-weight: bold;"
+        "padding: 10px;"
+        "}"
+    );
+    emptyExitLabel->setText("出口");
+    m_emptyTrayLabels.append(emptyExitLabel);
+    emptyTrayLayout->addWidget(emptyExitLabel, 8, 0, 1, 3, Qt::AlignCenter);
+    horizontalTrayLayout->addWidget(emptyTrayGroupBox);
+    
+    // 将横向布局添加到主布局中
+    visualizationLayout->addLayout(horizontalTrayLayout);
+    
+    // 创建统计区域
+    QGroupBox* statisticsGroupBox = new QGroupBox(visualizationPage);
+    statisticsGroupBox->setTitle("统计信息");
+    statisticsGroupBox->setStyleSheet(
+        "QGroupBox {"
+        "font-size: 14pt;"
+        "font-weight: bold;"
+        "border: 2px solid #d0d0d0;"
+        "border-radius: 8px;"
+        "margin-top: 10px;"
+        "padding-top: 15px;"
+        "}"
+        "QGroupBox::title {"
+        "subcontrol-origin: margin;"
+        "left: 15px;"
+        "padding: 0 8px 0 8px;"
+        "}"
+    );
+    
+    QHBoxLayout* statisticsLayout = new QHBoxLayout(statisticsGroupBox);
+    statisticsLayout->setSpacing(20);
+    statisticsLayout->setContentsMargins(20, 20, 20, 20);
+    
+    // 添加左侧弹性空间，使内容向中间靠拢
+    statisticsLayout->addStretch();
+    
+    // 左边：计划便次
+    plannedCountLabel = new QLabel(statisticsGroupBox);
+    m_plannedCount = 100;
+    plannedCountLabel->setText(QString("计划便次：%1便").arg(m_plannedCount));
+    plannedCountLabel->setStyleSheet(
+        "QLabel {"
+        "font-size: 14pt;"
+        "font-weight: bold;"
+        "padding: 10px;"
+        "}"
+    );
+    plannedCountLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    plannedCountLabel->installEventFilter(this); // 安装事件过滤器以支持双击
+    statisticsLayout->addWidget(plannedCountLabel);
+    
+    // 右边：实际便次和延迟便次（垂直布局）
+    QVBoxLayout* rightStatisticsLayout = new QVBoxLayout();
+    rightStatisticsLayout->setSpacing(10);
+    
+    // 实际便次
+    actualCountLabel = new QLabel(statisticsGroupBox);
+    m_actualCount = 89;
+    actualCountLabel->setText(QString("实际便次：%1便").arg(m_actualCount));
+    actualCountLabel->setStyleSheet(
+        "QLabel {"
+        "font-size: 14pt;"
+        "font-weight: bold;"
+        "padding: 10px;"
+        "}"
+    );
+    actualCountLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    actualCountLabel->installEventFilter(this); // 安装事件过滤器以支持双击
+    rightStatisticsLayout->addWidget(actualCountLabel);
+    
+    // 延迟便次
+    delayedCountLabel = new QLabel(statisticsGroupBox);
+    m_delayedCount = 0;
+    delayedCountLabel->setText(QString("延迟便次：%1便").arg(m_delayedCount));
+    delayedCountLabel->setStyleSheet(
+        "QLabel {"
+        "font-size: 14pt;"
+        "font-weight: bold;"
+        "padding: 10px;"
+        "}"
+    );
+    delayedCountLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    delayedCountLabel->installEventFilter(this); // 安装事件过滤器以支持双击
+    rightStatisticsLayout->addWidget(delayedCountLabel);
+    
+    statisticsLayout->addLayout(rightStatisticsLayout);
+    
+    // 添加右侧弹性空间，使内容向中间靠拢
+    statisticsLayout->addStretch();
+    
+    // 将统计区域添加到主布局中
+    visualizationLayout->addWidget(statisticsGroupBox);
     
     // 添加弹性空间
     visualizationLayout->addStretch();
@@ -1913,6 +2084,17 @@ void tcpClient::initDatabase() {
         qWarning() << "连接配置表创建失败:" << query.lastError().text();
     }
 
+    // 统计信息表
+    if (query.exec("CREATE TABLE IF NOT EXISTS statistics_info ("
+                   "id INT PRIMARY KEY AUTO_INCREMENT,"
+                   "stat_type VARCHAR(50) UNIQUE,"
+                   "count_value INT,"
+                   "update_time VARCHAR(255))")) {
+        qDebug() << "统计信息表创建/检查成功";
+    } else {
+        qWarning() << "统计信息表创建失败:" << query.lastError().text();
+    }
+
     qInfo() << "数据库初始化完成";
 }
 
@@ -2227,6 +2409,234 @@ void tcpClient::closeEvent(QCloseEvent *event)
         }
     }
     event->accept();
+}
+
+/**
+ * @brief 事件过滤器，用于处理标签双击事件
+ */
+bool tcpClient::eventFilter(QObject *obj, QEvent *event)
+{
+    if (event->type() == QEvent::MouseButtonDblClick) {
+        QMouseEvent *mouseEvent = static_cast<QMouseEvent*>(event);
+        if (mouseEvent->button() == Qt::LeftButton) {
+            if (obj == plannedCountLabel) {
+                onPlannedCountLabelDoubleClicked();
+                return true;
+            } else if (obj == actualCountLabel) {
+                onActualCountLabelDoubleClicked();
+                return true;
+            } else if (obj == delayedCountLabel) {
+                onDelayedCountLabelDoubleClicked();
+                return true;
+            }
+            
+            // 检查是否是实滑槽标签（索引1-21，跳过入口0和出口22）
+            for (int i = 1; i <= 21 && i < m_realTrayLabels.size(); ++i) {
+                if (obj == m_realTrayLabels[i]) {
+                    onTraySlotLabelDoubleClicked(m_realTrayLabels[i], true, i - 1); // slotIndex是数组索引0-20
+                    return true;
+                }
+            }
+            
+            // 检查是否是空滑槽标签（索引1-21，跳过入口0和出口22）
+            for (int i = 1; i <= 21 && i < m_emptyTrayLabels.size(); ++i) {
+                if (obj == m_emptyTrayLabels[i]) {
+                    onTraySlotLabelDoubleClicked(m_emptyTrayLabels[i], false, i - 1); // slotIndex是数组索引0-20
+                    return true;
+                }
+            }
+        }
+    }
+    return QWidget::eventFilter(obj, event);
+}
+
+/**
+ * @brief 计划便次标签双击处理
+ */
+void tcpClient::onPlannedCountLabelDoubleClicked()
+{
+    // 验证密码
+    if (!showPasswordDialog("密码验证", "请输入密码以编辑计划便次:")) {
+        return;
+    }
+    
+    // 弹出数字输入对话框
+    bool ok;
+    int newValue = QInputDialog::getInt(this, "编辑计划便次", 
+                                        "请输入计划便次:", 
+                                        m_plannedCount, 0, 999999, 1, &ok);
+    if (ok) {
+        m_plannedCount = newValue;
+        plannedCountLabel->setText(QString("计划便次：%1便").arg(m_plannedCount));
+        appendToLog(QString("计划便次已更新为：%1便").arg(m_plannedCount), false);
+        saveStatisticsInfo(); // 保存到数据库
+    }
+}
+
+/**
+ * @brief 实际便次标签双击处理
+ */
+void tcpClient::onActualCountLabelDoubleClicked()
+{
+    // 验证密码
+    if (!showPasswordDialog("密码验证", "请输入密码以编辑实际便次:")) {
+        return;
+    }
+    
+    // 弹出数字输入对话框
+    bool ok;
+    int newValue = QInputDialog::getInt(this, "编辑实际便次", 
+                                        "请输入实际便次:", 
+                                        m_actualCount, 0, 999999, 1, &ok);
+    if (ok) {
+        m_actualCount = newValue;
+        actualCountLabel->setText(QString("实际便次：%1便").arg(m_actualCount));
+        appendToLog(QString("实际便次已更新为：%1便").arg(m_actualCount), false);
+        saveStatisticsInfo(); // 保存到数据库
+    }
+}
+
+/**
+ * @brief 延迟便次标签双击处理
+ */
+void tcpClient::onDelayedCountLabelDoubleClicked()
+{
+    // 验证密码
+    if (!showPasswordDialog("密码验证", "请输入密码以编辑延迟便次:")) {
+        return;
+    }
+    
+    // 弹出数字输入对话框
+    bool ok;
+    int newValue = QInputDialog::getInt(this, "编辑延迟便次", 
+                                        "请输入延迟便次:", 
+                                        m_delayedCount, 0, 999999, 1, &ok);
+    if (ok) {
+        m_delayedCount = newValue;
+        delayedCountLabel->setText(QString("延迟便次：%1便").arg(m_delayedCount));
+        appendToLog(QString("延迟便次已更新为：%1便").arg(m_delayedCount), false);
+        saveStatisticsInfo(); // 保存到数据库
+    }
+}
+
+/**
+ * @brief 获取所有绑定的车型名称列表
+ */
+QStringList tcpClient::getVehicleModelList()
+{
+    QStringList modelList;
+    
+    // 检查数据库是否已打开
+    QSqlDatabase db = QSqlDatabase::database();
+    if (!db.isOpen()) {
+        qDebug() << "数据库未打开，无法获取车型列表";
+        return modelList;
+    }
+    
+    QSqlQuery query("SELECT DISTINCT model_name FROM model_bindings ORDER BY model_name");
+    
+    if (query.lastError().isValid()) {
+        qDebug() << "查询车型列表失败:" << query.lastError().text();
+        return modelList;
+    }
+    
+    while (query.next()) {
+        QString modelName = query.value(0).toString().trimmed();
+        if (!modelName.isEmpty()) {
+            modelList.append(modelName);
+        }
+    }
+    
+    return modelList;
+}
+
+/**
+ * @brief 滑槽标签双击处理
+ * @param label 被双击的标签
+ * @param isRealTray 是否为实滑槽
+ * @param slotIndex 槽位索引（0-20）
+ */
+void tcpClient::onTraySlotLabelDoubleClicked(QLabel* label, bool isRealTray, int slotIndex)
+{
+    if (!label || slotIndex < 0 || slotIndex >= 21) {
+        return;
+    }
+    
+    // 获取当前显示的车型名称
+    QString currentModel = label->text().trimmed();
+    
+    // 获取所有绑定的车型列表
+    QStringList modelList = getVehicleModelList();
+    
+    // 创建对话框
+    QDialog dialog(this);
+    dialog.setWindowTitle(isRealTray ? QString("编辑实滑槽槽位%1").arg(slotIndex + 1) : QString("编辑空滑槽槽位%1").arg(slotIndex + 1));
+    dialog.setMinimumWidth(300);
+    
+    QVBoxLayout* layout = new QVBoxLayout(&dialog);
+    
+    // 添加说明标签
+    QLabel* infoLabel = new QLabel("请选择车型或清空:", &dialog);
+    layout->addWidget(infoLabel);
+    
+    // 创建下拉框
+    QComboBox* comboBox = new QComboBox(&dialog);
+    comboBox->setEditable(false);
+    
+    // 添加"清空"选项
+    comboBox->addItem("（清空）", "");
+    
+    // 添加所有车型
+    for (const QString& model : modelList) {
+        comboBox->addItem(model, model);
+    }
+    
+    // 设置当前选中的车型
+    int currentIndex = 0; // 默认选中"清空"
+    if (!currentModel.isEmpty()) {
+        int foundIndex = comboBox->findData(currentModel);
+        if (foundIndex >= 0) {
+            currentIndex = foundIndex;
+        } else {
+            // 如果当前车型不在列表中，也添加到下拉框
+            comboBox->addItem(currentModel, currentModel);
+            currentIndex = comboBox->count() - 1;
+        }
+    }
+    comboBox->setCurrentIndex(currentIndex);
+    
+    layout->addWidget(comboBox);
+    
+    // 添加按钮
+    QDialogButtonBox* buttonBox = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    connect(buttonBox, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttonBox, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    layout->addWidget(buttonBox);
+    
+    // 显示对话框
+    if (dialog.exec() == QDialog::Accepted) {
+        QString selectedModel = comboBox->currentData().toString();
+        
+        // 更新标签显示
+        label->setText(selectedModel);
+        
+        // 更新数组
+        if (isRealTray) {
+            if (slotIndex < m_realTraySlots.size()) {
+                m_realTraySlots[slotIndex] = selectedModel;
+            }
+            // 保存到数据库
+            saveVisualizationRecords();
+            appendToLog(QString("实滑槽槽位%1已更新为：%2").arg(slotIndex + 1).arg(selectedModel.isEmpty() ? "（清空）" : selectedModel), false);
+        } else {
+            if (slotIndex < m_emptyTraySlots.size()) {
+                m_emptyTraySlots[slotIndex] = selectedModel;
+            }
+            // 保存到数据库
+            saveEmptyTrayVisualizationRecords();
+            appendToLog(QString("空滑槽槽位%1已更新为：%2").arg(slotIndex + 1).arg(selectedModel.isEmpty() ? "（清空）" : selectedModel), false);
+        }
+    }
 }
 
 // 静态成员变量定义
@@ -2613,12 +3023,12 @@ void tcpClient::updateVisualization(const QString &vehicleName, bool isRealTray)
     // 先推进所有槽位（向右移动一格）
     advanceVisualization();
     
-    // 在入口右边第一个槽（位置1，对应标签索引1）添加车型名称
+    // 在入口右边第一个槽（数组索引0，对应标签索引1）添加车型名称
     // 如果第一个槽已有内容，说明所有槽都满了，记录日志
-    if (m_realTraySlots[0].isEmpty()) {
+    if (m_realTraySlots.size() > 0 && m_realTraySlots[0].isEmpty()) {
         m_realTraySlots[0] = vehicleName;
         
-        // 更新第一个槽的标签显示（标签索引1）
+        // 更新第一个槽的标签显示（标签索引1，跳过入口标签0）
         if (m_realTrayLabels.size() > 1 && m_realTrayLabels[1]) {
             m_realTrayLabels[1]->setText(vehicleName);
         }
@@ -2639,39 +3049,42 @@ void tcpClient::updateVisualization(const QString &vehicleName, bool isRealTray)
 void tcpClient::advanceVisualization()
 {
     // 从右向左推进，避免覆盖
-    // 数组索引0-9对应滑槽1-10（标签索引1-10）
-    // 从最后一个槽（索引9，滑槽10）开始，依次向右移动到出口
+    // 数组索引0是入口，索引1-19是滑槽位置，索引20是出口
+    // 从最后一个槽（索引19）开始，依次向右移动到出口（索引20）
     
-    // 如果最后一个槽（滑槽10）有内容，移动到出口（标签索引11）
-    if (!m_realTraySlots[9].isEmpty()) {
+    // 如果最后一个槽（索引20）有内容，移动到出口（标签索引22）
+    if (m_realTraySlots.size() > 20 && !m_realTraySlots[20].isEmpty()) {
         // 更新出口标签显示
-        if (m_realTrayLabels.size() > 11 && m_realTrayLabels[11]) {
-            m_realTrayLabels[11]->setText("出口\n" + m_realTraySlots[9]);
+        if (m_realTrayLabels.size() > 22 && m_realTrayLabels[22]) {
+            m_realTrayLabels[22]->setText("出口\n" + m_realTraySlots[20]);
         }
         // 清除最后一个槽
-        m_realTraySlots[9] = "";
+        m_realTraySlots[20] = "";
     }
     
-    // 从右向左推进（从索引8到索引0）
-    for (int i = 8; i >= 0; --i) {
-        if (!m_realTraySlots[i].isEmpty()) {
+    // 从右向左推进（从索引19到索引0）
+    for (int i = 19; i >= 0; --i) {
+        if (i < m_realTraySlots.size() && !m_realTraySlots[i].isEmpty()) {
             // 向右移动一格
-            m_realTraySlots[i + 1] = m_realTraySlots[i];
-            m_realTraySlots[i] = "";
+            if (i + 1 < m_realTraySlots.size()) {
+                m_realTraySlots[i + 1] = m_realTraySlots[i];
+                m_realTraySlots[i] = "";
+            }
         }
     }
     
-    // 更新所有滑槽标签显示（标签索引1-10对应数组索引0-9）
-    for (int i = 0; i < 10 && i < m_realTrayLabels.size() - 1; ++i) {
-        int labelIndex = i + 1; // 标签索引从1开始（跳过入口标签0）
-        if (m_realTrayLabels[labelIndex]) {
+    // 更新所有滑槽标签显示（标签索引1-21对应数组索引0-20）
+    for (int i = 0; i < 21 && i < m_realTraySlots.size(); ++i) {
+        int labelIndex = i + 1; // 标签索引 = 数组索引 + 1（跳过入口标签0）
+        if (labelIndex < m_realTrayLabels.size() && m_realTrayLabels[labelIndex]) {
             m_realTrayLabels[labelIndex]->setText(m_realTraySlots[i]);
         }
     }
     
     // 清除出口标签（如果之前有显示）
-    if (m_realTraySlots[9].isEmpty() && m_realTrayLabels.size() > 11 && m_realTrayLabels[11]) {
-        m_realTrayLabels[11]->setText("出口");
+    if ((m_realTraySlots.size() <= 20 || m_realTraySlots[20].isEmpty()) && 
+        m_realTrayLabels.size() > 22 && m_realTrayLabels[22]) {
+        m_realTrayLabels[22]->setText("出口");
     }
     
     // 保存可视化记录到数据库
@@ -2691,20 +3104,20 @@ void tcpClient::saveVisualizationRecords()
     }
     
     // 检查是否有数据需要保存（先从数组检查，因为数组可能比标签更新得更早）
+    // 检查位置0-20（21个槽位）
     bool hasData = false;
-    for (int i = 0; i < m_realTraySlots.size() && i < 10; ++i) {
+    for (int i = 0; i < m_realTraySlots.size() && i < 21; ++i) {
         if (!m_realTraySlots[i].isEmpty()) {
             hasData = true;
             break;
         }
     }
     
-    // 如果数组没有数据，再从标签检查
+    // 如果数组没有数据，再从标签检查（标签索引1-21对应数组索引0-20）
     if (!hasData) {
-        for (int i = 0; i < 10; ++i) {
-            int labelIndex = i + 1;
-            if (labelIndex < m_realTrayLabels.size() && m_realTrayLabels[labelIndex]) {
-                QString labelText = m_realTrayLabels[labelIndex]->text().trimmed();
+        for (int i = 1; i <= 21 && i < m_realTrayLabels.size(); ++i) {
+            if (m_realTrayLabels[i]) {
+                QString labelText = m_realTrayLabels[i]->text().trimmed();
                 if (!labelText.isEmpty()) {
                     hasData = true;
                     break;
@@ -2713,9 +3126,9 @@ void tcpClient::saveVisualizationRecords()
         }
     }
     
-    // 也检查出口标签
-    if (!hasData && m_realTrayLabels.size() > 11 && m_realTrayLabels[11]) {
-        QString exitText = m_realTrayLabels[11]->text().trimmed();
+    // 也检查出口标签（标签索引22）
+    if (!hasData && m_realTrayLabels.size() > 22 && m_realTrayLabels[22]) {
+        QString exitText = m_realTrayLabels[22]->text().trimmed();
         if (!exitText.isEmpty() && exitText != "出口") {
             hasData = true;
         }
@@ -2745,12 +3158,13 @@ void tcpClient::saveVisualizationRecords()
     }
     
     // 插入当前所有槽位的记录（从标签读取，确保与显示一致）
+    // 保存位置1-21（21个槽位，标签索引1-21对应数组索引0-20）
     QString currentTime = QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss");
     query.prepare("INSERT INTO visualization_records (slot_position, vehicle_name, update_time) VALUES (?, ?, ?)");
     
     int savedCount = 0;
-    for (int i = 0; i < 10; ++i) {
-        int labelIndex = i + 1;
+    for (int i = 0; i < 21; ++i) {
+        int labelIndex = i + 1; // 标签索引 = 数组索引 + 1（跳过入口标签0）
         QString vehicleName = "";
         
         // 从标签读取数据
@@ -2764,7 +3178,7 @@ void tcpClient::saveVisualizationRecords()
         }
         
         if (!vehicleName.isEmpty()) {
-            query.addBindValue(i + 1); // 槽位位置（1-10）
+            query.addBindValue(i + 1); // 槽位位置（1-21）
             query.addBindValue(vehicleName);
             query.addBindValue(currentTime);
             if (!query.exec()) {
@@ -2807,9 +3221,9 @@ void tcpClient::loadVisualizationRecords()
     }
     
     // 确保数组已初始化
-    if (m_realTraySlots.size() != 10) {
-        m_realTraySlots.resize(10);
-        for (int i = 0; i < 10; ++i) {
+    if (m_realTraySlots.size() != 21) {
+        m_realTraySlots.resize(21);
+        for (int i = 0; i < 21; ++i) {
             m_realTraySlots[i] = "";
         }
     }
@@ -2832,8 +3246,8 @@ void tcpClient::loadVisualizationRecords()
         int slotPosition = query.value(0).toInt();
         QString vehicleName = query.value(1).toString();
         
-        // 槽位位置是1-10，数组索引是0-9
-        if (slotPosition >= 1 && slotPosition <= 10) {
+        // 槽位位置是1-21，数组索引是0-20（槽位位置 = 数组索引 + 1）
+        if (slotPosition >= 1 && slotPosition <= 21) {
             int arrayIndex = slotPosition - 1;
             if (arrayIndex < m_realTraySlots.size()) {
                 m_realTraySlots[arrayIndex] = vehicleName;
@@ -2848,9 +3262,10 @@ void tcpClient::loadVisualizationRecords()
     
     // 更新标签显示（确保标签数组已创建）
     qDebug() << "标签数组大小:" << m_realTrayLabels.size();
-    if (m_realTrayLabels.size() >= 12) {
-        for (int i = 0; i < 10 && i < m_realTraySlots.size(); ++i) {
-            int labelIndex = i + 1; // 标签索引从1开始（跳过入口标签0）
+    if (m_realTrayLabels.size() >= 23) {
+        // 更新位置0-20的标签（标签索引1-21对应数组索引0-20）
+        for (int i = 0; i < 21 && i < m_realTraySlots.size(); ++i) {
+            int labelIndex = i + 1; // 标签索引 = 数组索引 + 1（跳过入口标签0）
             if (labelIndex < m_realTrayLabels.size() && m_realTrayLabels[labelIndex]) {
                 m_realTrayLabels[labelIndex]->setText(m_realTraySlots[i]);
                 if (!m_realTraySlots[i].isEmpty()) {
@@ -2859,18 +3274,18 @@ void tcpClient::loadVisualizationRecords()
             }
         }
         
-        // 检查最后一个槽是否有内容，如果有则显示在出口
-        if (m_realTraySlots.size() > 9 && !m_realTraySlots[9].isEmpty() && 
-            m_realTrayLabels.size() > 11 && m_realTrayLabels[11]) {
-            m_realTrayLabels[11]->setText("出口\n" + m_realTraySlots[9]);
-            qDebug() << "更新出口标签=" << m_realTraySlots[9];
-        } else if (m_realTrayLabels.size() > 11 && m_realTrayLabels[11]) {
+        // 检查最后一个槽（索引20）是否有内容，如果有则显示在出口（标签索引22）
+        if (m_realTraySlots.size() > 20 && !m_realTraySlots[20].isEmpty() && 
+            m_realTrayLabels.size() > 22 && m_realTrayLabels[22]) {
+            m_realTrayLabels[22]->setText("出口\n" + m_realTraySlots[20]);
+            qDebug() << "更新出口标签=" << m_realTraySlots[20];
+        } else if (m_realTrayLabels.size() > 22 && m_realTrayLabels[22]) {
             // 确保出口标签显示"出口"
-            m_realTrayLabels[11]->setText("出口");
+            m_realTrayLabels[22]->setText("出口");
         }
     } else {
-        qWarning() << "标签数组未完全初始化，大小=" << m_realTrayLabels.size() << "，期望>=12";
-        appendToLog(QString("标签数组未完全初始化，大小=%1，期望>=12").arg(m_realTrayLabels.size()), true);
+        qWarning() << "标签数组未完全初始化，大小=" << m_realTrayLabels.size() << "，期望>=23";
+        appendToLog(QString("标签数组未完全初始化，大小=%1，期望>=23").arg(m_realTrayLabels.size()), true);
     }
     
     qDebug() << "可视化记录已从数据库加载";
@@ -3274,9 +3689,9 @@ void tcpClient::handleRealTrayIn(const QString &modelName)
 {
     QString trimmedModel = modelName.trimmed();
     
-    // 首先检查出口标签（索引11），这是最靠近出口的位置
-    if (m_realTrayLabels.size() > 11 && m_realTrayLabels[11]) {
-        QString exitText = m_realTrayLabels[11]->text().trimmed();
+    // 首先检查出口标签（索引22），这是最靠近出口的位置
+    if (m_realTrayLabels.size() > 22 && m_realTrayLabels[22]) {
+        QString exitText = m_realTrayLabels[22]->text().trimmed();
         // 如果出口标签包含车型信息（格式可能是"出口\n车型"或只有车型）
         if (!exitText.isEmpty() && exitText != "出口") {
             // 提取车型名称（去除"出口"前缀）
@@ -3289,11 +3704,21 @@ void tcpClient::handleRealTrayIn(const QString &modelName)
                 // 找到最靠近出口且不为空的位置（出口标签）
                 if (vehicleName == trimmedModel) {
                     // 匹配成功，清空出口标签
-                    m_realTrayLabels[11]->setText("出口");
-                    // 清空对应的数组（最后一个槽位，索引9）
-                    m_realTraySlots[9] = "";
+                    m_realTrayLabels[22]->setText("出口");
+                    // 清空对应的数组（最后一个槽位，索引20）
+                    if (m_realTraySlots.size() > 20) {
+                        m_realTraySlots[20] = "";
+                    }
                     saveVisualizationRecords();
-                    appendToLog(QString("实托盘搬入: 匹配到出口的车型%1，已清空").arg(modelName), false);
+                    
+                    // 增加实际便次
+                    m_actualCount++;
+                    if (actualCountLabel) {
+                        actualCountLabel->setText(QString("实际便次：%1便").arg(m_actualCount));
+                    }
+                    saveStatisticsInfo(); // 保存到数据库
+                    
+                    appendToLog(QString("实托盘搬入: 匹配到出口的车型%1，已清空，实际便次+1").arg(modelName), false);
                     return;
                 } else {
                     // 出口位置的车型不匹配，直接跳过
@@ -3304,9 +3729,9 @@ void tcpClient::handleRealTrayIn(const QString &modelName)
         }
     }
     
-    // 如果出口标签为空，从槽位10开始向前查找，找到第一个不为空的槽位
-    // 从标签读取数据，确保与显示一致
-    for (int i = 9; i >= 0; --i) {
+    // 如果出口标签为空，从槽位21开始向前查找，找到第一个不为空的槽位
+    // 从标签读取数据，确保与显示一致（标签索引21-1对应数组索引20-0）
+    for (int i = 20; i >= 0; --i) {
         int labelIndex = i + 1; // 标签索引 = 数组索引 + 1（标签0是入口）
         
         if (labelIndex < m_realTrayLabels.size() && m_realTrayLabels[labelIndex]) {
@@ -3319,13 +3744,22 @@ void tcpClient::handleRealTrayIn(const QString &modelName)
                 
                 if (labelText == trimmedModel) {
                     // 匹配成功，清空该槽位
-                    m_realTraySlots[i] = "";
+                    if (i < m_realTraySlots.size()) {
+                        m_realTraySlots[i] = "";
+                    }
                     m_realTrayLabels[labelIndex]->setText("");
                     
                     // 保存到数据库
                     saveVisualizationRecords();
                     
-                    appendToLog(QString("实托盘搬入: 匹配到槽位%1的车型%2，已清空").arg(i + 1).arg(modelName), false);
+                    // 增加实际便次
+                    m_actualCount++;
+                    if (actualCountLabel) {
+                        actualCountLabel->setText(QString("实际便次：%1便").arg(m_actualCount));
+                    }
+                    saveStatisticsInfo(); // 保存到数据库
+                    
+                    appendToLog(QString("实托盘搬入: 匹配到槽位%1的车型%2，已清空，实际便次+1").arg(i + 1).arg(modelName), false);
                     return;
                 } else {
                     // 最靠近出口且不为空的槽位车型不匹配，直接跳过
@@ -3350,9 +3784,9 @@ void tcpClient::handleEmptyTrayIn(const QString &modelName)
 {
     QString trimmedModel = modelName.trimmed();
     
-    // 首先检查出口标签（索引11），这是最靠近出口的位置
-    if (m_emptyTrayLabels.size() > 11 && m_emptyTrayLabels[11]) {
-        QString exitText = m_emptyTrayLabels[11]->text().trimmed();
+    // 首先检查出口标签（索引22），这是最靠近出口的位置
+    if (m_emptyTrayLabels.size() > 22 && m_emptyTrayLabels[22]) {
+        QString exitText = m_emptyTrayLabels[22]->text().trimmed();
         // 如果出口标签包含车型信息（格式可能是"出口\n车型"或只有车型）
         if (!exitText.isEmpty() && exitText != "出口") {
             // 提取车型名称（去除"出口"前缀）
@@ -3367,9 +3801,11 @@ void tcpClient::handleEmptyTrayIn(const QString &modelName)
                 
                 if (vehicleName == trimmedModel) {
                     // 匹配成功，清空出口标签
-                    m_emptyTrayLabels[11]->setText("出口");
-                    // 清空对应的数组（最后一个槽位，索引9）
-                    m_emptyTraySlots[9] = "";
+                    m_emptyTrayLabels[22]->setText("出口");
+                    // 清空对应的数组（最后一个槽位，索引20）
+                    if (m_emptyTraySlots.size() > 20) {
+                        m_emptyTraySlots[20] = "";
+                    }
                     saveEmptyTrayVisualizationRecords();
                     appendToLog(QString("空托盘搬入: 匹配到出口的车型%1，已清空").arg(modelName), false);
                     return;
@@ -3382,11 +3818,10 @@ void tcpClient::handleEmptyTrayIn(const QString &modelName)
         }
     }
     
-    // 如果出口标签为空，从槽位10开始向前查找，找到第一个不为空的槽位
-    // 从标签读取数据，确保与显示一致
-    for (int i = 9; i >= 0; --i) {
-        int labelIndex = i + 1; // 标签索引 = 数组索引 + 1（标签0是入口）
-        
+    // 如果出口标签为空，从槽位20开始向前查找，找到第一个不为空的槽位
+    // 从标签读取数据，确保与显示一致（标签索引21-1对应数组索引20-0）
+    for (int i = 20; i >= 0; --i) {
+        int labelIndex = i + 1; // 标签索引 = 数组索引 + 1（跳过入口标签0）
         if (labelIndex < m_emptyTrayLabels.size() && m_emptyTrayLabels[labelIndex]) {
             QString labelText = m_emptyTrayLabels[labelIndex]->text().trimmed();
             
@@ -3397,7 +3832,9 @@ void tcpClient::handleEmptyTrayIn(const QString &modelName)
                 
                 if (labelText == trimmedModel) {
                     // 匹配成功，清空该槽位
-                    m_emptyTraySlots[i] = "";
+                    if (i < m_emptyTraySlots.size()) {
+                        m_emptyTraySlots[i] = "";
+                    }
                     m_emptyTrayLabels[labelIndex]->setText("");
                     
                     // 保存到数据库
@@ -3424,9 +3861,9 @@ void tcpClient::handleEmptyTrayIn(const QString &modelName)
  */
 void tcpClient::handleEmptyTrayOut(const QString &modelName)
 {
-    // 先检查是否有任何槽位有内容，如果有就需要推进
+    // 先检查是否有任何槽位有内容，如果有就需要推进（检查位置0-20，21个槽位）
     bool hasContent = false;
-    for (int i = 0; i < m_emptyTraySlots.size(); ++i) {
+    for (int i = 0; i < m_emptyTraySlots.size() && i < 21; ++i) {
         if (!m_emptyTraySlots[i].isEmpty()) {
             hasContent = true;
             break;
@@ -3438,11 +3875,13 @@ void tcpClient::handleEmptyTrayOut(const QString &modelName)
         advanceEmptyTrayVisualization();
     }
     
-    // 在第一个槽位（索引0）添加新车型
-    m_emptyTraySlots[0] = modelName;
+    // 在第一个槽位（数组索引0，对应标签索引1）添加新车型
+    if (m_emptyTraySlots.size() > 0) {
+        m_emptyTraySlots[0] = modelName;
+    }
     
-    // 更新标签显示（槽位1对应标签索引1，因为标签0是入口）
-    if (1 < m_emptyTrayLabels.size()) {
+    // 更新标签显示（数组索引0对应标签索引1）
+    if (1 < m_emptyTrayLabels.size() && m_emptyTrayLabels[1]) {
         m_emptyTrayLabels[1]->setText(modelName);
     }
     
@@ -3458,32 +3897,34 @@ void tcpClient::handleEmptyTrayOut(const QString &modelName)
  */
 void tcpClient::advanceEmptyTrayVisualization()
 {
-    // 如果最后一个槽位（索引9）有内容，先移动到出口（标签索引11）
-    if (!m_emptyTraySlots[9].isEmpty()) {
-        if (11 < m_emptyTrayLabels.size() && m_emptyTrayLabels[11]) {
-            m_emptyTrayLabels[11]->setText("出口\n" + m_emptyTraySlots[9]);
+    // 如果最后一个槽位（索引20）有内容，先移动到出口（标签索引22）
+    if (m_emptyTraySlots.size() > 20 && !m_emptyTraySlots[20].isEmpty()) {
+        if (22 < m_emptyTrayLabels.size() && m_emptyTrayLabels[22]) {
+            m_emptyTrayLabels[22]->setText("出口\n" + m_emptyTraySlots[20]);
         }
     }
     
-    // 从右到左推进（从索引9到1），每个位置的内容移动到下一个位置
+    // 从右到左推进（从索引19到0），每个位置的内容移动到下一个位置
     // 这样索引0的内容会移动到索引1，索引1的内容会移动到索引2，以此类推
-    for (int i = 9; i >= 1; --i) {
-        m_emptyTraySlots[i] = m_emptyTraySlots[i - 1];
-    }
-    
-    // 清空第一个槽位（索引0），准备放入新车型
-    m_emptyTraySlots[0] = "";
-    
-    // 更新所有标签显示（槽位1-10对应标签索引1-10）
-    for (int i = 0; i < 10; ++i) {
-        if (i + 1 < m_emptyTrayLabels.size() && m_emptyTrayLabels[i + 1]) {
-            m_emptyTrayLabels[i + 1]->setText(m_emptyTraySlots[i]);
+    for (int i = 19; i >= 0; --i) {
+        if (i < m_emptyTraySlots.size() && i + 1 < m_emptyTraySlots.size()) {
+            m_emptyTraySlots[i + 1] = m_emptyTraySlots[i];
+            m_emptyTraySlots[i] = "";
         }
     }
     
-    // 如果最后一个槽位（索引9）现在为空，清空出口标签
-    if (m_emptyTraySlots[9].isEmpty() && 11 < m_emptyTrayLabels.size() && m_emptyTrayLabels[11]) {
-        m_emptyTrayLabels[11]->setText("出口");
+    // 更新所有标签显示（标签索引1-21对应数组索引0-20）
+    for (int i = 0; i < 21 && i < m_emptyTraySlots.size(); ++i) {
+        int labelIndex = i + 1; // 标签索引 = 数组索引 + 1（跳过入口标签0）
+        if (labelIndex < m_emptyTrayLabels.size() && m_emptyTrayLabels[labelIndex]) {
+            m_emptyTrayLabels[labelIndex]->setText(m_emptyTraySlots[i]);
+        }
+    }
+    
+    // 如果最后一个槽位（索引20）现在为空，清空出口标签
+    if ((m_emptyTraySlots.size() <= 20 || m_emptyTraySlots[20].isEmpty()) && 
+        22 < m_emptyTrayLabels.size() && m_emptyTrayLabels[22]) {
+        m_emptyTrayLabels[22]->setText("出口");
     }
 }
 
@@ -3507,13 +3948,13 @@ void tcpClient::saveEmptyTrayVisualizationRecords()
         return;
     }
     
-    // 插入当前所有槽位的记录
+    // 插入当前所有槽位的记录（保存位置1-21，21个槽位，数组索引0-20）
     QString currentTime = QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss");
     query.prepare("INSERT INTO empty_tray_visualization_records (slot_position, vehicle_name, update_time) VALUES (?, ?, ?)");
     
-    for (int i = 0; i < m_emptyTraySlots.size(); ++i) {
+    for (int i = 0; i < 21 && i < m_emptyTraySlots.size(); ++i) {
         if (!m_emptyTraySlots[i].isEmpty()) {
-            query.addBindValue(i + 1); // 槽位位置（1-10）
+            query.addBindValue(i + 1); // 槽位位置（1-21）
             query.addBindValue(m_emptyTraySlots[i]);
             query.addBindValue(currentTime);
             if (!query.exec()) {
@@ -3538,9 +3979,9 @@ void tcpClient::loadEmptyTrayVisualizationRecords()
     }
     
     // 确保数组已初始化
-    if (m_emptyTraySlots.size() != 10) {
-        m_emptyTraySlots.resize(10);
-        for (int i = 0; i < 10; ++i) {
+    if (m_emptyTraySlots.size() != 21) {
+        m_emptyTraySlots.resize(21);
+        for (int i = 0; i < 21; ++i) {
             m_emptyTraySlots[i] = "";
         }
     }
@@ -3561,8 +4002,8 @@ void tcpClient::loadEmptyTrayVisualizationRecords()
         int slotPosition = query.value(0).toInt();
         QString vehicleName = query.value(1).toString();
         
-        // 槽位位置是1-10，数组索引是0-9
-        if (slotPosition >= 1 && slotPosition <= 10) {
+        // 槽位位置是1-21，数组索引是0-20（槽位位置 = 数组索引 + 1）
+        if (slotPosition >= 1 && slotPosition <= 21) {
             int arrayIndex = slotPosition - 1;
             if (arrayIndex < m_emptyTraySlots.size()) {
                 m_emptyTraySlots[arrayIndex] = vehicleName;
@@ -3570,18 +4011,127 @@ void tcpClient::loadEmptyTrayVisualizationRecords()
         }
     }
     
-    // 更新标签显示（槽位1-10对应标签索引1-10，因为标签0是入口）
-    for (int i = 0; i < 10; ++i) {
-        if (i + 1 < m_emptyTrayLabels.size()) {
-            m_emptyTrayLabels[i + 1]->setText(m_emptyTraySlots[i]);
+    // 更新标签显示（标签索引1-21对应数组索引0-20）
+    for (int i = 0; i < 21 && i < m_emptyTraySlots.size(); ++i) {
+        int labelIndex = i + 1; // 标签索引 = 数组索引 + 1（跳过入口标签0）
+        if (labelIndex < m_emptyTrayLabels.size() && m_emptyTrayLabels[labelIndex]) {
+            m_emptyTrayLabels[labelIndex]->setText(m_emptyTraySlots[i]);
         }
     }
     
-    // 如果最后一个槽位（索引9）有内容，也显示在出口（标签索引11）
-    if (!m_emptyTraySlots[9].isEmpty() && 11 < m_emptyTrayLabels.size()) {
-        m_emptyTrayLabels[11]->setText(m_emptyTraySlots[9]);
+    // 如果最后一个槽位（索引20）有内容，也显示在出口（标签索引22）
+    if (m_emptyTraySlots.size() > 20 && !m_emptyTraySlots[20].isEmpty() && 
+        22 < m_emptyTrayLabels.size() && m_emptyTrayLabels[22]) {
+        m_emptyTrayLabels[22]->setText("出口\n" + m_emptyTraySlots[20]);
     }
     
     qDebug() << "空托盘可视化记录已从数据库加载";
 }
+
+/**
+ * @brief 保存统计信息到数据库
+ */
+void tcpClient::saveStatisticsInfo()
+{
+    // 检查数据库是否已打开
+    QSqlDatabase db = QSqlDatabase::database();
+    if (!db.isOpen()) {
+        qDebug() << "数据库未打开，跳过保存统计信息";
+        return;
+    }
+    
+    QSqlQuery query;
+    QString currentTime = QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss");
+    
+    // 使用INSERT ... ON DUPLICATE KEY UPDATE来更新或插入
+    // 先保存计划便次
+    query.prepare("INSERT INTO statistics_info (stat_type, count_value, update_time) VALUES (?, ?, ?) "
+                  "ON DUPLICATE KEY UPDATE count_value = ?, update_time = ?");
+    query.addBindValue("planned_count");
+    query.addBindValue(m_plannedCount);
+    query.addBindValue(currentTime);
+    query.addBindValue(m_plannedCount);
+    query.addBindValue(currentTime);
+    if (!query.exec()) {
+        appendToLog("保存计划便次失败: " + query.lastError().text(), true);
+        qWarning() << "保存计划便次失败:" << query.lastError().text();
+    }
+    
+    // 保存实际便次
+    query.prepare("INSERT INTO statistics_info (stat_type, count_value, update_time) VALUES (?, ?, ?) "
+                  "ON DUPLICATE KEY UPDATE count_value = ?, update_time = ?");
+    query.addBindValue("actual_count");
+    query.addBindValue(m_actualCount);
+    query.addBindValue(currentTime);
+    query.addBindValue(m_actualCount);
+    query.addBindValue(currentTime);
+    if (!query.exec()) {
+        appendToLog("保存实际便次失败: " + query.lastError().text(), true);
+        qWarning() << "保存实际便次失败:" << query.lastError().text();
+    }
+    
+    // 保存延迟便次
+    query.prepare("INSERT INTO statistics_info (stat_type, count_value, update_time) VALUES (?, ?, ?) "
+                  "ON DUPLICATE KEY UPDATE count_value = ?, update_time = ?");
+    query.addBindValue("delayed_count");
+    query.addBindValue(m_delayedCount);
+    query.addBindValue(currentTime);
+    query.addBindValue(m_delayedCount);
+    query.addBindValue(currentTime);
+    if (!query.exec()) {
+        appendToLog("保存延迟便次失败: " + query.lastError().text(), true);
+        qWarning() << "保存延迟便次失败:" << query.lastError().text();
+    }
+    
+    qDebug() << "统计信息已保存到数据库";
+}
+
+/**
+ * @brief 从数据库加载统计信息
+ */
+void tcpClient::loadStatisticsInfo()
+{
+    // 检查数据库是否已打开
+    QSqlDatabase db = QSqlDatabase::database();
+    if (!db.isOpen()) {
+        qDebug() << "数据库未打开，跳过加载统计信息";
+        return;
+    }
+    
+    // 检查标签是否已创建
+    if (!plannedCountLabel || !actualCountLabel || !delayedCountLabel) {
+        qDebug() << "统计信息标签未创建，跳过加载统计信息";
+        return;
+    }
+    
+    QSqlQuery query("SELECT stat_type, count_value FROM statistics_info");
+    
+    if (query.lastError().isValid()) {
+        qDebug() << "查询统计信息失败:" << query.lastError().text();
+        return;
+    }
+    
+    while (query.next()) {
+        QString statType = query.value(0).toString();
+        int countValue = query.value(1).toInt();
+        
+        if (statType == "planned_count") {
+            m_plannedCount = countValue;
+            plannedCountLabel->setText(QString("计划便次：%1便").arg(m_plannedCount));
+            qDebug() << "加载计划便次:" << m_plannedCount;
+        } else if (statType == "actual_count") {
+            m_actualCount = countValue;
+            actualCountLabel->setText(QString("实际便次：%1便").arg(m_actualCount));
+            qDebug() << "加载实际便次:" << m_actualCount;
+        } else if (statType == "delayed_count") {
+            m_delayedCount = countValue;
+            delayedCountLabel->setText(QString("延迟便次：%1便").arg(m_delayedCount));
+            qDebug() << "加载延迟便次:" << m_delayedCount;
+        }
+    }
+    
+    qDebug() << "统计信息已从数据库加载";
+}
+
+
 
