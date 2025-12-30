@@ -5156,7 +5156,7 @@ QJsonObject tcpClient::buildVisualizationData()
 {
     QJsonObject root;
     root["action"] = "show";
-    root["type"] = "AGT搬运";
+    root["type"] = "AGT Transport";
     
     // 统计信息
     QJsonObject statistics;
