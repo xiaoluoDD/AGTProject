@@ -160,6 +160,11 @@ private:
     void loadVisualizationRecords(); ///< 从数据库加载可视化记录
     void saveStatisticsInfo(); ///< 保存统计信息到数据库
     void loadStatisticsInfo(); ///< 从数据库加载统计信息
+    QString getCurrentShift(); ///< 获取当前班次（"白班"或"夜班"）
+    void onShiftDisplayButtonClicked(); ///< 班次显示按钮点击处理
+    void loadPreviousShiftStatistics(); ///< 加载前一个班次的统计信息
+    void restoreCurrentShiftDisplay(); ///< 恢复显示当前班次数据
+    void updateShiftDisplayButton(); ///< 更新班次显示按钮文本
     void initShiftTable(); ///< 初始化班次记录表
     void checkShiftChange(); ///< 检查班次变化
     void saveShiftRecord(const QString &shiftType); ///< 保存班次记录到数据库
@@ -207,6 +212,7 @@ private:
     QTimer *m_edSoftwareConnectionTimer; ///< ED软件连接超时定时器
     QTimer *m_shiftCheckTimer;   ///< 班次检查定时器（每分钟检查一次）
     QTimer *m_visualizationDataTimer; ///< 可视化数据发送定时器（每3秒发送一次）
+    QTimer *m_shiftDisplayAutoResetTimer; ///< 班次显示自动恢复定时器（1分钟后恢复）
     bool m_isConnected;           ///< PLC连接状态标志
     bool m_isServerConnected;     ///< 服务端连接状态标志
     bool m_isEdSoftwareConnected; ///< ED软件连接状态标志
@@ -243,9 +249,14 @@ private:
     QLabel* plannedCountLabel;    ///< 计划便次标签
     QLabel* actualCountLabel;      ///< 实际便次标签
     QLabel* delayedCountLabel;     ///< 延迟便次标签
+    QPushButton* shiftDisplayButton; ///< 班次显示按钮
     int m_plannedCount;           ///< 计划便次数值
     int m_actualCount;            ///< 实际便次数值
     int m_delayedCount;           ///< 延迟便次数值
+    QString m_currentDisplayShift; ///< 当前显示的班次（"current"表示当前班次，"previous"表示前一个班次）
+    int m_displayedPlannedCount;  ///< 显示的计划便次（可能是前一个班次的）
+    int m_displayedActualCount;   ///< 显示的实际便次（可能是前一个班次的）
+    int m_displayedDelayedCount;  ///< 显示的延迟便次（可能是前一个班次的）           ///< 延迟便次数值
     
     // 实托盘批次处理相关
     int m_realTrayBatchCount;     ///< 当前批次已搬入的车型数量（0-3），0表示新批次开始

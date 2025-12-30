@@ -59,6 +59,7 @@ tcpClient::tcpClient(QWidget *parent)
     , m_edSoftwareConnectionTimer(new QTimer(this))
     , m_shiftCheckTimer(new QTimer(this))
     , m_visualizationDataTimer(new QTimer(this))
+    , m_shiftDisplayAutoResetTimer(new QTimer(this))
     , m_isConnected(false)
     , m_isServerConnected(false)
     , m_isEdSoftwareConnected(false)
@@ -71,6 +72,10 @@ tcpClient::tcpClient(QWidget *parent)
     , m_plannedCount(100)
     , m_actualCount(89)
     , m_delayedCount(0)
+    , m_currentDisplayShift("current")
+    , m_displayedPlannedCount(100)
+    , m_displayedActualCount(89)
+    , m_displayedDelayedCount(0)
     , m_realTrayBatchCount(0)
     , m_emptyTrayBatchCount(0)
     , m_dbHost("localhost")
@@ -496,6 +501,7 @@ void tcpClient::setupUI()
     // 左边：计划便次
     plannedCountLabel = new QLabel(statisticsGroupBox);
     m_plannedCount = 100;
+    m_displayedPlannedCount = m_plannedCount;
     plannedCountLabel->setText(QString("计划便次：%1便").arg(m_plannedCount));
     plannedCountLabel->setStyleSheet(
         "QLabel {"
@@ -515,6 +521,7 @@ void tcpClient::setupUI()
     // 实际便次
     actualCountLabel = new QLabel(statisticsGroupBox);
     m_actualCount = 89;
+    m_displayedActualCount = m_actualCount;
     actualCountLabel->setText(QString("实际便次：%1便").arg(m_actualCount));
     actualCountLabel->setStyleSheet(
         "QLabel {"
@@ -530,6 +537,7 @@ void tcpClient::setupUI()
     // 延迟便次
     delayedCountLabel = new QLabel(statisticsGroupBox);
     m_delayedCount = 0;
+    m_displayedDelayedCount = m_delayedCount;
     delayedCountLabel->setText(QString("延迟便次：%1便").arg(m_delayedCount));
     delayedCountLabel->setStyleSheet(
         "QLabel {"
@@ -544,8 +552,29 @@ void tcpClient::setupUI()
     
     statisticsLayout->addLayout(rightStatisticsLayout);
     
-    // 添加右侧弹性空间，使内容向中间靠拢
+    // 添加右侧弹性空间，使按钮靠右
     statisticsLayout->addStretch();
+    
+    // 添加班次显示按钮（靠右显示）
+    shiftDisplayButton = new QPushButton(statisticsGroupBox);
+    m_currentDisplayShift = "current"; // 初始显示当前班次
+    updateShiftDisplayButton();
+    shiftDisplayButton->setStyleSheet(
+        "QPushButton {"
+        "font-size: 12pt;"
+        "font-weight: bold;"
+        "padding: 8px 16px;"
+        "min-width: 100px;"
+        "border: 2px solid #4CAF50;"
+        "border-radius: 5px;"
+        "background-color: #E8F5E9;"
+        "}"
+        "QPushButton:hover {"
+        "background-color: #C8E6C9;"
+        "}"
+    );
+    connect(shiftDisplayButton, &QPushButton::clicked, this, &tcpClient::onShiftDisplayButtonClicked);
+    statisticsLayout->addWidget(shiftDisplayButton);
     
     // 将统计区域添加到主布局中
     visualizationLayout->addWidget(statisticsGroupBox);
@@ -2591,7 +2620,10 @@ void tcpClient::onActualCountLabelDoubleClicked()
                                         m_actualCount, 0, 999999, 1, &ok);
     if (ok) {
         m_actualCount = newValue;
-        actualCountLabel->setText(QString("实际便次：%1便").arg(m_actualCount));
+        if (m_currentDisplayShift == "current" && actualCountLabel) {
+            actualCountLabel->setText(QString("实际便次：%1便").arg(m_actualCount));
+        }
+        m_displayedActualCount = m_actualCount; // 更新显示值
         appendToLog(QString("实际便次已更新为：%1便").arg(m_actualCount), false);
         saveStatisticsInfo(); // 保存到数据库
     }
@@ -4045,9 +4077,10 @@ void tcpClient::handleRealTrayIn(const QString &modelName, int slotNumber)
                                     
                                     // 增加实际便次
                                     m_actualCount++;
-                                    if (actualCountLabel) {
+                                    if (m_currentDisplayShift == "current" && actualCountLabel) {
                                         actualCountLabel->setText(QString("实际便次：%1便").arg(m_actualCount));
                                     }
+                                    m_displayedActualCount = m_actualCount; // 更新显示值
                                     saveStatisticsInfo(); // 保存到数据库
                                     
                                     appendToLog(QString("实托盘搬入: 匹配到槽位%1（slotNumber=%2，位置%3）的车型%4，已清空，实际便次+1")
@@ -4080,9 +4113,10 @@ void tcpClient::handleRealTrayIn(const QString &modelName, int slotNumber)
                                 
                                 // 增加实际便次
                                 m_actualCount++;
-                                if (actualCountLabel) {
+                                if (m_currentDisplayShift == "current" && actualCountLabel) {
                                     actualCountLabel->setText(QString("实际便次：%1便").arg(m_actualCount));
                                 }
+                                m_displayedActualCount = m_actualCount; // 更新显示值
                                 saveStatisticsInfo(); // 保存到数据库
                                 
                                 appendToLog(QString("实托盘搬入: 匹配到槽位%1（slotNumber=%2，位置%3）的车型%4，已清空，实际便次+1")
@@ -4135,9 +4169,10 @@ void tcpClient::handleRealTrayIn(const QString &modelName, int slotNumber)
                     
                     // 增加实际便次
                     m_actualCount++;
-                    if (actualCountLabel) {
+                    if (m_currentDisplayShift == "current" && actualCountLabel) {
                         actualCountLabel->setText(QString("实际便次：%1便").arg(m_actualCount));
                     }
+                    m_displayedActualCount = m_actualCount; // 更新显示值
                     saveStatisticsInfo(); // 保存到数据库
                     
                     appendToLog(QString("实托盘搬入: 匹配到出口的车型%1，已清空，实际便次+1").arg(modelName), false);
@@ -4176,9 +4211,10 @@ void tcpClient::handleRealTrayIn(const QString &modelName, int slotNumber)
                     
                     // 增加实际便次
                     m_actualCount++;
-                    if (actualCountLabel) {
+                    if (m_currentDisplayShift == "current" && actualCountLabel) {
                         actualCountLabel->setText(QString("实际便次：%1便").arg(m_actualCount));
                     }
+                    m_displayedActualCount = m_actualCount; // 更新显示值
                     saveStatisticsInfo(); // 保存到数据库
                     
                     appendToLog(QString("实托盘搬入: 匹配到槽位%1的车型%2，已清空，实际便次+1").arg(i + 1).arg(modelName), false);
@@ -4791,17 +4827,31 @@ void tcpClient::loadStatisticsInfo()
         
         if (statType == "planned_count") {
             m_plannedCount = countValue;
-            plannedCountLabel->setText(QString("计划便次：%1便").arg(m_plannedCount));
+            m_displayedPlannedCount = countValue;
+            if (m_currentDisplayShift == "current" && plannedCountLabel) {
+                plannedCountLabel->setText(QString("计划便次：%1便").arg(m_plannedCount));
+            }
             qDebug() << "加载计划便次:" << m_plannedCount;
         } else if (statType == "actual_count") {
             m_actualCount = countValue;
-            actualCountLabel->setText(QString("实际便次：%1便").arg(m_actualCount));
+            m_displayedActualCount = countValue;
+            if (m_currentDisplayShift == "current" && actualCountLabel) {
+                actualCountLabel->setText(QString("实际便次：%1便").arg(m_actualCount));
+            }
             qDebug() << "加载实际便次:" << m_actualCount;
         } else if (statType == "delayed_count") {
             m_delayedCount = countValue;
-            delayedCountLabel->setText(QString("延迟便次：%1便").arg(m_delayedCount));
+            m_displayedDelayedCount = countValue;
+            if (m_currentDisplayShift == "current" && delayedCountLabel) {
+                delayedCountLabel->setText(QString("延迟便次：%1便").arg(m_delayedCount));
+            }
             qDebug() << "加载延迟便次:" << m_delayedCount;
         }
+    }
+    
+    // 更新班次显示按钮
+    if (shiftDisplayButton) {
+        updateShiftDisplayButton();
     }
     
     qDebug() << "统计信息已从数据库加载";
@@ -4856,9 +4906,10 @@ void tcpClient::checkShiftChange()
         
         // 清零实际便次，开始记录白班数据
         m_actualCount = 0;
-        if (actualCountLabel) {
+        if (m_currentDisplayShift == "current" && actualCountLabel) {
             actualCountLabel->setText(QString("实际便次：%1便").arg(m_actualCount));
         }
+        m_displayedActualCount = m_actualCount; // 更新显示值
         saveStatisticsInfo(); // 保存清零后的实际便次
         
         appendToLog(QString("班次切换：夜班结束，实际便次已保存。白班开始，实际便次已清零"), false);
@@ -4870,9 +4921,10 @@ void tcpClient::checkShiftChange()
         
         // 清零实际便次，开始记录夜班数据
         m_actualCount = 0;
-        if (actualCountLabel) {
+        if (m_currentDisplayShift == "current" && actualCountLabel) {
             actualCountLabel->setText(QString("实际便次：%1便").arg(m_actualCount));
         }
+        m_displayedActualCount = m_actualCount; // 更新显示值
         saveStatisticsInfo(); // 保存清零后的实际便次
         
         appendToLog(QString("班次切换：白班结束，实际便次已保存。夜班开始，实际便次已清零"), false);
@@ -5162,6 +5214,181 @@ void tcpClient::sendVisualizationDataToServer()
     } else {
         appendToLog("发送可视化数据到服务端失败", true);
         qWarning() << "发送可视化数据失败";
+    }
+}
+
+/**
+ * @brief 获取当前班次（"白班"或"夜班"）
+ * @return 当前班次字符串
+ */
+QString tcpClient::getCurrentShift()
+{
+    QDateTime now = QDateTime::currentDateTime();
+    QTime currentTime = now.time();
+    
+    // 白班：7:15 - 17:30
+    // 夜班：17:30 - 次日7:15
+    if (currentTime >= QTime(7, 15, 0) && currentTime < QTime(17, 30, 0)) {
+        return "白班";
+    } else {
+        return "夜班";
+    }
+}
+
+/**
+ * @brief 更新班次显示按钮文本
+ */
+void tcpClient::updateShiftDisplayButton()
+{
+    if (!shiftDisplayButton) {
+        return;
+    }
+    
+    QString currentShift = getCurrentShift();
+    QString buttonText;
+    
+    if (m_currentDisplayShift == "current") {
+        buttonText = QString("当前班次：%1").arg(currentShift);
+        shiftDisplayButton->setStyleSheet(
+            "QPushButton {"
+            "font-size: 12pt;"
+            "font-weight: bold;"
+            "padding: 8px 16px;"
+            "min-width: 100px;"
+            "border: 2px solid #4CAF50;"
+            "border-radius: 5px;"
+            "background-color: #E8F5E9;"
+            "}"
+            "QPushButton:hover {"
+            "background-color: #C8E6C9;"
+            "}"
+        );
+    } else {
+        QString previousShift = (currentShift == "白班") ? "夜班" : "白班";
+        buttonText = QString("前一个班次：%1").arg(previousShift);
+        shiftDisplayButton->setStyleSheet(
+            "QPushButton {"
+            "font-size: 12pt;"
+            "font-weight: bold;"
+            "padding: 8px 16px;"
+            "min-width: 100px;"
+            "border: 2px solid #FF9800;"
+            "border-radius: 5px;"
+            "background-color: #FFF3E0;"
+            "}"
+            "QPushButton:hover {"
+            "background-color: #FFE0B2;"
+            "}"
+        );
+    }
+    
+    shiftDisplayButton->setText(buttonText);
+}
+
+/**
+ * @brief 班次显示按钮点击处理
+ */
+void tcpClient::onShiftDisplayButtonClicked()
+{
+    if (m_currentDisplayShift == "current") {
+        // 切换到前一个班次
+        m_currentDisplayShift = "previous";
+        loadPreviousShiftStatistics();
+        updateShiftDisplayButton();
+        
+        // 启动自动恢复定时器
+        m_shiftDisplayAutoResetTimer->start();
+        
+        appendToLog("已切换到前一个班次数据", false);
+    } else {
+        // 切换回当前班次
+        restoreCurrentShiftDisplay();
+    }
+}
+
+/**
+ * @brief 加载前一个班次的统计信息
+ */
+void tcpClient::loadPreviousShiftStatistics()
+{
+    // 检查数据库是否已打开
+    QSqlDatabase db = QSqlDatabase::database();
+    if (!db.isOpen()) {
+        qDebug() << "数据库未打开，跳过加载前一个班次统计信息";
+        return;
+    }
+    
+    QString currentShift = getCurrentShift();
+    QString previousShift = (currentShift == "白班") ? "夜班" : "白班";
+    
+    QSqlQuery query;
+    // 查询前一个班次的最新记录
+    query.prepare("SELECT actual_count FROM shift_records WHERE shift_type = ? ORDER BY create_time DESC LIMIT 1");
+    query.addBindValue(previousShift);
+    
+    if (!query.exec()) {
+        appendToLog(QString("查询前一个班次（%1）记录失败: %2").arg(previousShift).arg(query.lastError().text()), true);
+        qWarning() << "查询前一个班次记录失败:" << query.lastError().text();
+        return;
+    }
+    
+    // 获取前一个班次的实际便次
+    int previousActualCount = 0;
+    if (query.next()) {
+        previousActualCount = query.value(0).toInt();
+    }
+    
+    // 更新显示的统计信息（前一个班次只有实际便次，计划便次和延迟便次保持当前值）
+    m_displayedActualCount = previousActualCount;
+    m_displayedPlannedCount = m_plannedCount; // 计划便次保持当前值
+    m_displayedDelayedCount = m_delayedCount; // 延迟便次保持当前值
+    
+    // 更新标签显示
+    if (plannedCountLabel) {
+        plannedCountLabel->setText(QString("计划便次：%1便").arg(m_displayedPlannedCount));
+    }
+    if (actualCountLabel) {
+        actualCountLabel->setText(QString("实际便次：%1便").arg(m_displayedActualCount));
+    }
+    if (delayedCountLabel) {
+        delayedCountLabel->setText(QString("延迟便次：%1便").arg(m_displayedDelayedCount));
+    }
+    
+    qDebug() << QString("已加载前一个班次（%1）数据：实际便次=%2").arg(previousShift).arg(previousActualCount);
+}
+
+/**
+ * @brief 恢复显示当前班次数据
+ */
+void tcpClient::restoreCurrentShiftDisplay()
+{
+    // 检查是否与当前班次不一致
+    QString currentShift = getCurrentShift();
+    
+    if (m_currentDisplayShift == "previous") {
+        // 恢复显示当前班次数据
+        m_currentDisplayShift = "current";
+        m_displayedPlannedCount = m_plannedCount;
+        m_displayedActualCount = m_actualCount;
+        m_displayedDelayedCount = m_delayedCount;
+        
+        // 更新标签显示
+        if (plannedCountLabel) {
+            plannedCountLabel->setText(QString("计划便次：%1便").arg(m_displayedPlannedCount));
+        }
+        if (actualCountLabel) {
+            actualCountLabel->setText(QString("实际便次：%1便").arg(m_displayedActualCount));
+        }
+        if (delayedCountLabel) {
+            delayedCountLabel->setText(QString("延迟便次：%1便").arg(m_displayedDelayedCount));
+        }
+        
+        updateShiftDisplayButton();
+        
+        // 停止自动恢复定时器
+        m_shiftDisplayAutoResetTimer->stop();
+        
+        appendToLog(QString("已恢复显示当前班次（%1）数据").arg(currentShift), false);
     }
 }
 
