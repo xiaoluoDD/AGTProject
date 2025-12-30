@@ -159,6 +159,8 @@ private:
     void loadConnectionConfig(); ///< 从数据库加载连接配置
     void updateServerConnectionStatus(bool connected); ///< 更新服务端连接状态显示
     void processServerJsonData(const QByteArray &data); ///< 处理服务端JSON数据
+    void sendVisualizationDataToServer(); ///< 发送可视化数据到服务端
+    QJsonObject buildVisualizationData(); ///< 构建可视化数据JSON对象
     void handleRealTrayIn(const QString &modelName, int slotNumber = -1); ///< 处理实托盘搬入，slotNumber为-1时使用原逻辑，否则根据slotNumber确定位置
     void handleEmptyTrayIn(const QString &modelName, int slotNo = -1); ///< 处理空托盘搬入，slotNo为-1时使用原逻辑，否则根据slotNo确定位置
     void handleEmptyTrayOut(const QString &modelName, int slotNumber = -1); ///< 处理空托盘搬出，slotNumber为-1时使用原逻辑，否则根据slotNumber确定位置
@@ -193,6 +195,7 @@ private:
     QTimer *m_connectionTimer;    ///< PLC连接超时定时器
     QTimer *m_serverConnectionTimer; ///< 服务端连接超时定时器
     QTimer *m_shiftCheckTimer;   ///< 班次检查定时器（每分钟检查一次）
+    QTimer *m_visualizationDataTimer; ///< 可视化数据发送定时器（每3秒发送一次）
     bool m_isConnected;           ///< PLC连接状态标志
     bool m_isServerConnected;     ///< 服务端连接状态标志
     int m_fullTrayCount;          ///< 满托盘时数量

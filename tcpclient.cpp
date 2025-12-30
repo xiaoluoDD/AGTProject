@@ -41,6 +41,7 @@
 #include <QVector>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QJsonArray>
 #include <QJsonParseError>
 
 /**
@@ -55,6 +56,7 @@ tcpClient::tcpClient(QWidget *parent)
     , m_connectionTimer(new QTimer(this))
     , m_serverConnectionTimer(new QTimer(this))
     , m_shiftCheckTimer(new QTimer(this))
+    , m_visualizationDataTimer(new QTimer(this))
     , m_isConnected(false)
     , m_isServerConnected(false)
     , m_fullTrayCount(0)
@@ -177,6 +179,11 @@ tcpClient::tcpClient(QWidget *parent)
         connect(m_shiftCheckTimer, &QTimer::timeout, this, &tcpClient::checkShiftChange);
         m_shiftCheckTimer->setInterval(60000); // 60秒 = 1分钟
         m_shiftCheckTimer->start();
+        
+        // 初始化可视化数据发送定时器（每3秒发送一次）
+        connect(m_visualizationDataTimer, &QTimer::timeout, this, &tcpClient::sendVisualizationDataToServer);
+        m_visualizationDataTimer->setInterval(3000); // 3秒
+        // 注意：定时器在服务端连接成功后才启动
         
         // 初始化可视化数组（21个槽位，3列7行，位置0-20）
         m_realTraySlots.resize(21);
@@ -3664,7 +3671,14 @@ void tcpClient::onServerSocketConnected()
     m_serverConnectionTimer->stop();
     m_isServerConnected = true;
     updateServerConnectionStatus(true);
-
+    
+    // 启动可视化数据发送定时器
+    m_visualizationDataTimer->start();
+    appendToLog("可视化数据发送定时器已启动（每3秒发送一次）", false);
+    
+    // 立即发送一次数据
+    sendVisualizationDataToServer();
+    
     QString successMsg = "服务端连接成功！";
     appendToLog(successMsg, false);
     qInfo() << successMsg << "服务端地址:" << m_serverSocket->peerAddress().toString() << "端口:" << m_serverSocket->peerPort();
@@ -3678,6 +3692,10 @@ void tcpClient::onServerSocketDisconnected()
     m_serverConnectionTimer->stop();
     m_isServerConnected = false;
     updateServerConnectionStatus(false);
+    
+    // 停止可视化数据发送定时器
+    m_visualizationDataTimer->stop();
+    
     appendToLog("服务端连接已断开", false);
 }
 
@@ -4815,6 +4833,75 @@ void tcpClient::saveShiftRecord(const QString &shiftType)
                    .arg(currentDate.toString("yyyy-MM-dd"))
                    .arg(currentTime.toString("hh:mm:ss")), false);
         qDebug() << QString("班次记录已保存：%1，实际便次=%2").arg(shiftType).arg(m_actualCount);
+    }
+}
+
+/**
+ * @brief 构建可视化数据JSON对象
+ * @return JSON对象
+ */
+QJsonObject tcpClient::buildVisualizationData()
+{
+    QJsonObject root;
+    root["action"] = "show";
+    root["type"] = "AGT搬运";
+    
+    // 统计信息
+    QJsonObject statistics;
+    statistics["planned_count"] = m_plannedCount;
+    statistics["actual_count"] = m_actualCount;
+    statistics["delayed_count"] = m_delayedCount;
+    root["statistics"] = statistics;
+    
+    // 实托盘槽位数组（21个槽位）
+    QJsonArray realTraySlots;
+    for (int i = 0; i < 21 && i < m_realTraySlots.size(); ++i) {
+        realTraySlots.append(m_realTraySlots[i]);
+    }
+    // 如果数组不足21个，补充空字符串
+    while (realTraySlots.size() < 21) {
+        realTraySlots.append("");
+    }
+    root["real_tray_slots"] = realTraySlots;
+    
+    // 空托盘槽位数组（21个槽位）
+    QJsonArray emptyTraySlots;
+    for (int i = 0; i < 21 && i < m_emptyTraySlots.size(); ++i) {
+        emptyTraySlots.append(m_emptyTraySlots[i]);
+    }
+    // 如果数组不足21个，补充空字符串
+    while (emptyTraySlots.size() < 21) {
+        emptyTraySlots.append("");
+    }
+    root["empty_tray_slots"] = emptyTraySlots;
+    
+    return root;
+}
+
+/**
+ * @brief 发送可视化数据到服务端
+ */
+void tcpClient::sendVisualizationDataToServer()
+{
+    // 检查服务端连接状态
+    if (!m_serverSocket || m_serverSocket->state() != QAbstractSocket::ConnectedState) {
+        qDebug() << "服务端未连接，跳过发送可视化数据";
+        return; // 未连接，不发送
+    }
+    
+    // 构建JSON数据
+    QJsonObject jsonData = buildVisualizationData();
+    QJsonDocument doc(jsonData);
+    QByteArray jsonBytes = doc.toJson();
+    
+    // 发送数据
+    qint64 bytesWritten = m_serverSocket->write(jsonBytes);
+    if (bytesWritten > 0) {
+        qDebug() << "已发送可视化数据到服务端，大小:" << bytesWritten << "字节";
+        appendToLog(QString("已发送可视化数据到服务端（%1字节）").arg(bytesWritten), false);
+    } else {
+        appendToLog("发送可视化数据到服务端失败", true);
+        qWarning() << "发送可视化数据失败";
     }
 }
 
