@@ -53,12 +53,15 @@ tcpClient::tcpClient(QWidget *parent)
     , ui(new Ui::tcpClient)
     , m_socket(new QTcpSocket(this))
     , m_serverSocket(new QTcpSocket(this))
+    , m_edSoftwareSocket(new QTcpSocket(this))
     , m_connectionTimer(new QTimer(this))
     , m_serverConnectionTimer(new QTimer(this))
+    , m_edSoftwareConnectionTimer(new QTimer(this))
     , m_shiftCheckTimer(new QTimer(this))
     , m_visualizationDataTimer(new QTimer(this))
     , m_isConnected(false)
     , m_isServerConnected(false)
+    , m_isEdSoftwareConnected(false)
     , m_fullTrayCount(0)
     , m_password("")
     , m_isPasswordSet(false)
@@ -175,6 +178,20 @@ tcpClient::tcpClient(QWidget *parent)
         m_serverConnectionTimer->setSingleShot(true);
         m_serverConnectionTimer->setInterval(5000);
         
+        // 连接ED软件Socket信号槽
+        connect(m_edSoftwareSocket, &QTcpSocket::connected, this, &tcpClient::onEdSoftwareSocketConnected);
+        connect(m_edSoftwareSocket, &QTcpSocket::disconnected, this, &tcpClient::onEdSoftwareSocketDisconnected);
+        connect(m_edSoftwareSocket, QOverload<QAbstractSocket::SocketError>::of(&QTcpSocket::errorOccurred),
+                this, &tcpClient::onEdSoftwareSocketError);
+        connect(m_edSoftwareSocket, &QTcpSocket::readyRead, this, &tcpClient::onEdSoftwareSocketReadyRead);
+
+        // 连接ED软件超时定时器
+        connect(m_edSoftwareConnectionTimer, &QTimer::timeout, this, &tcpClient::onEdSoftwareConnectionTimeout);
+
+        // 设置ED软件连接超时时间（5秒）
+        m_edSoftwareConnectionTimer->setSingleShot(true);
+        m_edSoftwareConnectionTimer->setInterval(5000);
+        
         // 初始化班次检查定时器（每分钟检查一次）
         connect(m_shiftCheckTimer, &QTimer::timeout, this, &tcpClient::checkShiftChange);
         m_shiftCheckTimer->setInterval(60000); // 60秒 = 1分钟
@@ -222,6 +239,9 @@ tcpClient::~tcpClient()
     }
     if (m_serverSocket && m_serverSocket->state() == QAbstractSocket::ConnectedState) {
         m_serverSocket->disconnectFromHost();
+    }
+    if (m_edSoftwareSocket && m_edSoftwareSocket->state() == QAbstractSocket::ConnectedState) {
+        m_edSoftwareSocket->disconnectFromHost();
     }
 
     // 清理日志系统资源
@@ -622,6 +642,65 @@ void tcpClient::setupUI()
     connect(pushButtonSaveServerConfig, &QPushButton::clicked, this, &tcpClient::onSaveServerConnectionConfigClicked);
     connect(pushButtonServerConnect, &QPushButton::clicked, this, &tcpClient::onServerConnectClicked);
     connect(pushButtonServerDisconnect, &QPushButton::clicked, this, &tcpClient::onServerDisconnectClicked);
+    
+    // 创建ED软件连接设置区域
+    groupBoxEdSoftwareConnection = new QGroupBox(ui->connectionPage);
+    groupBoxEdSoftwareConnection->setTitle("ED软件连接设置");
+    groupBoxEdSoftwareConnection->setObjectName("groupBoxEdSoftwareConnection");
+    
+    QHBoxLayout* edSoftwareConnectionLayout = new QHBoxLayout(groupBoxEdSoftwareConnection);
+    edSoftwareConnectionLayout->setObjectName("edSoftwareConnectionLayout");
+    
+    QLabel* labelEdSoftwareIP = new QLabel(groupBoxEdSoftwareConnection);
+    labelEdSoftwareIP->setText("服务器IP:");
+    edSoftwareConnectionLayout->addWidget(labelEdSoftwareIP);
+    
+    lineEditEdSoftwareIP = new QLineEdit(groupBoxEdSoftwareConnection);
+    lineEditEdSoftwareIP->setMinimumSize(120, 0);
+    lineEditEdSoftwareIP->setPlaceholderText("ED软件IP地址");
+    edSoftwareConnectionLayout->addWidget(lineEditEdSoftwareIP);
+    
+    QLabel* labelEdSoftwarePort = new QLabel(groupBoxEdSoftwareConnection);
+    labelEdSoftwarePort->setText("端口:");
+    edSoftwareConnectionLayout->addWidget(labelEdSoftwarePort);
+    
+    lineEditEdSoftwarePort = new QLineEdit(groupBoxEdSoftwareConnection);
+    lineEditEdSoftwarePort->setMinimumSize(80, 0);
+    lineEditEdSoftwarePort->setPlaceholderText("端口号");
+    edSoftwareConnectionLayout->addWidget(lineEditEdSoftwarePort);
+    
+    pushButtonEdSoftwareConnect = new QPushButton(groupBoxEdSoftwareConnection);
+    pushButtonEdSoftwareConnect->setText("连接");
+    pushButtonEdSoftwareConnect->setObjectName("pushButtonEdSoftwareConnect");
+    edSoftwareConnectionLayout->addWidget(pushButtonEdSoftwareConnect);
+    
+    pushButtonEdSoftwareDisconnect = new QPushButton(groupBoxEdSoftwareConnection);
+    pushButtonEdSoftwareDisconnect->setText("断开");
+    pushButtonEdSoftwareDisconnect->setObjectName("pushButtonEdSoftwareDisconnect");
+    pushButtonEdSoftwareDisconnect->setEnabled(false);
+    edSoftwareConnectionLayout->addWidget(pushButtonEdSoftwareDisconnect);
+    
+    pushButtonSaveEdSoftwareConfig = new QPushButton(groupBoxEdSoftwareConnection);
+    pushButtonSaveEdSoftwareConfig->setText("保存配置");
+    pushButtonSaveEdSoftwareConfig->setObjectName("pushButtonSaveEdSoftwareConfig");
+    edSoftwareConnectionLayout->addWidget(pushButtonSaveEdSoftwareConfig);
+    
+    // 创建ED软件连接状态标签
+    labelEdSoftwareConnectionStatus = new QLabel(groupBoxEdSoftwareConnection);
+    labelEdSoftwareConnectionStatus->setText("未连接");
+    labelEdSoftwareConnectionStatus->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    edSoftwareConnectionLayout->addWidget(labelEdSoftwareConnectionStatus);
+    
+    QSpacerItem* edSoftwareSpacer = new QSpacerItem(40, 20, QSizePolicy::Policy::Expanding, QSizePolicy::Policy::Minimum);
+    edSoftwareConnectionLayout->addItem(edSoftwareSpacer);
+    
+    // 将ED软件连接设置插入到服务端连接设置之后
+    ui->verticalLayout_2->insertWidget(2, groupBoxEdSoftwareConnection);
+    
+    // 连接ED软件连接配置按钮信号槽
+    connect(pushButtonSaveEdSoftwareConfig, &QPushButton::clicked, this, &tcpClient::onSaveEdSoftwareConnectionConfigClicked);
+    connect(pushButtonEdSoftwareConnect, &QPushButton::clicked, this, &tcpClient::onEdSoftwareConnectClicked);
+    connect(pushButtonEdSoftwareDisconnect, &QPushButton::clicked, this, &tcpClient::onEdSoftwareDisconnectClicked);
     
     // 加载数据库配置到界面
     loadDatabaseConfig();
@@ -3545,6 +3624,14 @@ void tcpClient::loadConnectionConfig()
             if (port > 0 && lineEditServerPort) {
                 lineEditServerPort->setText(QString::number(port));
             }
+        } else if (configType == "ed_software") {
+            // 加载ED软件连接配置
+            if (!ip.isEmpty() && lineEditEdSoftwareIP) {
+                lineEditEdSoftwareIP->setText(ip);
+            }
+            if (port > 0 && lineEditEdSoftwarePort) {
+                lineEditEdSoftwarePort->setText(QString::number(port));
+            }
         }
     }
     
@@ -4833,6 +4920,179 @@ void tcpClient::saveShiftRecord(const QString &shiftType)
                    .arg(currentDate.toString("yyyy-MM-dd"))
                    .arg(currentTime.toString("hh:mm:ss")), false);
         qDebug() << QString("班次记录已保存：%1，实际便次=%2").arg(shiftType).arg(m_actualCount);
+    }
+}
+
+/**
+ * @brief 保存ED软件连接配置按钮点击处理
+ */
+void tcpClient::onSaveEdSoftwareConnectionConfigClicked()
+{
+    if (!lineEditEdSoftwareIP || !lineEditEdSoftwarePort) {
+        QMessageBox::warning(this, "错误", "ED软件连接设置未初始化！");
+        return;
+    }
+    
+    QString ip = lineEditEdSoftwareIP->text().trimmed();
+    QString portStr = lineEditEdSoftwarePort->text().trimmed();
+    
+    // 验证输入
+    if (ip.isEmpty()) {
+        QMessageBox::warning(this, "配置错误", "ED软件IP地址不能为空！");
+        return;
+    }
+    
+    bool ok;
+    int port = portStr.toInt(&ok);
+    if (!ok || port <= 0 || port > 65535) {
+        QMessageBox::warning(this, "配置错误", "请输入有效的端口号(1-65535)！");
+        return;
+    }
+    
+    saveConnectionConfig("ed_software", ip, port);
+    QMessageBox::information(this, "保存成功", QString("ED软件连接配置已保存！\n\nIP: %1\n端口: %2").arg(ip).arg(port));
+}
+
+/**
+ * @brief ED软件连接按钮点击处理
+ */
+void tcpClient::onEdSoftwareConnectClicked()
+{
+    if (!lineEditEdSoftwareIP || !lineEditEdSoftwarePort) {
+        QMessageBox::warning(this, "错误", "ED软件连接设置未初始化！");
+        return;
+    }
+    
+    QString edSoftwareIP = lineEditEdSoftwareIP->text().trimmed();
+    QString portStr = lineEditEdSoftwarePort->text().trimmed();
+
+    qInfo() << "用户尝试连接ED软件:" << edSoftwareIP << ":" << portStr;
+
+    // 验证IP地址
+    if (edSoftwareIP.isEmpty()) {
+        QString errorMsg = "请输入ED软件IP地址";
+        QMessageBox::warning(this, "警告", errorMsg);
+        qWarning() << errorMsg;
+        return;
+    }
+
+    // 验证端口号
+    bool ok;
+    int port = portStr.toInt(&ok);
+    if (!ok || port <= 0 || port > 65535) {
+        QString errorMsg = "请输入有效的端口号(1-65535)";
+        QMessageBox::warning(this, "警告", errorMsg);
+        qWarning() << errorMsg << "输入值:" << portStr;
+        return;
+    }
+
+    // 开始连接
+    QString connectMsg = QString("正在连接到ED软件 %1:%2...").arg(edSoftwareIP).arg(port);
+    appendToLog(connectMsg);
+    qInfo() << connectMsg;
+
+    m_edSoftwareSocket->connectToHost(edSoftwareIP, port);
+    m_edSoftwareConnectionTimer->start();
+
+    pushButtonEdSoftwareConnect->setEnabled(false);
+}
+
+/**
+ * @brief ED软件断开按钮点击处理
+ */
+void tcpClient::onEdSoftwareDisconnectClicked()
+{
+    if (m_edSoftwareSocket->state() == QAbstractSocket::ConnectedState) {
+        m_edSoftwareSocket->disconnectFromHost();
+        appendToLog("正在断开ED软件连接...");
+    }
+}
+
+/**
+ * @brief ED软件Socket连接成功处理
+ */
+void tcpClient::onEdSoftwareSocketConnected()
+{
+    m_edSoftwareConnectionTimer->stop();
+    m_isEdSoftwareConnected = true;
+    updateEdSoftwareConnectionStatus(true);
+    
+    QString successMsg = "ED软件连接成功！";
+    appendToLog(successMsg, false);
+    qInfo() << successMsg << "ED软件地址:" << m_edSoftwareSocket->peerAddress().toString() << "端口:" << m_edSoftwareSocket->peerPort();
+}
+
+/**
+ * @brief ED软件Socket断开连接处理
+ */
+void tcpClient::onEdSoftwareSocketDisconnected()
+{
+    m_edSoftwareConnectionTimer->stop();
+    m_isEdSoftwareConnected = false;
+    updateEdSoftwareConnectionStatus(false);
+    
+    appendToLog("ED软件连接已断开", false);
+}
+
+/**
+ * @brief ED软件Socket错误处理
+ * @param error 错误类型
+ */
+void tcpClient::onEdSoftwareSocketError(QAbstractSocket::SocketError error)
+{
+    m_edSoftwareConnectionTimer->stop();
+    m_isEdSoftwareConnected = false;
+    updateEdSoftwareConnectionStatus(false);
+
+    QString errorMsg = m_edSoftwareSocket->errorString();
+    appendToLog(QString("ED软件连接错误: %1").arg(errorMsg), true);
+}
+
+/**
+ * @brief ED软件Socket数据可读处理
+ */
+void tcpClient::onEdSoftwareSocketReadyRead()
+{
+    QByteArray data = m_edSoftwareSocket->readAll();
+    appendToLog(QString("收到ED软件数据: %1 字节").arg(data.size()), false);
+    qDebug() << "ED软件数据:" << data;
+    
+    // 处理接收到的JSON数据（使用现有的处理函数）
+    processServerJsonData(data);
+}
+
+/**
+ * @brief ED软件连接超时处理
+ */
+void tcpClient::onEdSoftwareConnectionTimeout()
+{
+    m_edSoftwareSocket->abort();
+    appendToLog("ED软件连接超时", true);
+    updateEdSoftwareConnectionStatus(false);
+}
+
+/**
+ * @brief 更新ED软件连接状态显示
+ * @param connected 连接状态
+ */
+void tcpClient::updateEdSoftwareConnectionStatus(bool connected)
+{
+    if (!labelEdSoftwareConnectionStatus || !pushButtonEdSoftwareConnect || !pushButtonEdSoftwareDisconnect) {
+        return;
+    }
+    
+    if (connected) {
+        labelEdSoftwareConnectionStatus->setText("已连接");
+        pushButtonEdSoftwareConnect->setEnabled(false);
+        pushButtonEdSoftwareDisconnect->setEnabled(true);
+        if (lineEditEdSoftwareIP) lineEditEdSoftwareIP->setEnabled(false);
+        if (lineEditEdSoftwarePort) lineEditEdSoftwarePort->setEnabled(false);
+    } else {
+        labelEdSoftwareConnectionStatus->setText("未连接");
+        pushButtonEdSoftwareConnect->setEnabled(true);
+        pushButtonEdSoftwareDisconnect->setEnabled(false);
+        if (lineEditEdSoftwareIP) lineEditEdSoftwareIP->setEnabled(true);
+        if (lineEditEdSoftwarePort) lineEditEdSoftwarePort->setEnabled(true);
     }
 }
 

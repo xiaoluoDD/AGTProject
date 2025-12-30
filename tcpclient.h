@@ -104,6 +104,15 @@ private slots:
     void onSaveServerConnectionConfigClicked(); ///< 保存服务端连接配置按钮点击处理
     void onServerConnectClicked(); ///< 服务端连接按钮点击处理
     void onServerDisconnectClicked(); ///< 服务端断开按钮点击处理
+    void onEdSoftwareConnectClicked(); ///< ED软件连接按钮点击处理
+    void onEdSoftwareDisconnectClicked(); ///< ED软件断开按钮点击处理
+    void onSaveEdSoftwareConnectionConfigClicked(); ///< 保存ED软件连接配置按钮点击处理
+    void onEdSoftwareSocketConnected(); ///< ED软件Socket连接成功处理
+    void onEdSoftwareSocketDisconnected(); ///< ED软件Socket断开连接处理
+    void onEdSoftwareSocketError(QAbstractSocket::SocketError error); ///< ED软件Socket错误处理
+    void onEdSoftwareSocketReadyRead(); ///< ED软件Socket数据可读处理
+    void onEdSoftwareConnectionTimeout(); ///< ED软件连接超时处理
+    void updateEdSoftwareConnectionStatus(bool connected); ///< 更新ED软件连接状态显示
     
     // 统计信息双击编辑槽函数
     void onPlannedCountLabelDoubleClicked(); ///< 计划便次标签双击处理
@@ -192,12 +201,15 @@ private:
     Ui::tcpClient *ui;            ///< UI界面指针
     QTcpSocket *m_socket;         ///< PLC TCP Socket对象
     QTcpSocket *m_serverSocket;  ///< 服务端 TCP Socket对象
+    QTcpSocket *m_edSoftwareSocket; ///< ED软件 TCP Socket对象
     QTimer *m_connectionTimer;    ///< PLC连接超时定时器
     QTimer *m_serverConnectionTimer; ///< 服务端连接超时定时器
+    QTimer *m_edSoftwareConnectionTimer; ///< ED软件连接超时定时器
     QTimer *m_shiftCheckTimer;   ///< 班次检查定时器（每分钟检查一次）
     QTimer *m_visualizationDataTimer; ///< 可视化数据发送定时器（每3秒发送一次）
     bool m_isConnected;           ///< PLC连接状态标志
     bool m_isServerConnected;     ///< 服务端连接状态标志
+    bool m_isEdSoftwareConnected; ///< ED软件连接状态标志
     int m_fullTrayCount;          ///< 满托盘时数量
     QDateTime m_lastStatus1Time;  ///< 旧版本兼容，已废弃
     QDateTime m_lastStatus2Time; ///< 旧版本兼容，已废弃
@@ -217,6 +229,13 @@ private:
     QPushButton* pushButtonServerConnect; ///< 服务端连接按钮
     QPushButton* pushButtonServerDisconnect; ///< 服务端断开按钮
     QLabel* labelServerConnectionStatus; ///< 服务端连接状态标签
+    QGroupBox* groupBoxEdSoftwareConnection; ///< ED软件连接设置GroupBox
+    QLineEdit* lineEditEdSoftwareIP; ///< ED软件IP输入框
+    QLineEdit* lineEditEdSoftwarePort; ///< ED软件端口输入框
+    QPushButton* pushButtonSaveEdSoftwareConfig; ///< 保存ED软件连接配置按钮
+    QPushButton* pushButtonEdSoftwareConnect; ///< ED软件连接按钮
+    QPushButton* pushButtonEdSoftwareDisconnect; ///< ED软件断开按钮
+    QLabel* labelEdSoftwareConnectionStatus; ///< ED软件连接状态标签
     QString m_password;           ///< 存储的密码
     bool m_isPasswordSet;         ///< 密码是否已设置
     
