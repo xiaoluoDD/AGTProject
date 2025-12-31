@@ -89,6 +89,7 @@ private slots:
     void onSocketError(QAbstractSocket::SocketError error); ///< Socket错误处理
     void onSocketReadyRead();     ///< Socket数据可读处理
     void onConnectionTimeout();   ///< 连接超时处理
+    void onPlcAutoReconnect();    ///< PLC自动重连处理
     void onServerSocketConnected();     ///< 服务端Socket连接成功处理
     void onServerSocketDisconnected();  ///< 服务端Socket断开连接处理
     void onServerSocketError(QAbstractSocket::SocketError error); ///< 服务端Socket错误处理
@@ -216,6 +217,7 @@ private:
     QTimer *m_shiftCheckTimer;   ///< 班次检查定时器（每分钟检查一次）
     QTimer *m_visualizationDataTimer; ///< 可视化数据发送定时器（每3秒发送一次）
     QTimer *m_shiftDisplayAutoResetTimer; ///< 班次显示自动恢复定时器（1分钟后恢复）
+    QTimer *m_plcAutoReconnectTimer; ///< PLC自动重连定时器（每3秒检测一次）
     bool m_isConnected;           ///< PLC连接状态标志
     bool m_isServerConnected;     ///< 服务端连接状态标志
     bool m_isEdSoftwareConnected; ///< ED软件连接状态标志

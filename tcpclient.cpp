@@ -60,6 +60,7 @@ tcpClient::tcpClient(QWidget *parent)
     , m_shiftCheckTimer(new QTimer(this))
     , m_visualizationDataTimer(new QTimer(this))
     , m_shiftDisplayAutoResetTimer(new QTimer(this))
+    , m_plcAutoReconnectTimer(new QTimer(this))
     , m_isConnected(false)
     , m_isServerConnected(false)
     , m_isEdSoftwareConnected(false)
@@ -169,6 +170,13 @@ tcpClient::tcpClient(QWidget *parent)
         m_connectionTimer->setSingleShot(true);
         m_connectionTimer->setInterval(5000);
         
+        // 连接PLC自动重连定时器
+        connect(m_plcAutoReconnectTimer, &QTimer::timeout, this, &tcpClient::onPlcAutoReconnect);
+        
+        // 设置PLC自动重连定时器（每3秒检测一次）
+        m_plcAutoReconnectTimer->setSingleShot(false);
+        m_plcAutoReconnectTimer->setInterval(3000);
+        
         // 连接服务端Socket信号槽
         connect(m_serverSocket, &QTcpSocket::connected, this, &tcpClient::onServerSocketConnected);
         connect(m_serverSocket, &QTcpSocket::disconnected, this, &tcpClient::onServerSocketDisconnected);
@@ -224,6 +232,23 @@ tcpClient::tcpClient(QWidget *parent)
         // 在UI完全初始化后记录启动日志
         appendToLog("TCP客户端已启动");
         qInfo() << "AGT滑槽记录表客户端启动完成";
+        
+        // 如果已有保存的PLC连接配置且未连接，启动自动重连
+        QString serverIP = ui->lineEditServerIP->text().trimmed();
+        QString portStr = ui->lineEditPort->text().trimmed();
+        if (!serverIP.isEmpty() && !portStr.isEmpty()) {
+            bool ok;
+            int port = portStr.toInt(&ok);
+            if (ok && port > 0 && port <= 65535) {
+                // 延迟启动自动重连，确保UI完全初始化
+                QTimer::singleShot(1000, this, [this]() {
+                    if (!m_isConnected && m_socket->state() != QAbstractSocket::ConnectedState) {
+                        m_plcAutoReconnectTimer->start();
+                        appendToLog("已启动PLC自动重连（每3秒检测一次）", false);
+                    }
+                });
+            }
+        }
 
         qDebug() << "tcpClient constructor completed successfully";
     } catch (const std::exception& e) {
@@ -1408,6 +1433,8 @@ void tcpClient::onConnectClicked()
 void tcpClient::onDisconnectClicked()
 {
     if (m_socket->state() == QAbstractSocket::ConnectedState) {
+        // 用户手动断开连接，停止自动重连定时器
+        m_plcAutoReconnectTimer->stop();
         m_socket->disconnectFromHost();
         appendToLog("正在断开连接...");
     }
@@ -1446,6 +1473,7 @@ void tcpClient::onClearClicked()
 void tcpClient::onSocketConnected()
 {
     m_connectionTimer->stop();
+    m_plcAutoReconnectTimer->stop(); // 连接成功，停止自动重连定时器
     m_isConnected = true;
     updateConnectionStatus(true);
 
@@ -1463,6 +1491,12 @@ void tcpClient::onSocketDisconnected()
     m_isConnected = false;
     updateConnectionStatus(false);
     appendToLog("连接已断开", false);
+    
+    // 启动自动重连定时器
+    if (!m_plcAutoReconnectTimer->isActive()) {
+        m_plcAutoReconnectTimer->start();
+        appendToLog("已启动PLC自动重连（每3秒检测一次）", false);
+    }
 }
 
 /**
@@ -1477,6 +1511,12 @@ void tcpClient::onSocketError(QAbstractSocket::SocketError error)
 
     QString errorMsg = m_socket->errorString();
     appendToLog(QString("连接错误: %1").arg(errorMsg), true);
+    
+    // 启动自动重连定时器（用户主动取消连接通常不会触发errorOccurred信号）
+        if (!m_plcAutoReconnectTimer->isActive()) {
+            m_plcAutoReconnectTimer->start();
+            appendToLog("已启动PLC自动重连（每3秒检测一次）", false);
+        }
 }
 
 /**
@@ -1496,6 +1536,53 @@ void tcpClient::onConnectionTimeout()
     m_socket->abort();
     appendToLog("连接超时", true);
     updateConnectionStatus(false);
+    
+    // 启动自动重连定时器
+    if (!m_plcAutoReconnectTimer->isActive()) {
+        m_plcAutoReconnectTimer->start();
+        appendToLog("已启动PLC自动重连（每3秒检测一次）", false);
+    }
+}
+
+/**
+ * @brief PLC自动重连处理
+ */
+void tcpClient::onPlcAutoReconnect()
+{
+    // 如果已经连接，停止自动重连定时器
+    if (m_isConnected || m_socket->state() == QAbstractSocket::ConnectedState) {
+        m_plcAutoReconnectTimer->stop();
+        return;
+    }
+    
+    // 如果正在连接中，不重复连接
+    if (m_socket->state() == QAbstractSocket::ConnectingState) {
+        return;
+    }
+    
+    // 获取保存的PLC连接配置
+    QString serverIP = ui->lineEditServerIP->text().trimmed();
+    QString portStr = ui->lineEditPort->text().trimmed();
+    
+    // 验证IP地址和端口
+    if (serverIP.isEmpty()) {
+        qDebug() << "PLC自动重连: IP地址为空，跳过重连";
+        return;
+    }
+    
+    bool ok;
+    int port = portStr.toInt(&ok);
+    if (!ok || port <= 0 || port > 65535) {
+        qDebug() << "PLC自动重连: 端口号无效，跳过重连";
+        return;
+    }
+    
+    // 尝试自动重连
+    appendToLog(QString("PLC自动重连: 正在连接到 %1:%2...").arg(serverIP).arg(port), false);
+    qDebug() << "PLC自动重连: 尝试连接到" << serverIP << ":" << port;
+    
+    m_socket->connectToHost(serverIP, port);
+    m_connectionTimer->start();
 }
 
 /**
@@ -1754,11 +1841,21 @@ void tcpClient::processHexData(const QByteArray &data)
 
             for (int row = 0; row < ui->tableWidgetVehicleBinding->rowCount(); ++row) {
                 // 绑定表中的车型代码是10进制格式，直接比较
-                QString code = ui->tableWidgetVehicleBinding->item(row, 1)->text().trimmed();
+                QTableWidgetItem* codeItem = ui->tableWidgetVehicleBinding->item(row, 1);
+                QTableWidgetItem* nameItem = ui->tableWidgetVehicleBinding->item(row, 2);
+                QTableWidgetItem* countItem = ui->tableWidgetVehicleBinding->item(row, 3);
+                
+                // 检查表格项是否存在
+                if (!codeItem || !nameItem || !countItem) {
+                    qDebug() << "Table items not found for row:" << row;
+                    continue; // 跳过这一行，继续查找下一行
+                }
+                
+                QString code = codeItem->text().trimmed();
                 if (modelCodeStr == code) {
                     vehicleCode = code;
-                    vehicleName = ui->tableWidgetVehicleBinding->item(row, 2)->text();
-                    count = ui->tableWidgetVehicleBinding->item(row, 3)->text().toInt();
+                    vehicleName = nameItem->text();
+                    count = countItem->text().toInt();
                     break;
                 }
             }
@@ -1870,26 +1967,36 @@ void tcpClient::addDataToTable(int status1, unsigned int value1, unsigned int va
     QString vehicleCode4, vehicleName4; int count4 = 0;
     // 滑槽1/2车型查找（第5字节）- 在车型代码列（列1）中查找
     for (int row = 0; row < ui->tableWidgetVehicleBinding->rowCount(); ++row) {
-        QString code = ui->tableWidgetVehicleBinding->item(row, 1)->text().trimmed(); // 车型代码列（10进制格式）
+        QTableWidgetItem* codeItem = ui->tableWidgetVehicleBinding->item(row, 1);
+        QTableWidgetItem* nameItem = ui->tableWidgetVehicleBinding->item(row, 2);
+        QTableWidgetItem* countItem = ui->tableWidgetVehicleBinding->item(row, 3);
+        
+        // 检查表格项是否存在
+        if (!codeItem || !nameItem || !countItem) {
+            qDebug() << "Table items not found for row:" << row;
+            continue; // 跳过这一行，继续查找下一行
+        }
+        
+        QString code = codeItem->text().trimmed(); // 车型代码列（10进制格式）
         if (modelCode1 == code) {
             vehicleCode1 = code; // 车型代码
-            vehicleName1 = ui->tableWidgetVehicleBinding->item(row, 2)->text(); // 车型名称
-            count1 = ui->tableWidgetVehicleBinding->item(row, 3)->text().toInt();
+            vehicleName1 = nameItem->text(); // 车型名称
+            count1 = countItem->text().toInt();
         }
         if (modelCode2 == code) {
             vehicleCode2 = code; // 车型代码
-            vehicleName2 = ui->tableWidgetVehicleBinding->item(row, 2)->text(); // 车型名称
-            count2 = ui->tableWidgetVehicleBinding->item(row, 3)->text().toInt();
+            vehicleName2 = nameItem->text(); // 车型名称
+            count2 = countItem->text().toInt();
         }
         if (modelCode3 == code) {
             vehicleCode3 = code; // 车型代码
-            vehicleName3 = ui->tableWidgetVehicleBinding->item(row, 2)->text(); // 车型名称
-            count3 = ui->tableWidgetVehicleBinding->item(row, 3)->text().toInt();
+            vehicleName3 = nameItem->text(); // 车型名称
+            count3 = countItem->text().toInt();
         }
         if (modelCode4 == code) {
             vehicleCode4 = code; // 车型代码
-            vehicleName4 = ui->tableWidgetVehicleBinding->item(row, 2)->text(); // 车型名称
-            count4 = ui->tableWidgetVehicleBinding->item(row, 3)->text().toInt();
+            vehicleName4 = nameItem->text(); // 车型名称
+            count4 = countItem->text().toInt();
         }
     }
     // 添加第5字节（满托/空托）数据
