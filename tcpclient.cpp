@@ -59,9 +59,11 @@ tcpClient::tcpClient(QWidget *parent)
     , m_edSoftwareConnectionTimer(new QTimer(this))
     , m_shiftCheckTimer(new QTimer(this))
     , m_visualizationDataTimer(new QTimer(this))
+    , m_projectGroupDataTimer(new QTimer(this))
     , m_shiftDisplayAutoResetTimer(new QTimer(this))
     , m_plcAutoReconnectTimer(new QTimer(this))
     , m_currentShiftTableDailyClearTimer(new QTimer(this))
+    , m_projectGroupShiftAutoResetTimer(new QTimer(this))
     , m_isConnected(false)
     , m_isServerConnected(false)
     , m_isEdSoftwareConnected(false)
@@ -77,6 +79,7 @@ tcpClient::tcpClient(QWidget *parent)
     , m_actualCount(89)
     , m_delayedCount(0)
     , m_currentDisplayShift("current")
+    , m_projectGroupDisplayShift("current")
     , m_displayedPlannedCount(100)
     , m_displayedActualCount(89)
     , m_displayedDelayedCount(0)
@@ -221,10 +224,20 @@ tcpClient::tcpClient(QWidget *parent)
         m_currentShiftTableDailyClearTimer->setInterval(60000); // 60秒 = 1分钟
         m_currentShiftTableDailyClearTimer->start();
         
-        // 初始化可视化数据发送定时器（每3秒发送一次）
+        // 初始化工程组记录界面班次自动恢复定时器（1分钟后恢复）
+        connect(m_projectGroupShiftAutoResetTimer, &QTimer::timeout, this, &tcpClient::onProjectGroupShiftAutoReset);
+        m_projectGroupShiftAutoResetTimer->setSingleShot(true);
+        m_projectGroupShiftAutoResetTimer->setInterval(60000); // 60秒 = 1分钟
+        
+        // 初始化可视化数据发送定时器（每6秒触发一次，立即发送AGT搬运数据，3秒后发送工程组数据）
         connect(m_visualizationDataTimer, &QTimer::timeout, this, &tcpClient::sendVisualizationDataToServer);
-        m_visualizationDataTimer->setInterval(3000); // 3秒
+        m_visualizationDataTimer->setInterval(6000); // 6秒
         // 注意：定时器在服务端连接成功后才启动
+        
+        // 初始化工程组数据发送定时器（单次触发，3秒后发送工程组数据）
+        connect(m_projectGroupDataTimer, &QTimer::timeout, this, &tcpClient::sendProjectGroupDataToServer);
+        m_projectGroupDataTimer->setSingleShot(true);
+        m_projectGroupDataTimer->setInterval(3000); // 3秒
         
         // 初始化可视化数组（21个槽位，3列7行，位置0-20）
         m_realTraySlots.resize(21);
@@ -749,6 +762,7 @@ void tcpClient::setupUI()
         "border-radius: 8px;"
         "margin-top: 10px;"
         "padding-top: 15px;"
+        "padding-bottom: 15px;"
         "}"
         "QGroupBox::title {"
         "subcontrol-origin: margin;"
@@ -778,7 +792,7 @@ void tcpClient::setupUI()
     
     // 创建水平布局用于放置班次按钮（右下角）
     QHBoxLayout* shiftButtonLayout = new QHBoxLayout();
-    shiftButtonLayout->setContentsMargins(0, 5, 0, 0); // 顶部留5px间距，与表格分开
+    shiftButtonLayout->setContentsMargins(0, 5, 0, 5); // 顶部和底部都留5px间距
     shiftButtonLayout->setSpacing(0);
     shiftButtonLayout->addStretch(); // 左侧弹性空间，使按钮靠右
     
@@ -812,11 +826,16 @@ void tcpClient::setupUI()
     );
     shiftButtonLayout->addWidget(projectGroupShiftButton);
     
+    // 连接班次按钮点击信号
+    connect(projectGroupShiftButton, &QPushButton::clicked, this, &tcpClient::onProjectGroupShiftButtonClicked);
+    
     // 创建一个容器widget来包含按钮布局，确保按钮有固定高度
+    // 按钮实际高度 = 35px(内容) + 16px(上下padding) + 4px(上下border) = 55px
+    // 加上布局的上下边距各5px，容器高度至少需要65px
     QWidget* shiftButtonWidget = new QWidget(projectGroupStatisticsBox);
     shiftButtonWidget->setLayout(shiftButtonLayout);
-    shiftButtonWidget->setMinimumHeight(45); // 增加容器高度以确保按钮完整显示
-    shiftButtonWidget->setMaximumHeight(45);
+    shiftButtonWidget->setMinimumHeight(60); // 增加容器高度以确保按钮完整显示，包括padding和border
+    shiftButtonWidget->setMaximumHeight(60);
     shiftButtonWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed); // 水平扩展，垂直固定
     shiftButtonWidget->setVisible(true); // 确保容器可见
     
@@ -1446,6 +1465,9 @@ void tcpClient::onProjectGroupPageClicked()
         QString currentShift = getCurrentShift();
         projectGroupShiftButton->setText(currentShift);
     }
+    
+    // 重置为显示当前班次
+    m_projectGroupDisplayShift = "current";
     
     // 更新工程组统计表格
     updateProjectGroupStatistics();
@@ -4804,10 +4826,13 @@ void tcpClient::onServerSocketConnected()
     
     // 启动可视化数据发送定时器
     m_visualizationDataTimer->start();
-    appendToLog("可视化数据发送定时器已启动（每3秒发送一次）", false);
+    appendToLog("数据发送定时器已启动（每6秒触发一次，3秒间隔上报AGT搬运和工程组数据）", false);
     
-    // 立即发送一次数据
+    // 立即发送一次AGT搬运数据
     sendVisualizationDataToServer();
+    
+    // 启动工程组数据发送定时器（3秒后发送）
+    m_projectGroupDataTimer->start();
     
     QString successMsg = "服务端连接成功！";
     appendToLog(successMsg, false);
@@ -4823,8 +4848,9 @@ void tcpClient::onServerSocketDisconnected()
     m_isServerConnected = false;
     updateServerConnectionStatus(false);
     
-    // 停止可视化数据发送定时器
+    // 停止数据发送定时器
     m_visualizationDataTimer->stop();
+    m_projectGroupDataTimer->stop();
     
     appendToLog("服务端连接已断开", false);
 }
@@ -6304,11 +6330,158 @@ void tcpClient::sendVisualizationDataToServer()
     // 发送数据
     qint64 bytesWritten = m_serverSocket->write(jsonBytes);
     if (bytesWritten > 0) {
-        qDebug() << "已发送可视化数据到服务端，大小:" << bytesWritten << "字节";
-        appendToLog(QString("已发送可视化数据到服务端（%1字节）").arg(bytesWritten), false);
+        qDebug() << "已发送AGT搬运数据到服务端，大小:" << bytesWritten << "字节";
+        appendToLog(QString("已发送AGT搬运数据到服务端（%1字节）").arg(bytesWritten), false);
     } else {
-        appendToLog("发送可视化数据到服务端失败", true);
-        qWarning() << "发送可视化数据失败";
+        appendToLog("发送AGT搬运数据到服务端失败", true);
+        qWarning() << "发送AGT搬运数据失败";
+    }
+    
+    // 启动工程组数据发送定时器（3秒后发送）
+    m_projectGroupDataTimer->start();
+}
+
+/**
+ * @brief 构建工程组数据JSON对象
+ * @return JSON对象
+ */
+QJsonObject tcpClient::buildProjectGroupData()
+{
+    QJsonObject root;
+    root["action"] = "show";
+    root["type"] = "Project Group Statistics";
+    
+    // 检查数据库是否已打开
+    QSqlDatabase db = QSqlDatabase::database();
+    if (!db.isOpen()) {
+        qDebug() << "数据库未打开，返回空的工程组数据";
+        root["statistics"] = QJsonArray();
+        return root;
+    }
+    
+    // 获取所有车型名称（从车型绑定表）
+    QSqlQuery query;
+    query.prepare("SELECT DISTINCT model_name FROM model_bindings ORDER BY model_name");
+    
+    if (!query.exec()) {
+        qWarning() << "查询车型列表失败:" << query.lastError().text();
+        root["statistics"] = QJsonArray();
+        return root;
+    }
+    
+    QMap<QString, QMap<QString, int>> statistics; // 车型名称 -> {操作类型 -> 数量}
+    
+    // 初始化所有车型的统计数据
+    while (query.next()) {
+        QString modelName = query.value(0).toString();
+        statistics[modelName]["实托盘搬入"] = 0;
+        statistics[modelName]["实托盘搬出"] = 0;
+        statistics[modelName]["空托盘搬入"] = 0;
+        statistics[modelName]["空托盘搬出"] = 0;
+    }
+    
+    // 根据显示的班次决定统计哪个班次的数据（上报时使用当前班次，不使用前一个班次）
+    QString currentShift = getCurrentShift();
+    QDateTime now = QDateTime::currentDateTime();
+    
+    // 计算当前班次的时间范围
+    QDateTime shiftStartTime, shiftEndTime;
+    if (currentShift == "白班") {
+        // 白班：今天7:15 - 今天17:30
+        shiftStartTime = QDateTime(now.date(), QTime(7, 15, 0));
+        shiftEndTime = QDateTime(now.date(), QTime(17, 30, 0));
+    } else {
+        // 夜班：昨天17:30 - 今天7:15
+        shiftStartTime = QDateTime(now.date().addDays(-1), QTime(17, 30, 0));
+        shiftEndTime = QDateTime(now.date(), QTime(7, 15, 0));
+    }
+    
+    // 从数据记录表统计各车型的操作次数
+    query.prepare("SELECT model_name, status, time FROM data_records WHERE status IN ('实托盘搬入', '实托盘搬出', '空托盘搬入', '空托盘搬出')");
+    
+    if (!query.exec()) {
+        qWarning() << "查询统计数据失败:" << query.lastError().text();
+        root["statistics"] = QJsonArray();
+        return root;
+    }
+    
+    while (query.next()) {
+        QString modelName = query.value(0).toString();
+        QString status = query.value(1).toString();
+        QString timeStr = query.value(2).toString();
+        
+        // 解析时间字符串（格式：yyyy-MM-dd hh:mm:ss 或 yyyy-MM-dd HH:mm:ss）
+        QDateTime recordTime = QDateTime::fromString(timeStr, "yyyy-MM-dd HH:mm:ss");
+        if (!recordTime.isValid()) {
+            // 尝试12小时制格式
+            recordTime = QDateTime::fromString(timeStr, "yyyy-MM-dd hh:mm:ss");
+        }
+        
+        if (!recordTime.isValid()) {
+            qWarning() << "无法解析时间字符串:" << timeStr;
+            continue;
+        }
+        
+        // 判断记录是否属于当前班次
+        bool isInShift = false;
+        if (currentShift == "白班") {
+            // 白班：7:15 - 17:30（同一天）
+            isInShift = (recordTime >= shiftStartTime && recordTime < shiftEndTime);
+        } else {
+            // 夜班：17:30 - 次日7:15（跨天）
+            isInShift = (recordTime >= shiftStartTime && recordTime < shiftEndTime);
+        }
+        
+        if (isInShift && statistics.contains(modelName)) {
+            statistics[modelName][status]++;
+        }
+    }
+    
+    // 构建统计数组
+    QJsonArray statisticsArray;
+    QList<QString> modelNames = statistics.keys();
+    std::sort(modelNames.begin(), modelNames.end());
+    
+    for (const QString& modelName : modelNames) {
+        QJsonObject modelData;
+        modelData["model_name"] = modelName;
+        modelData["real_tray_in"] = statistics[modelName]["实托盘搬入"];
+        modelData["real_tray_out"] = statistics[modelName]["实托盘搬出"];
+        modelData["empty_tray_in"] = statistics[modelName]["空托盘搬入"];
+        modelData["empty_tray_out"] = statistics[modelName]["空托盘搬出"];
+        statisticsArray.append(modelData);
+    }
+    
+    root["statistics"] = statisticsArray;
+    root["shift"] = currentShift; // 添加当前班次信息
+    
+    return root;
+}
+
+/**
+ * @brief 发送工程组数据到服务端
+ */
+void tcpClient::sendProjectGroupDataToServer()
+{
+    // 检查服务端连接状态
+    if (!m_serverSocket || m_serverSocket->state() != QAbstractSocket::ConnectedState) {
+        qDebug() << "服务端未连接，跳过发送工程组数据";
+        return; // 未连接，不发送
+    }
+    
+    // 构建JSON数据
+    QJsonObject jsonData = buildProjectGroupData();
+    QJsonDocument doc(jsonData);
+    QByteArray jsonBytes = doc.toJson();
+    
+    // 发送数据
+    qint64 bytesWritten = m_serverSocket->write(jsonBytes);
+    if (bytesWritten > 0) {
+        qDebug() << "已发送工程组数据到服务端，大小:" << bytesWritten << "字节";
+        appendToLog(QString("已发送工程组数据到服务端（%1字节）").arg(bytesWritten), false);
+    } else {
+        appendToLog("发送工程组数据到服务端失败", true);
+        qWarning() << "发送工程组数据失败";
     }
 }
 
@@ -6524,13 +6697,16 @@ void tcpClient::updateProjectGroupStatistics()
         statistics[modelName]["空托盘搬出"] = 0;
     }
     
-    // 获取当前班次
+    // 根据显示的班次决定统计哪个班次的数据
     QString currentShift = getCurrentShift();
+    QString displayShift = m_projectGroupDisplayShift == "previous" ? 
+        ((currentShift == "白班") ? "夜班" : "白班") : currentShift;
+    
     QDateTime now = QDateTime::currentDateTime();
     
-    // 计算当前班次的时间范围
+    // 计算要显示的班次的时间范围
     QDateTime shiftStartTime, shiftEndTime;
-    if (currentShift == "白班") {
+    if (displayShift == "白班") {
         // 白班：今天7:15 - 今天17:30
         shiftStartTime = QDateTime(now.date(), QTime(7, 15, 0));
         shiftEndTime = QDateTime(now.date(), QTime(17, 30, 0));
@@ -6540,7 +6716,20 @@ void tcpClient::updateProjectGroupStatistics()
         shiftEndTime = QDateTime(now.date(), QTime(7, 15, 0));
     }
     
-    // 从数据记录表统计各车型的操作次数（只统计当前班次）
+    // 如果是显示前一个班次，需要调整时间范围到前一个班次
+    if (m_projectGroupDisplayShift == "previous") {
+        if (displayShift == "白班") {
+            // 前一个白班：昨天7:15 - 昨天17:30
+            shiftStartTime = QDateTime(now.date().addDays(-1), QTime(7, 15, 0));
+            shiftEndTime = QDateTime(now.date().addDays(-1), QTime(17, 30, 0));
+        } else {
+            // 前一个夜班：前天17:30 - 昨天7:15
+            shiftStartTime = QDateTime(now.date().addDays(-2), QTime(17, 30, 0));
+            shiftEndTime = QDateTime(now.date().addDays(-1), QTime(7, 15, 0));
+        }
+    }
+    
+    // 从数据记录表统计各车型的操作次数
     query.prepare("SELECT model_name, status, time FROM data_records WHERE status IN ('实托盘搬入', '实托盘搬出', '空托盘搬入', '空托盘搬出')");
     
     if (!query.exec()) {
@@ -6566,17 +6755,17 @@ void tcpClient::updateProjectGroupStatistics()
             continue;
         }
         
-        // 判断记录是否属于当前班次
-        bool isInCurrentShift = false;
-        if (currentShift == "白班") {
+        // 判断记录是否属于要显示的班次
+        bool isInShift = false;
+        if (displayShift == "白班") {
             // 白班：7:15 - 17:30（同一天）
-            isInCurrentShift = (recordTime >= shiftStartTime && recordTime < shiftEndTime);
+            isInShift = (recordTime >= shiftStartTime && recordTime < shiftEndTime);
         } else {
             // 夜班：17:30 - 次日7:15（跨天）
-            isInCurrentShift = (recordTime >= shiftStartTime && recordTime < shiftEndTime);
+            isInShift = (recordTime >= shiftStartTime && recordTime < shiftEndTime);
         }
         
-        if (isInCurrentShift && statistics.contains(modelName)) {
+        if (isInShift && statistics.contains(modelName)) {
             statistics[modelName][status]++;
         }
     }
@@ -6619,6 +6808,71 @@ void tcpClient::updateProjectGroupStatistics()
     }
     
     qDebug() << QString("工程组统计表格已更新，共%1个车型").arg(statistics.size());
+}
+
+/**
+ * @brief 工程组记录界面班次按钮点击处理
+ */
+void tcpClient::onProjectGroupShiftButtonClicked()
+{
+    if (m_projectGroupDisplayShift == "current") {
+        // 切换到前一个班次
+        m_projectGroupDisplayShift = "previous";
+        QString currentShift = getCurrentShift();
+        QString previousShift = (currentShift == "白班") ? "夜班" : "白班";
+        
+        // 更新按钮文本
+        if (projectGroupShiftButton) {
+            projectGroupShiftButton->setText(previousShift);
+        }
+        
+        // 更新统计表格
+        updateProjectGroupStatistics();
+        
+        // 启动自动恢复定时器
+        m_projectGroupShiftAutoResetTimer->start();
+        
+        appendToLog(QString("工程组记录已切换到前一个班次（%1）数据").arg(previousShift), false);
+    } else {
+        // 切换回当前班次
+        m_projectGroupDisplayShift = "current";
+        QString currentShift = getCurrentShift();
+        
+        // 更新按钮文本
+        if (projectGroupShiftButton) {
+            projectGroupShiftButton->setText(currentShift);
+        }
+        
+        // 停止自动恢复定时器
+        m_projectGroupShiftAutoResetTimer->stop();
+        
+        // 更新统计表格
+        updateProjectGroupStatistics();
+        
+        appendToLog(QString("工程组记录已切换回当前班次（%1）数据").arg(currentShift), false);
+    }
+}
+
+/**
+ * @brief 工程组记录界面班次自动恢复处理
+ */
+void tcpClient::onProjectGroupShiftAutoReset()
+{
+    if (m_projectGroupDisplayShift == "previous") {
+        // 自动恢复为当前班次
+        m_projectGroupDisplayShift = "current";
+        QString currentShift = getCurrentShift();
+        
+        // 更新按钮文本
+        if (projectGroupShiftButton) {
+            projectGroupShiftButton->setText(currentShift);
+        }
+        
+        // 更新统计表格
+        updateProjectGroupStatistics();
+        
+        appendToLog(QString("工程组记录已自动恢复为当前班次（%1）数据").arg(currentShift), false);
+    }
 }
 
 

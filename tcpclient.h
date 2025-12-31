@@ -135,6 +135,8 @@ private slots:
 
     // 滑槽标签双击编辑函数
     void onTraySlotLabelDoubleClicked(QLabel* label, bool isRealTray, int slotIndex); ///< 滑槽标签双击处理
+    void onProjectGroupShiftButtonClicked(); ///< 工程组记录界面班次按钮点击处理
+    void onProjectGroupShiftAutoReset(); ///< 工程组记录界面班次自动恢复处理
 
 private:
     // UI和状态管理
@@ -195,6 +197,8 @@ private:
     void processServerJsonData(const QByteArray &data); ///< 处理服务端JSON数据
     void sendVisualizationDataToServer(); ///< 发送可视化数据到服务端
     QJsonObject buildVisualizationData(); ///< 构建可视化数据JSON对象
+    void sendProjectGroupDataToServer(); ///< 发送工程组数据到服务端
+    QJsonObject buildProjectGroupData(); ///< 构建工程组数据JSON对象
     void handleRealTrayIn(const QString &modelName, int slotNumber = -1); ///< 处理实托盘搬入，slotNumber为-1时使用原逻辑，否则根据slotNumber确定位置
     void handleEmptyTrayIn(const QString &modelName, int slotNo = -1); ///< 处理空托盘搬入，slotNo为-1时使用原逻辑，否则根据slotNo确定位置
     void handleEmptyTrayOut(const QString &modelName, int slotNumber = -1); ///< 处理空托盘搬出，slotNumber为-1时使用原逻辑，否则根据slotNumber确定位置
@@ -231,10 +235,12 @@ private:
     QTimer *m_serverConnectionTimer; ///< 服务端连接超时定时器
     QTimer *m_edSoftwareConnectionTimer; ///< ED软件连接超时定时器
     QTimer *m_shiftCheckTimer;   ///< 班次检查定时器（每分钟检查一次）
-    QTimer *m_visualizationDataTimer; ///< 可视化数据发送定时器（每3秒发送一次）
+    QTimer *m_visualizationDataTimer; ///< 可视化数据发送定时器（每6秒触发一次，立即发送AGT搬运数据，3秒后发送工程组数据）
+    QTimer *m_projectGroupDataTimer; ///< 工程组数据发送定时器（单次触发，3秒后发送工程组数据）
     QTimer *m_shiftDisplayAutoResetTimer; ///< 班次显示自动恢复定时器（1分钟后恢复）
     QTimer *m_plcAutoReconnectTimer; ///< PLC自动重连定时器（每3秒检测一次）
     QTimer *m_currentShiftTableDailyClearTimer; ///< 当前班次表格每日清空定时器（每分钟检查一次，凌晨6点清空）
+    QTimer *m_projectGroupShiftAutoResetTimer; ///< 工程组记录界面班次自动恢复定时器（1分钟后恢复）
     bool m_isConnected;           ///< PLC连接状态标志
     bool m_isServerConnected;     ///< 服务端连接状态标志
     bool m_isEdSoftwareConnected; ///< ED软件连接状态标志
@@ -285,6 +291,7 @@ private:
     int m_actualCount;            ///< 实际便次数值
     int m_delayedCount;           ///< 延迟便次数值
     QString m_currentDisplayShift; ///< 当前显示的班次（"current"表示当前班次，"previous"表示前一个班次）
+    QString m_projectGroupDisplayShift; ///< 工程组记录界面显示的班次（"current"表示当前班次，"previous"表示前一个班次）
     int m_displayedPlannedCount;  ///< 显示的计划便次（可能是前一个班次的）
     int m_displayedActualCount;   ///< 显示的实际便次（可能是前一个班次的）
     int m_displayedDelayedCount;  ///< 显示的延迟便次（可能是前一个班次的）           ///< 延迟便次数值
