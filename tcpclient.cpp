@@ -283,12 +283,21 @@ void tcpClient::setupUI()
 
     // 创建可视化记录页面和按钮
     pushButtonVisualizationPage = new QPushButton(this);
-    pushButtonVisualizationPage->setText("可视化记录");
+    pushButtonVisualizationPage->setText("AGT搬运");
     pushButtonVisualizationPage->setCheckable(true);
     pushButtonVisualizationPage->setObjectName("pushButtonVisualizationPage");
     
     // 将可视化记录按钮插入到数据表格和车型绑定按钮之间
     ui->horizontalLayout_4->insertWidget(2, pushButtonVisualizationPage);
+    
+    // 创建工程组记录页面和按钮
+    pushButtonProjectGroupPage = new QPushButton(this);
+    pushButtonProjectGroupPage->setText("工程组记录");
+    pushButtonProjectGroupPage->setCheckable(true);
+    pushButtonProjectGroupPage->setObjectName("pushButtonProjectGroupPage");
+    
+    // 将工程组记录按钮插入到可视化记录按钮之后
+    ui->horizontalLayout_4->insertWidget(3, pushButtonProjectGroupPage);
     
     // 创建可视化记录页面
     visualizationPage = new QWidget();
@@ -298,13 +307,37 @@ void tcpClient::setupUI()
     visualizationLayout->setSpacing(15);
     visualizationLayout->setContentsMargins(20, 20, 20, 20);
     
+    // 创建AGT路线部品GroupBox，用于嵌套实滑槽和空滑槽记录
+    QGroupBox* agtRoutePartsGroupBox = new QGroupBox(visualizationPage);
+    agtRoutePartsGroupBox->setTitle("AGT路线部品");
+    agtRoutePartsGroupBox->setStyleSheet(
+        "QGroupBox {"
+        "font-size: 14pt;"
+        "font-weight: bold;"
+        "border: 2px solid #d0d0d0;"
+        "border-radius: 8px;"
+        "margin-top: 10px;"
+        "padding-top: 15px;"
+        "}"
+        "QGroupBox::title {"
+        "subcontrol-origin: margin;"
+        "subcontrol-position: top center;"
+        "padding: 0 8px 0 8px;"
+        "}"
+    );
+    
+    // 创建AGT路线部品内部的布局，用于居中显示实滑槽和空滑槽记录
+    QHBoxLayout* agtRoutePartsLayout = new QHBoxLayout(agtRoutePartsGroupBox);
+    agtRoutePartsLayout->setSpacing(20);
+    agtRoutePartsLayout->setContentsMargins(20, 20, 20, 20);
+    
     // 创建横向布局，用于并排显示实滑槽和空滑槽记录
     QHBoxLayout* horizontalTrayLayout = new QHBoxLayout();
     horizontalTrayLayout->setSpacing(20);
     horizontalTrayLayout->setContentsMargins(0, 0, 0, 0);
     
     // 创建实滑槽记录GroupBox（左侧）
-    QGroupBox* realTrayGroupBox = new QGroupBox(visualizationPage);
+    QGroupBox* realTrayGroupBox = new QGroupBox(agtRoutePartsGroupBox);
     realTrayGroupBox->setTitle("实滑槽记录");
     realTrayGroupBox->setStyleSheet(
         "QGroupBox {"
@@ -331,17 +364,17 @@ void tcpClient::setupUI()
     // 第0行：入口（居中，跨3列）
     QLabel* entranceLabel = new QLabel(realTrayGroupBox);
     entranceLabel->setAlignment(Qt::AlignCenter);
-    entranceLabel->setMinimumSize(100, 60);
+    entranceLabel->setMinimumSize(200, 45);
     entranceLabel->setStyleSheet(
         "QLabel {"
         "border: 2px solid #d0d0d0;"
         "border-radius: 8px;"
         "font-size: 12pt;"
         "font-weight: bold;"
-        "padding: 10px;"
+        "padding: 5px;"
         "}"
     );
-    entranceLabel->setText("实滑槽\n入口");
+    entranceLabel->setText("实滑槽入口");
     m_realTrayLabels.append(entranceLabel);
     realTrayLayout->addWidget(entranceLabel, 0, 0, 1, 3, Qt::AlignCenter);
     
@@ -351,14 +384,14 @@ void tcpClient::setupUI()
             int index = (row - 1) * 3 + col + 1; // 索引从1开始（跳过入口0）
             QLabel* label = new QLabel(realTrayGroupBox);
             label->setAlignment(Qt::AlignCenter);
-            label->setMinimumSize(100, 60);
+            label->setMinimumSize(100, 45);
             label->setStyleSheet(
                 "QLabel {"
                 "border: 2px solid #d0d0d0;"
                 "border-radius: 8px;"
                 "font-size: 12pt;"
                 "font-weight: bold;"
-                "padding: 10px;"
+                "padding: 5px;"
                 "}"
             );
             label->setText("");  // 初始为空
@@ -371,23 +404,23 @@ void tcpClient::setupUI()
     // 第8行：出口（居中，跨3列）
     QLabel* exitLabel = new QLabel(realTrayGroupBox);
     exitLabel->setAlignment(Qt::AlignCenter);
-    exitLabel->setMinimumSize(100, 60);
+    exitLabel->setMinimumSize(100, 45);
     exitLabel->setStyleSheet(
         "QLabel {"
         "border: 2px solid #d0d0d0;"
         "border-radius: 8px;"
         "font-size: 12pt;"
         "font-weight: bold;"
-        "padding: 10px;"
+        "padding: 5px;"
         "}"
     );
     exitLabel->setText("出口");
     m_realTrayLabels.append(exitLabel);
     realTrayLayout->addWidget(exitLabel, 8, 0, 1, 3, Qt::AlignCenter);
-    horizontalTrayLayout->addWidget(realTrayGroupBox);
+    horizontalTrayLayout->addWidget(realTrayGroupBox, 1); // 添加拉伸因子，填充宽度
     
     // 创建空滑槽记录GroupBox（右侧）
-    QGroupBox* emptyTrayGroupBox = new QGroupBox(visualizationPage);
+    QGroupBox* emptyTrayGroupBox = new QGroupBox(agtRoutePartsGroupBox);
     emptyTrayGroupBox->setTitle("空滑槽记录");
     emptyTrayGroupBox->setStyleSheet(
         "QGroupBox {"
@@ -414,17 +447,17 @@ void tcpClient::setupUI()
     // 第0行：入口（居中，跨3列）
     QLabel* emptyEntranceLabel = new QLabel(emptyTrayGroupBox);
     emptyEntranceLabel->setAlignment(Qt::AlignCenter);
-    emptyEntranceLabel->setMinimumSize(100, 60);
+    emptyEntranceLabel->setMinimumSize(200, 45);
     emptyEntranceLabel->setStyleSheet(
         "QLabel {"
         "border: 2px solid #d0d0d0;"
         "border-radius: 8px;"
         "font-size: 12pt;"
         "font-weight: bold;"
-        "padding: 10px;"
+        "padding: 5px;"
         "}"
     );
-    emptyEntranceLabel->setText("空滑槽\n入口");
+    emptyEntranceLabel->setText("空滑槽入口");
     m_emptyTrayLabels.append(emptyEntranceLabel);
     emptyTrayLayout->addWidget(emptyEntranceLabel, 0, 0, 1, 3, Qt::AlignCenter);
     
@@ -434,14 +467,14 @@ void tcpClient::setupUI()
             int index = (row - 1) * 3 + col + 1; // 索引从1开始（跳过入口0）
             QLabel* label = new QLabel(emptyTrayGroupBox);
             label->setAlignment(Qt::AlignCenter);
-            label->setMinimumSize(100, 60);
+            label->setMinimumSize(100, 45);
             label->setStyleSheet(
                 "QLabel {"
                 "border: 2px solid #d0d0d0;"
                 "border-radius: 8px;"
                 "font-size: 12pt;"
                 "font-weight: bold;"
-                "padding: 10px;"
+                "padding: 5px;"
                 "}"
             );
             label->setText("");  // 初始为空
@@ -454,23 +487,26 @@ void tcpClient::setupUI()
     // 第8行：出口（居中，跨3列）
     QLabel* emptyExitLabel = new QLabel(emptyTrayGroupBox);
     emptyExitLabel->setAlignment(Qt::AlignCenter);
-    emptyExitLabel->setMinimumSize(100, 60);
+    emptyExitLabel->setMinimumSize(100, 45);
     emptyExitLabel->setStyleSheet(
         "QLabel {"
         "border: 2px solid #d0d0d0;"
         "border-radius: 8px;"
         "font-size: 12pt;"
         "font-weight: bold;"
-        "padding: 10px;"
+        "padding: 5px;"
         "}"
     );
     emptyExitLabel->setText("出口");
     m_emptyTrayLabels.append(emptyExitLabel);
     emptyTrayLayout->addWidget(emptyExitLabel, 8, 0, 1, 3, Qt::AlignCenter);
-    horizontalTrayLayout->addWidget(emptyTrayGroupBox);
+    horizontalTrayLayout->addWidget(emptyTrayGroupBox, 1); // 添加拉伸因子，填充宽度
     
-    // 将横向布局添加到主布局中
-    visualizationLayout->addLayout(horizontalTrayLayout);
+    // 将横向布局添加到AGT路线部品布局中，填充整个宽度
+    agtRoutePartsLayout->addLayout(horizontalTrayLayout);
+    
+    // 将AGT路线部品GroupBox直接添加到主布局中，填充整个宽度和可用高度
+    visualizationLayout->addWidget(agtRoutePartsGroupBox, 1);
     
     // 创建统计区域
     QGroupBox* statisticsGroupBox = new QGroupBox(visualizationPage);
@@ -579,20 +615,71 @@ void tcpClient::setupUI()
     // 将统计区域添加到主布局中
     visualizationLayout->addWidget(statisticsGroupBox);
     
-    // 添加弹性空间
-    visualizationLayout->addStretch();
-    
     // 注意：可视化记录的加载将在数据库初始化完成后进行
     // 不在这里调用 loadVisualizationRecords()，避免数据库未初始化的问题
     
     // 将可视化记录页面插入到stackedWidget中（Index 2位置）
-    // 原来的车型绑定页面会变成Index 3
+    // 工程组记录页面在Index 3
+    // 原来的车型绑定页面会变成Index 4
     ui->stackedWidget->insertWidget(2, visualizationPage);
+    
+    // 创建工程组记录页面
+    projectGroupPage = new QWidget();
+    projectGroupPage->setObjectName("projectGroupPage");
+    QVBoxLayout* projectGroupLayout = new QVBoxLayout(projectGroupPage);
+    projectGroupLayout->setObjectName("projectGroupLayout");
+    projectGroupLayout->setSpacing(10);
+    projectGroupLayout->setContentsMargins(15, 15, 15, 15);  // 减少页面边距，增加可用空间
+    
+    // 创建统计区域GroupBox，填充整个工程组记录界面
+    QGroupBox* projectGroupStatisticsBox = new QGroupBox(projectGroupPage);
+    projectGroupStatisticsBox->setTitle("工程组统计");
+    projectGroupStatisticsBox->setStyleSheet(
+        "QGroupBox {"
+        "font-size: 14pt;"
+        "font-weight: bold;"
+        "border: 2px solid #d0d0d0;"
+        "border-radius: 8px;"
+        "margin-top: 10px;"
+        "padding-top: 15px;"
+        "}"
+        "QGroupBox::title {"
+        "subcontrol-origin: margin;"
+        "left: 15px;"
+        "padding: 0 8px 0 8px;"
+        "}"
+    );
+    
+    QVBoxLayout* projectGroupStatisticsLayout = new QVBoxLayout(projectGroupStatisticsBox);
+    projectGroupStatisticsLayout->setSpacing(10);
+    projectGroupStatisticsLayout->setContentsMargins(15, 15, 15, 15);  // 减少边距，增加可用空间
+    
+    // 创建表格
+    projectGroupTable = new QTableWidget(projectGroupStatisticsBox);
+    projectGroupTable->setColumnCount(5);
+    QStringList headers;
+    headers << "车型名称" << "实托盘搬入" << "实托盘搬出" << "空托盘搬入" << "空托盘搬出";
+    projectGroupTable->setHorizontalHeaderLabels(headers);
+    projectGroupTable->setAlternatingRowColors(true);
+    projectGroupTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    projectGroupTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    projectGroupTable->horizontalHeader()->setStretchLastSection(true);
+    projectGroupTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    
+    // 让表格占据GroupBox内的所有可用空间
+    projectGroupStatisticsLayout->addWidget(projectGroupTable, 1);
+    
+    // 设置统计区域可以扩展，占据更多空间
+    projectGroupLayout->addWidget(projectGroupStatisticsBox, 1);  // 使用拉伸因子1，让GroupBox占据可用空间
+    
+    // 将工程组记录页面插入到stackedWidget中（Index 3位置）
+    ui->stackedWidget->insertWidget(3, projectGroupPage);
     
     // 连接界面切换按钮信号槽
     connect(ui->pushButtonConnectionPage, &QPushButton::clicked, this, &tcpClient::onConnectionPageClicked);
     connect(ui->pushButtonTablePage, &QPushButton::clicked, this, &tcpClient::onTablePageClicked);
     connect(pushButtonVisualizationPage, &QPushButton::clicked, this, &tcpClient::onVisualizationPageClicked);
+    connect(pushButtonProjectGroupPage, &QPushButton::clicked, this, &tcpClient::onProjectGroupPageClicked);
     connect(ui->pushButtonVehicleBindingPage, &QPushButton::clicked, this, &tcpClient::onVehicleBindingPageClicked);
 
     // 连接按钮信号槽
@@ -758,6 +845,7 @@ void tcpClient::setupUI()
     ui->pushButtonConnectionPage->setChecked(false);
     ui->pushButtonTablePage->setChecked(true);
     pushButtonVisualizationPage->setChecked(false);
+    pushButtonProjectGroupPage->setChecked(false);
     ui->pushButtonVehicleBindingPage->setChecked(false);
 
     ui->pushButtonExportTable->setVisible(false);
@@ -932,6 +1020,7 @@ void tcpClient::applyBuiltinStyle()
         QPushButton#pushButtonConnectionPage:hover,
         QPushButton#pushButtonTablePage:hover,
         QPushButton#pushButtonVisualizationPage:hover,
+        QPushButton#pushButtonProjectGroupPage:hover,
         QPushButton#pushButtonVehicleBindingPage:hover {
             background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1,
                                       stop: 0 #5d6d7e, stop: 1 #34495e);
@@ -940,6 +1029,7 @@ void tcpClient::applyBuiltinStyle()
         QPushButton#pushButtonConnectionPage:checked,
         QPushButton#pushButtonTablePage:checked,
         QPushButton#pushButtonVisualizationPage:checked,
+        QPushButton#pushButtonProjectGroupPage:checked,
         QPushButton#pushButtonVehicleBindingPage:checked {
             background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1,
                                       stop: 0 #3498db, stop: 1 #2980b9);
@@ -1124,6 +1214,7 @@ void tcpClient::onConnectionPageClicked()
     ui->pushButtonConnectionPage->setChecked(true);
     ui->pushButtonTablePage->setChecked(false);
     pushButtonVisualizationPage->setChecked(false);
+    pushButtonProjectGroupPage->setChecked(false);
     ui->pushButtonVehicleBindingPage->setChecked(false);
 }
 
@@ -1136,6 +1227,7 @@ void tcpClient::onTablePageClicked()
     ui->pushButtonConnectionPage->setChecked(false);
     ui->pushButtonTablePage->setChecked(true);
     pushButtonVisualizationPage->setChecked(false);
+    pushButtonProjectGroupPage->setChecked(false);
     ui->pushButtonVehicleBindingPage->setChecked(false);
 }
 
@@ -1148,7 +1240,24 @@ void tcpClient::onVisualizationPageClicked()
     ui->pushButtonConnectionPage->setChecked(false);
     ui->pushButtonTablePage->setChecked(false);
     pushButtonVisualizationPage->setChecked(true);
+    pushButtonProjectGroupPage->setChecked(false);
     ui->pushButtonVehicleBindingPage->setChecked(false);
+}
+
+/**
+ * @brief 切换到工程组记录界面
+ */
+void tcpClient::onProjectGroupPageClicked()
+{
+    ui->stackedWidget->setCurrentIndex(3);
+    ui->pushButtonConnectionPage->setChecked(false);
+    ui->pushButtonTablePage->setChecked(false);
+    pushButtonVisualizationPage->setChecked(false);
+    pushButtonProjectGroupPage->setChecked(true);
+    ui->pushButtonVehicleBindingPage->setChecked(false);
+    
+    // 更新工程组统计表格
+    updateProjectGroupStatistics();
 }
 
 /**
@@ -1156,10 +1265,23 @@ void tcpClient::onVisualizationPageClicked()
  */
 void tcpClient::onVehicleBindingPageClicked()
 {
-    ui->stackedWidget->setCurrentIndex(3);  // 更新索引：可视化记录页面在Index 2，车型绑定在Index 3
+    // 检查是否需要密码验证
+    if (m_isPasswordSet) {
+        if (!showPasswordDialog("密码验证", "请输入密码以进入车型绑定界面:")) {
+            // 密码验证失败或取消，恢复按钮状态
+            ui->pushButtonVehicleBindingPage->setChecked(false);
+            // 恢复到数据表格页面
+            ui->stackedWidget->setCurrentIndex(1);
+            ui->pushButtonTablePage->setChecked(true);
+            return;
+        }
+    }
+    
+    ui->stackedWidget->setCurrentIndex(4);  // 更新索引：可视化记录页面在Index 2，工程组记录在Index 3，车型绑定在Index 4
     ui->pushButtonConnectionPage->setChecked(false);
     ui->pushButtonTablePage->setChecked(false);
     pushButtonVisualizationPage->setChecked(false);
+    pushButtonProjectGroupPage->setChecked(false);
     ui->pushButtonVehicleBindingPage->setChecked(true);
 }
 
@@ -5391,6 +5513,106 @@ void tcpClient::restoreCurrentShiftDisplay()
         appendToLog(QString("已恢复显示当前班次（%1）数据").arg(currentShift), false);
     }
 }
+
+/**
+ * @brief 更新工程组统计表格
+ */
+void tcpClient::updateProjectGroupStatistics()
+{
+    if (!projectGroupTable) {
+        return;
+    }
+    
+    // 检查数据库是否已打开
+    QSqlDatabase db = QSqlDatabase::database();
+    if (!db.isOpen()) {
+        qDebug() << "数据库未打开，跳过更新工程组统计";
+        return;
+    }
+    
+    // 获取所有车型名称（从车型绑定表）
+    QSqlQuery query;
+    query.prepare("SELECT DISTINCT model_name FROM model_bindings ORDER BY model_name");
+    
+    if (!query.exec()) {
+        appendToLog(QString("查询车型列表失败: %1").arg(query.lastError().text()), true);
+        qWarning() << "查询车型列表失败:" << query.lastError().text();
+        return;
+    }
+    
+    QMap<QString, QMap<QString, int>> statistics; // 车型名称 -> {操作类型 -> 数量}
+    
+    // 初始化所有车型的统计数据
+    while (query.next()) {
+        QString modelName = query.value(0).toString();
+        statistics[modelName]["实托盘搬入"] = 0;
+        statistics[modelName]["实托盘搬出"] = 0;
+        statistics[modelName]["空托盘搬入"] = 0;
+        statistics[modelName]["空托盘搬出"] = 0;
+    }
+    
+    // 从数据记录表统计各车型的操作次数
+    query.prepare("SELECT model_name, status, COUNT(*) as count FROM data_records GROUP BY model_name, status");
+    
+    if (!query.exec()) {
+        appendToLog(QString("查询统计数据失败: %1").arg(query.lastError().text()), true);
+        qWarning() << "查询统计数据失败:" << query.lastError().text();
+        return;
+    }
+    
+    while (query.next()) {
+        QString modelName = query.value(0).toString();
+        QString status = query.value(1).toString();
+        int count = query.value(2).toInt();
+        
+        if (statistics.contains(modelName)) {
+            if (status == "实托盘搬入" || status == "实托盘搬出" || 
+                status == "空托盘搬入" || status == "空托盘搬出") {
+                statistics[modelName][status] = count;
+            }
+        }
+    }
+    
+    // 更新表格
+    projectGroupTable->setRowCount(statistics.size());
+    int row = 0;
+    
+    // 按车型名称排序
+    QList<QString> modelNames = statistics.keys();
+    std::sort(modelNames.begin(), modelNames.end());
+    
+    for (const QString& modelName : modelNames) {
+        // 车型名称
+        QTableWidgetItem* nameItem = new QTableWidgetItem(modelName);
+        nameItem->setTextAlignment(Qt::AlignCenter);
+        projectGroupTable->setItem(row, 0, nameItem);
+        
+        // 实托盘搬入
+        QTableWidgetItem* realInItem = new QTableWidgetItem(QString::number(statistics[modelName]["实托盘搬入"]));
+        realInItem->setTextAlignment(Qt::AlignCenter);
+        projectGroupTable->setItem(row, 1, realInItem);
+        
+        // 实托盘搬出
+        QTableWidgetItem* realOutItem = new QTableWidgetItem(QString::number(statistics[modelName]["实托盘搬出"]));
+        realOutItem->setTextAlignment(Qt::AlignCenter);
+        projectGroupTable->setItem(row, 2, realOutItem);
+        
+        // 空托盘搬入
+        QTableWidgetItem* emptyInItem = new QTableWidgetItem(QString::number(statistics[modelName]["空托盘搬入"]));
+        emptyInItem->setTextAlignment(Qt::AlignCenter);
+        projectGroupTable->setItem(row, 3, emptyInItem);
+        
+        // 空托盘搬出
+        QTableWidgetItem* emptyOutItem = new QTableWidgetItem(QString::number(statistics[modelName]["空托盘搬出"]));
+        emptyOutItem->setTextAlignment(Qt::AlignCenter);
+        projectGroupTable->setItem(row, 4, emptyOutItem);
+        
+        row++;
+    }
+    
+    qDebug() << QString("工程组统计表格已更新，共%1个车型").arg(statistics.size());
+}
+
 
 
 

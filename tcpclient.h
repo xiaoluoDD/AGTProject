@@ -20,6 +20,7 @@
 #include <QVector>
 #include <QGroupBox>
 #include <QLineEdit>
+#include <QTableWidget>
 
 // 前向声明
 class QTableWidgetItem;
@@ -55,7 +56,9 @@ private slots:
     void onConnectionPageClicked(); ///< 切换到连接界面
     void onTablePageClicked();      ///< 切换到表格界面
     void onVisualizationPageClicked(); ///< 切换到可视化记录界面
+    void onProjectGroupPageClicked(); ///< 切换到工程组记录界面
     void onVehicleBindingPageClicked(); ///< 切换到车型绑定界面
+    void updateProjectGroupStatistics(); ///< 更新工程组统计表格
 
     // 连接管理槽函数
     void onConnectClicked();      ///< 连接按钮点击处理
@@ -223,6 +226,9 @@ private:
     QLabel* labelConnectionStatus;
     QPushButton* pushButtonVisualizationPage; ///< 可视化记录页面按钮
     QWidget* visualizationPage; ///< 可视化记录页面
+    QPushButton* pushButtonProjectGroupPage; ///< 工程组记录页面按钮
+    QWidget* projectGroupPage; ///< 工程组记录页面
+    QTableWidget* projectGroupTable; ///< 工程组记录表格
     QVector<QLabel*> m_realTrayLabels; ///< 实滑槽标签（23个：入口1个 + 21个槽位 + 出口1个）
     QVector<QLabel*> m_emptyTrayLabels; ///< 空滑槽标签（23个：入口1个 + 21个槽位 + 出口1个）
     QVector<QString> m_realTraySlots; ///< 实滑槽每个位置显示的车型名称（21个槽位，位置0-20）
