@@ -21,6 +21,8 @@
 #include <QGroupBox>
 #include <QLineEdit>
 #include <QTableWidget>
+#include <QInputDialog>
+#include <QDate>
 
 // 前向声明
 class QTableWidgetItem;
@@ -54,6 +56,7 @@ signals:
 private slots:
     // 界面切换槽函数
     void onConnectionPageClicked(); ///< 切换到连接界面
+    void onCurrentShiftTablePageClicked(); ///< 切换到当前班次表格界面
     void onTablePageClicked();      ///< 切换到表格界面
     void onVisualizationPageClicked(); ///< 切换到可视化记录界面
     void onProjectGroupPageClicked(); ///< 切换到工程组记录界面
@@ -70,6 +73,12 @@ private slots:
     void onClearTableClicked();   ///< 清空表格按钮点击处理
     void onDeleteTableClicked();  ///< 删除选中表格按钮点击处理
     void onExportTableClicked();  ///< 导出表格按钮点击处理
+    void onClearCurrentShiftTableClicked();   ///< 清空当前班次表格按钮点击处理
+    void onDeleteCurrentShiftTableClicked();  ///< 删除选中当前班次表格按钮点击处理
+    void onTableHeaderClicked(int logicalIndex); ///< 表格表头点击处理（筛选功能）
+    void applyTableFilter(); ///< 应用表格筛选
+    void clearTableFilter(); ///< 清除表格筛选
+    void updateTableHeaderFilterIndicator(); ///< 更新表头筛选指示器
 
     // 车型绑定表格操作槽函数
     void onAddVehicleClicked();   ///< 添加车型按钮点击处理
@@ -90,6 +99,7 @@ private slots:
     void onSocketReadyRead();     ///< Socket数据可读处理
     void onConnectionTimeout();   ///< 连接超时处理
     void onPlcAutoReconnect();    ///< PLC自动重连处理
+    void onCurrentShiftTableDailyClear(); ///< 当前班次表格每日清空处理（每天凌晨6点）
     void onServerSocketConnected();     ///< 服务端Socket连接成功处理
     void onServerSocketDisconnected();  ///< 服务端Socket断开连接处理
     void onServerSocketError(QAbstractSocket::SocketError error); ///< 服务端Socket错误处理
@@ -98,11 +108,11 @@ private slots:
 
     // 密码管理槽函数
     void onSetPasswordClicked();  ///< 设置密码按钮点击处理
-    
+
     // 数据库配置槽函数
     void onSaveDatabaseConfigClicked(); ///< 保存数据库配置按钮点击处理
     void onTestDatabaseConnectionClicked(); ///< 测试数据库连接按钮点击处理
-    
+
     // 连接配置槽函数
     void onSavePlcConnectionConfigClicked(); ///< 保存PLC连接配置按钮点击处理
     void onSaveServerConnectionConfigClicked(); ///< 保存服务端连接配置按钮点击处理
@@ -117,12 +127,12 @@ private slots:
     void onEdSoftwareSocketReadyRead(); ///< ED软件Socket数据可读处理
     void onEdSoftwareConnectionTimeout(); ///< ED软件连接超时处理
     void updateEdSoftwareConnectionStatus(bool connected); ///< 更新ED软件连接状态显示
-    
+
     // 统计信息双击编辑槽函数
     void onPlannedCountLabelDoubleClicked(); ///< 计划便次标签双击处理
     void onActualCountLabelDoubleClicked(); ///< 实际便次标签双击处理
     void onDelayedCountLabelDoubleClicked(); ///< 延迟便次标签双击处理
-    
+
     // 滑槽标签双击编辑函数
     void onTraySlotLabelDoubleClicked(QLabel* label, bool isRealTray, int slotIndex); ///< 滑槽标签双击处理
 
@@ -145,11 +155,13 @@ private:
     void addDataToTable(int status1, unsigned int value1, unsigned int value2,
                         int status2, unsigned int value3, unsigned int value4,
                         const QString &currentTime); ///< 添加数据到表格
+    void addDataToCurrentShiftTable(int slotNo, const QString &status, const QString &modelCode,
+                                    const QString &modelName, int count, const QString &currentTime); ///< 添加数据到当前班次表格
 
     void initDatabase();
     void loadDatabaseConfig(); ///< 从配置文件加载数据库配置
     void saveDatabaseConfig(); ///< 保存数据库配置到配置文件
-    bool testDatabaseConnection(const QString &host, int port, const QString &database, 
+    bool testDatabaseConnection(const QString &host, int port, const QString &database,
                                 const QString &username, const QString &password); ///< 测试数据库连接
     void loadModelBindingsFromDb();
     void loadDataRecordsFromDb();
@@ -160,6 +172,10 @@ private:
     void deleteModelBinding(const QString &modelName);
     void clearModelBindings();
     void clearDataRecords();
+    void insertCurrentShiftRecord(int slotNo, const QString &status, const QString &modelCode, const QString &modelName, int count, const QString &currentTime); ///< 插入当前班次表格记录到数据库
+    void deleteCurrentShiftRecord(int slotNo, const QString &status, const QString &modelCode, const QString &modelName, int count, const QString &currentTime); ///< 从数据库删除当前班次表格记录
+    void clearCurrentShiftRecords(); ///< 清空当前班次表格数据库记录
+    void loadCurrentShiftRecordsFromDb(); ///< 从数据库加载当前班次表格记录
     void saveVisualizationRecords(); ///< 保存可视化记录到数据库
     void loadVisualizationRecords(); ///< 从数据库加载可视化记录
     void saveStatisticsInfo(); ///< 保存统计信息到数据库
@@ -218,19 +234,25 @@ private:
     QTimer *m_visualizationDataTimer; ///< 可视化数据发送定时器（每3秒发送一次）
     QTimer *m_shiftDisplayAutoResetTimer; ///< 班次显示自动恢复定时器（1分钟后恢复）
     QTimer *m_plcAutoReconnectTimer; ///< PLC自动重连定时器（每3秒检测一次）
+    QTimer *m_currentShiftTableDailyClearTimer; ///< 当前班次表格每日清空定时器（每分钟检查一次，凌晨6点清空）
     bool m_isConnected;           ///< PLC连接状态标志
     bool m_isServerConnected;     ///< 服务端连接状态标志
     bool m_isEdSoftwareConnected; ///< ED软件连接状态标志
+    bool m_isAutoReconnecting;   ///< 是否正在自动重连标志
     int m_fullTrayCount;          ///< 满托盘时数量
     QDateTime m_lastStatus1Time;  ///< 旧版本兼容，已废弃
     QDateTime m_lastStatus2Time; ///< 旧版本兼容，已废弃
     QMap<QString, QDateTime> m_lastTrayTime; ///< 每个托盘的最后处理时间（key格式: "real_1" 或 "empty_1"）
     QLabel* labelConnectionStatus;
+    QPushButton* pushButtonCurrentShiftTablePage; ///< 当前班次表格页面按钮
+    QWidget* currentShiftTablePage; ///< 当前班次表格页面
+    QTableWidget* currentShiftTableWidget; ///< 当前班次表格
     QPushButton* pushButtonVisualizationPage; ///< 可视化记录页面按钮
     QWidget* visualizationPage; ///< 可视化记录页面
     QPushButton* pushButtonProjectGroupPage; ///< 工程组记录页面按钮
     QWidget* projectGroupPage; ///< 工程组记录页面
     QTableWidget* projectGroupTable; ///< 工程组记录表格
+    QPushButton* projectGroupShiftButton; ///< 工程组统计区域班次显示按钮
     QVector<QLabel*> m_realTrayLabels; ///< 实滑槽标签（23个：入口1个 + 21个槽位 + 出口1个）
     QVector<QLabel*> m_emptyTrayLabels; ///< 空滑槽标签（23个：入口1个 + 21个槽位 + 出口1个）
     QVector<QString> m_realTraySlots; ///< 实滑槽每个位置显示的车型名称（21个槽位，位置0-20）
@@ -252,7 +274,8 @@ private:
     QLabel* labelEdSoftwareConnectionStatus; ///< ED软件连接状态标签
     QString m_password;           ///< 存储的密码
     bool m_isPasswordSet;         ///< 密码是否已设置
-    
+    QDate m_lastCurrentShiftTableClearDate; ///< 上次清空当前班次表格的日期
+
     // 统计信息标签和数值
     QLabel* plannedCountLabel;    ///< 计划便次标签
     QLabel* actualCountLabel;      ///< 实际便次标签
@@ -265,14 +288,14 @@ private:
     int m_displayedPlannedCount;  ///< 显示的计划便次（可能是前一个班次的）
     int m_displayedActualCount;   ///< 显示的实际便次（可能是前一个班次的）
     int m_displayedDelayedCount;  ///< 显示的延迟便次（可能是前一个班次的）           ///< 延迟便次数值
-    
+
     // 实托盘批次处理相关
     int m_realTrayBatchCount;     ///< 当前批次已搬入的车型数量（0-3），0表示新批次开始
     QDateTime m_lastRealTrayOutTime; ///< 最后一次实托盘搬出的时间
-    
+
     // 空托盘批次处理相关
     int m_emptyTrayBatchCount;    ///< 当前批次已搬出的车型数量（0-3），0表示新批次开始
-    
+
     // 数据库配置
     QString m_dbHost;             ///< 数据库主机地址
     int m_dbPort;                 ///< 数据库端口
@@ -287,6 +310,10 @@ private:
     QTextStream* m_logStream;     ///< 日志流对象
     QMutex m_logMutex;            ///< 日志互斥锁
     static tcpClient* s_instance; ///< 静态实例指针（用于静态日志处理器）
+    
+    // 表格筛选相关
+    QMap<int, QString> m_tableFilters; ///< 表格筛选条件（列索引 -> 筛选值）
+    QList<QTableWidgetItem*> m_allTableItems; ///< 存储所有表格数据（用于筛选）
 };
 
 #endif // TCPCLIENT_H

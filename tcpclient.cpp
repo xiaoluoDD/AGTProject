@@ -61,12 +61,15 @@ tcpClient::tcpClient(QWidget *parent)
     , m_visualizationDataTimer(new QTimer(this))
     , m_shiftDisplayAutoResetTimer(new QTimer(this))
     , m_plcAutoReconnectTimer(new QTimer(this))
+    , m_currentShiftTableDailyClearTimer(new QTimer(this))
     , m_isConnected(false)
     , m_isServerConnected(false)
     , m_isEdSoftwareConnected(false)
+    , m_isAutoReconnecting(false)
     , m_fullTrayCount(0)
     , m_password("")
     , m_isPasswordSet(false)
+    , m_lastCurrentShiftTableClearDate(QDate())
     , plannedCountLabel(nullptr)
     , actualCountLabel(nullptr)
     , delayedCountLabel(nullptr)
@@ -136,6 +139,9 @@ tcpClient::tcpClient(QWidget *parent)
 
         loadDataRecordsFromDb();
         qDebug() << "loadDataRecordsFromDb completed";
+        
+        loadCurrentShiftRecordsFromDb();
+        qDebug() << "loadCurrentShiftRecordsFromDb completed";
 
         // 加载可视化记录（在数据库初始化完成后，且可视化页面已创建）
         // 使用延迟加载，确保UI完全初始化
@@ -210,6 +216,11 @@ tcpClient::tcpClient(QWidget *parent)
         m_shiftCheckTimer->setInterval(60000); // 60秒 = 1分钟
         m_shiftCheckTimer->start();
         
+        // 初始化当前班次表格每日清空定时器（每分钟检查一次，凌晨6点清空）
+        connect(m_currentShiftTableDailyClearTimer, &QTimer::timeout, this, &tcpClient::onCurrentShiftTableDailyClear);
+        m_currentShiftTableDailyClearTimer->setInterval(60000); // 60秒 = 1分钟
+        m_currentShiftTableDailyClearTimer->start();
+        
         // 初始化可视化数据发送定时器（每3秒发送一次）
         connect(m_visualizationDataTimer, &QTimer::timeout, this, &tcpClient::sendVisualizationDataToServer);
         m_visualizationDataTimer->setInterval(3000); // 3秒
@@ -244,7 +255,7 @@ tcpClient::tcpClient(QWidget *parent)
                 QTimer::singleShot(1000, this, [this]() {
                     if (!m_isConnected && m_socket->state() != QAbstractSocket::ConnectedState) {
                         m_plcAutoReconnectTimer->start();
-                        appendToLog("已启动PLC自动重连（每3秒检测一次）", false);
+                        // 自动重连不写入日志
                     }
                 });
             }
@@ -306,14 +317,23 @@ void tcpClient::setupUI()
     ui->textEditLog->setReadOnly(true);
     ui->textEditSend->setPlaceholderText("请输入要发送的数据...");
 
+    // 创建当前班次表格页面和按钮
+    pushButtonCurrentShiftTablePage = new QPushButton(this);
+    pushButtonCurrentShiftTablePage->setText("当前班次表格");
+    pushButtonCurrentShiftTablePage->setCheckable(true);
+    pushButtonCurrentShiftTablePage->setObjectName("pushButtonCurrentShiftTablePage");
+    
+    // 将当前班次表格按钮插入到数据表格按钮之前（索引1）
+    ui->horizontalLayout_4->insertWidget(1, pushButtonCurrentShiftTablePage);
+    
     // 创建可视化记录页面和按钮
     pushButtonVisualizationPage = new QPushButton(this);
     pushButtonVisualizationPage->setText("AGT搬运");
     pushButtonVisualizationPage->setCheckable(true);
     pushButtonVisualizationPage->setObjectName("pushButtonVisualizationPage");
     
-    // 将可视化记录按钮插入到数据表格和车型绑定按钮之间
-    ui->horizontalLayout_4->insertWidget(2, pushButtonVisualizationPage);
+    // 将可视化记录按钮插入到数据表格和车型绑定按钮之间（索引3，因为插入了当前班次表格）
+    ui->horizontalLayout_4->insertWidget(3, pushButtonVisualizationPage);
     
     // 创建工程组记录页面和按钮
     pushButtonProjectGroupPage = new QPushButton(this);
@@ -321,8 +341,8 @@ void tcpClient::setupUI()
     pushButtonProjectGroupPage->setCheckable(true);
     pushButtonProjectGroupPage->setObjectName("pushButtonProjectGroupPage");
     
-    // 将工程组记录按钮插入到可视化记录按钮之后
-    ui->horizontalLayout_4->insertWidget(3, pushButtonProjectGroupPage);
+    // 将工程组记录按钮插入到可视化记录按钮之后（索引4，因为插入了当前班次表格）
+    ui->horizontalLayout_4->insertWidget(4, pushButtonProjectGroupPage);
     
     // 创建可视化记录页面
     visualizationPage = new QWidget();
@@ -643,10 +663,72 @@ void tcpClient::setupUI()
     // 注意：可视化记录的加载将在数据库初始化完成后进行
     // 不在这里调用 loadVisualizationRecords()，避免数据库未初始化的问题
     
-    // 将可视化记录页面插入到stackedWidget中（Index 2位置）
-    // 工程组记录页面在Index 3
-    // 原来的车型绑定页面会变成Index 4
-    ui->stackedWidget->insertWidget(2, visualizationPage);
+    // 创建当前班次表格页面（和数据表格页面一样的结构）
+    currentShiftTablePage = new QWidget();
+    currentShiftTablePage->setObjectName("currentShiftTablePage");
+    QVBoxLayout* currentShiftTableLayout = new QVBoxLayout(currentShiftTablePage);
+    currentShiftTableLayout->setObjectName("currentShiftTableLayout");
+    currentShiftTableLayout->setSpacing(10);
+    currentShiftTableLayout->setContentsMargins(15, 15, 15, 15);
+    
+    // 创建表格GroupBox
+    QGroupBox* currentShiftTableGroupBox = new QGroupBox(currentShiftTablePage);
+    currentShiftTableGroupBox->setTitle("当前班次数据表格");
+    currentShiftTableGroupBox->setObjectName("currentShiftTableGroupBox");
+    QVBoxLayout* currentShiftTableGroupLayout = new QVBoxLayout(currentShiftTableGroupBox);
+    currentShiftTableGroupLayout->setObjectName("currentShiftTableGroupLayout");
+    
+    // 创建表格（和数据表格一样的结构）
+    currentShiftTableWidget = new QTableWidget(currentShiftTableGroupBox);
+    currentShiftTableWidget->setObjectName("currentShiftTableWidget");
+    currentShiftTableWidget->setColumnCount(6);
+    QStringList currentShiftHeaders;
+    currentShiftHeaders << "滑槽号" << "状态" << "车型代码" << "车型名称" << "数量" << "时间";
+    currentShiftTableWidget->setHorizontalHeaderLabels(currentShiftHeaders);
+    currentShiftTableWidget->setAlternatingRowColors(true);
+    currentShiftTableWidget->setSelectionBehavior(QAbstractItemView::SelectRows);
+    currentShiftTableWidget->setSortingEnabled(false); // 禁用排序
+    currentShiftTableWidget->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    // 设置列宽占满右侧空白
+    currentShiftTableWidget->horizontalHeader()->setStretchLastSection(true);
+    currentShiftTableWidget->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    currentShiftTableGroupLayout->addWidget(currentShiftTableWidget);
+    
+    // 创建按钮布局（和数据表格一样的按钮）
+    QHBoxLayout* currentShiftTableButtonLayout = new QHBoxLayout();
+    currentShiftTableButtonLayout->setObjectName("currentShiftTableButtonLayout");
+    
+    QPushButton* pushButtonClearCurrentShiftTable = new QPushButton(currentShiftTableGroupBox);
+    pushButtonClearCurrentShiftTable->setObjectName("pushButtonClearCurrentShiftTable");
+    pushButtonClearCurrentShiftTable->setText("清空");
+    currentShiftTableButtonLayout->addWidget(pushButtonClearCurrentShiftTable);
+    connect(pushButtonClearCurrentShiftTable, &QPushButton::clicked, this, &tcpClient::onClearCurrentShiftTableClicked);
+    
+    QPushButton* pushButtonDeleteCurrentShiftTable = new QPushButton(currentShiftTableGroupBox);
+    pushButtonDeleteCurrentShiftTable->setObjectName("pushButtonDeleteCurrentShiftTable");
+    pushButtonDeleteCurrentShiftTable->setText("删除选中");
+    currentShiftTableButtonLayout->addWidget(pushButtonDeleteCurrentShiftTable);
+    connect(pushButtonDeleteCurrentShiftTable, &QPushButton::clicked, this, &tcpClient::onDeleteCurrentShiftTableClicked);
+    
+    QPushButton* pushButtonExportCurrentShiftTable = new QPushButton(currentShiftTableGroupBox);
+    pushButtonExportCurrentShiftTable->setObjectName("pushButtonExportCurrentShiftTable");
+    pushButtonExportCurrentShiftTable->setText("导出");
+    pushButtonExportCurrentShiftTable->setVisible(false); // 隐藏导出按钮
+    currentShiftTableButtonLayout->addWidget(pushButtonExportCurrentShiftTable);
+    
+    QSpacerItem* currentShiftTableSpacer = new QSpacerItem(40, 20, QSizePolicy::Expanding, QSizePolicy::Minimum);
+    currentShiftTableButtonLayout->addItem(currentShiftTableSpacer);
+    
+    currentShiftTableGroupLayout->addLayout(currentShiftTableButtonLayout);
+    currentShiftTableLayout->addWidget(currentShiftTableGroupBox);
+    
+    // 将当前班次表格页面插入到stackedWidget中（Index 1位置，在数据表格之前）
+    ui->stackedWidget->insertWidget(1, currentShiftTablePage);
+    
+    // 将可视化记录页面插入到stackedWidget中（Index 3位置，因为插入了当前班次表格）
+    // 工程组记录页面在Index 4
+    // 原来的车型绑定页面会变成Index 5
+    ui->stackedWidget->insertWidget(3, visualizationPage);
     
     // 创建工程组记录页面
     projectGroupPage = new QWidget();
@@ -694,14 +776,62 @@ void tcpClient::setupUI()
     // 让表格占据GroupBox内的所有可用空间
     projectGroupStatisticsLayout->addWidget(projectGroupTable, 1);
     
+    // 创建水平布局用于放置班次按钮（右下角）
+    QHBoxLayout* shiftButtonLayout = new QHBoxLayout();
+    shiftButtonLayout->setContentsMargins(0, 5, 0, 0); // 顶部留5px间距，与表格分开
+    shiftButtonLayout->setSpacing(0);
+    shiftButtonLayout->addStretch(); // 左侧弹性空间，使按钮靠右
+    
+    // 创建班次显示按钮
+    projectGroupShiftButton = new QPushButton(projectGroupStatisticsBox);
+    QString currentShift = getCurrentShift();
+    projectGroupShiftButton->setText(currentShift);
+    projectGroupShiftButton->setMinimumSize(80, 35); // 增加高度以确保文字完整显示
+    projectGroupShiftButton->setMaximumHeight(35); // 增加最大高度
+    projectGroupShiftButton->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed); // 固定大小策略
+    projectGroupShiftButton->setVisible(true); // 确保按钮可见
+    projectGroupShiftButton->setStyleSheet(
+        "QPushButton {"
+        "font-size: 10pt;"
+        "font-weight: bold;"
+        "padding: 8px 12px;"
+        "min-width: 80px;"
+        "min-height: 35px;"
+        "border: 2px solid #4CAF50;"
+        "border-radius: 4px;"
+        "background-color: #E8F5E9;"
+        "color: #2E7D32;"
+        "}"
+        "QPushButton:hover {"
+        "background-color: #C8E6C9;"
+        "border: 2px solid #388E3C;"
+        "}"
+        "QPushButton:pressed {"
+        "background-color: #A5D6A7;"
+        "}"
+    );
+    shiftButtonLayout->addWidget(projectGroupShiftButton);
+    
+    // 创建一个容器widget来包含按钮布局，确保按钮有固定高度
+    QWidget* shiftButtonWidget = new QWidget(projectGroupStatisticsBox);
+    shiftButtonWidget->setLayout(shiftButtonLayout);
+    shiftButtonWidget->setMinimumHeight(45); // 增加容器高度以确保按钮完整显示
+    shiftButtonWidget->setMaximumHeight(45);
+    shiftButtonWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed); // 水平扩展，垂直固定
+    shiftButtonWidget->setVisible(true); // 确保容器可见
+    
+    // 添加按钮容器到布局（在表格下方）
+    projectGroupStatisticsLayout->addWidget(shiftButtonWidget, 0); // 不设置拉伸因子，保持固定高度，放在表格下方
+    
     // 设置统计区域可以扩展，占据更多空间
     projectGroupLayout->addWidget(projectGroupStatisticsBox, 1);  // 使用拉伸因子1，让GroupBox占据可用空间
     
-    // 将工程组记录页面插入到stackedWidget中（Index 3位置）
-    ui->stackedWidget->insertWidget(3, projectGroupPage);
+    // 将工程组记录页面插入到stackedWidget中（Index 4位置，因为插入了当前班次表格）
+    ui->stackedWidget->insertWidget(4, projectGroupPage);
     
     // 连接界面切换按钮信号槽
     connect(ui->pushButtonConnectionPage, &QPushButton::clicked, this, &tcpClient::onConnectionPageClicked);
+    connect(pushButtonCurrentShiftTablePage, &QPushButton::clicked, this, &tcpClient::onCurrentShiftTablePageClicked);
     connect(ui->pushButtonTablePage, &QPushButton::clicked, this, &tcpClient::onTablePageClicked);
     connect(pushButtonVisualizationPage, &QPushButton::clicked, this, &tcpClient::onVisualizationPageClicked);
     connect(pushButtonProjectGroupPage, &QPushButton::clicked, this, &tcpClient::onProjectGroupPageClicked);
@@ -866,8 +996,9 @@ void tcpClient::setupUI()
     ui->textEditSend->setEnabled(false);
 
     // 设置初始界面为数据表格界面
-    ui->stackedWidget->setCurrentIndex(1);
+    ui->stackedWidget->setCurrentIndex(2);  // 索引从1变为2，因为插入了当前班次表格
     ui->pushButtonConnectionPage->setChecked(false);
+    pushButtonCurrentShiftTablePage->setChecked(false);
     ui->pushButtonTablePage->setChecked(true);
     pushButtonVisualizationPage->setChecked(false);
     pushButtonProjectGroupPage->setChecked(false);
@@ -1150,7 +1281,7 @@ void tcpClient::setupTable()
     // 设置表格属性
     ui->tableWidget->setAlternatingRowColors(true);
     ui->tableWidget->setSelectionBehavior(QAbstractItemView::SelectRows);
-    ui->tableWidget->setSortingEnabled(true);
+    ui->tableWidget->setSortingEnabled(false); // 禁用排序，改为筛选功能
 
     // 设置表格为只读模式，防止用户修改数据
     ui->tableWidget->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -1182,10 +1313,14 @@ void tcpClient::setupTable()
     // 设置表格最小宽度，确保时间列有足够空间
     ui->tableWidget->setMinimumWidth(700);
 
+    // 连接表头点击信号，实现筛选功能
+    connect(ui->tableWidget->horizontalHeader(), &QHeaderView::sectionClicked, this, &tcpClient::onTableHeaderClicked);
+    
     // 延迟记录列宽设置到日志，确保UI已准备好
     QTimer::singleShot(200, this, [this]() {
         appendToLog("数据表格列宽设置完成：滑槽号(80px), 状态(120px), 代码(100px), 名称(120px), 数量(100px), 时间(自适应)");
         appendToLog("数据表格已设置为只读模式，防止数据被误修改");
+        appendToLog("点击表头可进行筛选操作");
     });
 }
 
@@ -1229,7 +1364,14 @@ void tcpClient::onConnectionPageClicked()
     if (m_isPasswordSet) {
         if (!showPasswordDialog("密码验证", "请输入系统设置密码:")) {
             // 密码验证失败或取消，恢复按钮状态
+            // 先取消所有按钮的选中状态，避免出现多个选中状态
             ui->pushButtonConnectionPage->setChecked(false);
+            pushButtonCurrentShiftTablePage->setChecked(false);
+            ui->pushButtonTablePage->setChecked(false);
+            pushButtonVisualizationPage->setChecked(false);
+            pushButtonProjectGroupPage->setChecked(false);
+            ui->pushButtonVehicleBindingPage->setChecked(false);
+            // 然后设置正确的按钮为选中状态
             ui->pushButtonTablePage->setChecked(true);
             return;
         }
@@ -1237,6 +1379,21 @@ void tcpClient::onConnectionPageClicked()
 
     ui->stackedWidget->setCurrentIndex(0);
     ui->pushButtonConnectionPage->setChecked(true);
+    pushButtonCurrentShiftTablePage->setChecked(false);
+    ui->pushButtonTablePage->setChecked(false);
+    pushButtonVisualizationPage->setChecked(false);
+    pushButtonProjectGroupPage->setChecked(false);
+    ui->pushButtonVehicleBindingPage->setChecked(false);
+}
+
+/**
+ * @brief 切换到当前班次表格界面
+ */
+void tcpClient::onCurrentShiftTablePageClicked()
+{
+    ui->stackedWidget->setCurrentIndex(1);
+    ui->pushButtonConnectionPage->setChecked(false);
+    pushButtonCurrentShiftTablePage->setChecked(true);
     ui->pushButtonTablePage->setChecked(false);
     pushButtonVisualizationPage->setChecked(false);
     pushButtonProjectGroupPage->setChecked(false);
@@ -1248,8 +1405,9 @@ void tcpClient::onConnectionPageClicked()
  */
 void tcpClient::onTablePageClicked()
 {
-    ui->stackedWidget->setCurrentIndex(1);
+    ui->stackedWidget->setCurrentIndex(2);  // 索引从1变为2，因为插入了当前班次表格
     ui->pushButtonConnectionPage->setChecked(false);
+    pushButtonCurrentShiftTablePage->setChecked(false);
     ui->pushButtonTablePage->setChecked(true);
     pushButtonVisualizationPage->setChecked(false);
     pushButtonProjectGroupPage->setChecked(false);
@@ -1261,8 +1419,9 @@ void tcpClient::onTablePageClicked()
  */
 void tcpClient::onVisualizationPageClicked()
 {
-    ui->stackedWidget->setCurrentIndex(2);
+    ui->stackedWidget->setCurrentIndex(3);  // 索引从2变为3，因为插入了当前班次表格
     ui->pushButtonConnectionPage->setChecked(false);
+    pushButtonCurrentShiftTablePage->setChecked(false);
     ui->pushButtonTablePage->setChecked(false);
     pushButtonVisualizationPage->setChecked(true);
     pushButtonProjectGroupPage->setChecked(false);
@@ -1274,12 +1433,19 @@ void tcpClient::onVisualizationPageClicked()
  */
 void tcpClient::onProjectGroupPageClicked()
 {
-    ui->stackedWidget->setCurrentIndex(3);
+    ui->stackedWidget->setCurrentIndex(4);  // 索引从3变为4，因为插入了当前班次表格
     ui->pushButtonConnectionPage->setChecked(false);
+    pushButtonCurrentShiftTablePage->setChecked(false);
     ui->pushButtonTablePage->setChecked(false);
     pushButtonVisualizationPage->setChecked(false);
     pushButtonProjectGroupPage->setChecked(true);
     ui->pushButtonVehicleBindingPage->setChecked(false);
+    
+    // 更新班次按钮文本
+    if (projectGroupShiftButton) {
+        QString currentShift = getCurrentShift();
+        projectGroupShiftButton->setText(currentShift);
+    }
     
     // 更新工程组统计表格
     updateProjectGroupStatistics();
@@ -1294,16 +1460,23 @@ void tcpClient::onVehicleBindingPageClicked()
     if (m_isPasswordSet) {
         if (!showPasswordDialog("密码验证", "请输入密码以进入车型绑定界面:")) {
             // 密码验证失败或取消，恢复按钮状态
+            // 先取消所有按钮的选中状态，避免出现多个选中状态
+            ui->pushButtonConnectionPage->setChecked(false);
+            pushButtonCurrentShiftTablePage->setChecked(false);
+            ui->pushButtonTablePage->setChecked(false);
+            pushButtonVisualizationPage->setChecked(false);
+            pushButtonProjectGroupPage->setChecked(false);
             ui->pushButtonVehicleBindingPage->setChecked(false);
             // 恢复到数据表格页面
-            ui->stackedWidget->setCurrentIndex(1);
+            ui->stackedWidget->setCurrentIndex(2);  // 索引从1变为2，因为插入了当前班次表格
             ui->pushButtonTablePage->setChecked(true);
             return;
         }
     }
     
-    ui->stackedWidget->setCurrentIndex(4);  // 更新索引：可视化记录页面在Index 2，工程组记录在Index 3，车型绑定在Index 4
+    ui->stackedWidget->setCurrentIndex(5);  // 更新索引：当前班次表格在Index 1，数据表格在Index 2，可视化记录在Index 3，工程组记录在Index 4，车型绑定在Index 5
     ui->pushButtonConnectionPage->setChecked(false);
+    pushButtonCurrentShiftTablePage->setChecked(false);
     ui->pushButtonTablePage->setChecked(false);
     pushButtonVisualizationPage->setChecked(false);
     pushButtonProjectGroupPage->setChecked(false);
@@ -1315,6 +1488,13 @@ void tcpClient::onVehicleBindingPageClicked()
  */
 void tcpClient::onClearTableClicked()
 {
+    // 检查是否需要密码验证
+    if (m_isPasswordSet) {
+        if (!showPasswordDialog("密码验证", "请输入密码以清空表格:")) {
+            return;
+        }
+    }
+    
     int rowCount = ui->tableWidget->rowCount();
     if (rowCount > 0) {
         QMessageBox::StandardButton reply = QMessageBox::question(
@@ -1335,6 +1515,13 @@ void tcpClient::onClearTableClicked()
  */
 void tcpClient::onDeleteTableClicked()
 {
+    // 检查是否需要密码验证
+    if (m_isPasswordSet) {
+        if (!showPasswordDialog("密码验证", "请输入密码以删除记录:")) {
+            return;
+        }
+    }
+    
     QList<QTableWidgetItem*> selectedItems = ui->tableWidget->selectedItems();
     if (selectedItems.isEmpty()) {
         appendToLog("请先选择要删除的记录", true);
@@ -1389,6 +1576,102 @@ void tcpClient::onExportTableClicked()
 }
 
 /**
+ * @brief 清空当前班次表格按钮点击处理
+ */
+void tcpClient::onClearCurrentShiftTableClicked()
+{
+    // 检查是否需要密码验证
+    if (m_isPasswordSet) {
+        if (!showPasswordDialog("密码验证", "请输入密码以清空当前班次表格:")) {
+            return;
+        }
+    }
+    
+    if (!currentShiftTableWidget) {
+        appendToLog("当前班次表格未初始化", true);
+        return;
+    }
+    
+    int rowCount = currentShiftTableWidget->rowCount();
+    if (rowCount > 0) {
+        QMessageBox::StandardButton reply = QMessageBox::question(
+            this, "确认清空",
+            QString("确定要清空当前班次表格中的所有 %1 条记录吗？").arg(rowCount),
+            QMessageBox::Yes | QMessageBox::No
+            );
+
+        if (reply == QMessageBox::Yes) {
+            currentShiftTableWidget->setRowCount(0);
+            clearCurrentShiftRecords();
+            appendToLog(QString("已清空当前班次表格，共 %1 条记录").arg(rowCount), false);
+        }
+    } else {
+        appendToLog("当前班次表格为空，无需清空", false);
+    }
+}
+
+/**
+ * @brief 删除选中当前班次表格按钮点击处理
+ */
+void tcpClient::onDeleteCurrentShiftTableClicked()
+{
+    // 检查是否需要密码验证
+    if (m_isPasswordSet) {
+        if (!showPasswordDialog("密码验证", "请输入密码以删除记录:")) {
+            return;
+        }
+    }
+    
+    if (!currentShiftTableWidget) {
+        appendToLog("当前班次表格未初始化", true);
+        return;
+    }
+    
+    QList<QTableWidgetItem*> selectedItems = currentShiftTableWidget->selectedItems();
+    if (selectedItems.isEmpty()) {
+        appendToLog("请先选择要删除的记录", true);
+        return;
+    }
+
+    // 获取选中的行
+    QSet<int> selectedRows;
+    for (QTableWidgetItem* item : selectedItems) {
+        selectedRows.insert(item->row());
+    }
+
+    // 从后往前删除，避免索引变化
+    QList<int> rowsToDelete = selectedRows.values();
+    std::sort(rowsToDelete.begin(), rowsToDelete.end(), std::greater<int>());
+
+    // 确认删除
+    QMessageBox::StandardButton reply = QMessageBox::question(
+        this, "确认删除",
+        QString("确定要删除选中的 %1 条记录吗？").arg(rowsToDelete.size()),
+        QMessageBox::Yes | QMessageBox::No
+        );
+
+    if (reply == QMessageBox::Yes) {
+        for (int row : rowsToDelete) {
+            // 获取要删除的记录信息用于数据库删除
+            QString slotNo = currentShiftTableWidget->item(row, 0)->text();
+            QString status = currentShiftTableWidget->item(row, 1)->text();
+            QString modelCode = currentShiftTableWidget->item(row, 2)->text();
+            QString modelName = currentShiftTableWidget->item(row, 3)->text();
+            QString count = currentShiftTableWidget->item(row, 4)->text();
+            QString time = currentShiftTableWidget->item(row, 5)->text();
+
+            // 从表格中删除
+            currentShiftTableWidget->removeRow(row);
+
+            // 从数据库中删除对应记录
+            deleteCurrentShiftRecord(slotNo.toInt(), status, modelCode, modelName, count.toInt(), time);
+        }
+
+        appendToLog(QString("已删除 %1 条当前班次表格记录").arg(rowsToDelete.size()), false);
+    }
+}
+
+/**
  * @brief 连接按钮点击处理
  */
 void tcpClient::onConnectClicked()
@@ -1417,6 +1700,7 @@ void tcpClient::onConnectClicked()
     }
 
     // 开始连接
+    m_isAutoReconnecting = false; // 标记是手动连接
     QString connectMsg = QString("正在连接到 %1:%2...").arg(serverIP).arg(port);
     appendToLog(connectMsg);
     qInfo() << connectMsg;
@@ -1477,9 +1761,12 @@ void tcpClient::onSocketConnected()
     m_isConnected = true;
     updateConnectionStatus(true);
 
+    // 连接成功才写入日志（不管是手动连接还是自动重连）
     QString successMsg = "连接成功！";
     appendToLog(successMsg, false);
     qInfo() << successMsg << "服务器地址:" << m_socket->peerAddress().toString() << "端口:" << m_socket->peerPort();
+    
+    m_isAutoReconnecting = false; // 重置标志
 }
 
 /**
@@ -1495,7 +1782,7 @@ void tcpClient::onSocketDisconnected()
     // 启动自动重连定时器
     if (!m_plcAutoReconnectTimer->isActive()) {
         m_plcAutoReconnectTimer->start();
-        appendToLog("已启动PLC自动重连（每3秒检测一次）", false);
+        // 自动重连不写入日志
     }
 }
 
@@ -1509,14 +1796,19 @@ void tcpClient::onSocketError(QAbstractSocket::SocketError error)
     m_isConnected = false;
     updateConnectionStatus(false);
 
-    QString errorMsg = m_socket->errorString();
-    appendToLog(QString("连接错误: %1").arg(errorMsg), true);
+    // 如果是自动重连导致的错误，不写入日志；如果是手动连接导致的错误，写入日志
+    if (!m_isAutoReconnecting) {
+        QString errorMsg = m_socket->errorString();
+        appendToLog(QString("连接错误: %1").arg(errorMsg), true);
+    }
     
     // 启动自动重连定时器（用户主动取消连接通常不会触发errorOccurred信号）
-        if (!m_plcAutoReconnectTimer->isActive()) {
-            m_plcAutoReconnectTimer->start();
-            appendToLog("已启动PLC自动重连（每3秒检测一次）", false);
-        }
+    if (!m_plcAutoReconnectTimer->isActive()) {
+        m_plcAutoReconnectTimer->start();
+        // 自动重连不写入日志
+    }
+    
+    m_isAutoReconnecting = false; // 重置标志
 }
 
 /**
@@ -1534,14 +1826,21 @@ void tcpClient::onSocketReadyRead()
 void tcpClient::onConnectionTimeout()
 {
     m_socket->abort();
-    appendToLog("连接超时", true);
+    
+    // 如果是自动重连导致的超时，不写入日志；如果是手动连接导致的超时，写入日志
+    if (!m_isAutoReconnecting) {
+        appendToLog("连接超时", true);
+    }
+    
     updateConnectionStatus(false);
     
     // 启动自动重连定时器
     if (!m_plcAutoReconnectTimer->isActive()) {
         m_plcAutoReconnectTimer->start();
-        appendToLog("已启动PLC自动重连（每3秒检测一次）", false);
+        // 自动重连不写入日志
     }
+    
+    m_isAutoReconnecting = false; // 重置标志
 }
 
 /**
@@ -1577,12 +1876,38 @@ void tcpClient::onPlcAutoReconnect()
         return;
     }
     
-    // 尝试自动重连
-    appendToLog(QString("PLC自动重连: 正在连接到 %1:%2...").arg(serverIP).arg(port), false);
-    qDebug() << "PLC自动重连: 尝试连接到" << serverIP << ":" << port;
-    
+    // 尝试自动重连（不写入日志，连接成功时才写入日志）
+    m_isAutoReconnecting = true; // 标记正在自动重连
     m_socket->connectToHost(serverIP, port);
     m_connectionTimer->start();
+}
+
+/**
+ * @brief 当前班次表格每日清空处理（每天凌晨6点）
+ */
+void tcpClient::onCurrentShiftTableDailyClear()
+{
+    QDateTime now = QDateTime::currentDateTime();
+    QDate today = now.date();
+    QTime currentTime = now.time();
+    
+    // 检查是否是凌晨6点（6:00:00 - 6:00:59之间）
+    if (currentTime.hour() == 6 && currentTime.minute() == 0) {
+        // 检查今天是否已经清空过
+        if (m_lastCurrentShiftTableClearDate != today) {
+            // 清空当前班次表格
+            if (currentShiftTableWidget) {
+                int rowCount = currentShiftTableWidget->rowCount();
+                if (rowCount > 0) {
+                    currentShiftTableWidget->setRowCount(0);
+                    clearCurrentShiftRecords();
+                    m_lastCurrentShiftTableClearDate = today;
+                    appendToLog(QString("已自动清空当前班次表格（每天凌晨6点），共 %1 条记录").arg(rowCount), false);
+                    qInfo() << "已自动清空当前班次表格（每天凌晨6点），共" << rowCount << "条记录";
+                }
+            }
+        }
+    }
 }
 
 /**
@@ -1886,8 +2211,12 @@ void tcpClient::processHexData(const QByteArray &data)
                 item3->setTextAlignment(Qt::AlignCenter);
                 ui->tableWidget->setItem(tableRow, 3, item3);
                 
-                // 数量
-                QTableWidgetItem* item4 = new QTableWidgetItem(QString::number(count));
+                // 数量 - 空托盘的数量应该为0
+                int displayCount = count;
+                if (!tray.isRealTray && (tray.statusStr == "空托盘搬入" || tray.statusStr == "空托盘搬出")) {
+                    displayCount = 0;
+                }
+                QTableWidgetItem* item4 = new QTableWidgetItem(QString::number(displayCount));
                 item4->setTextAlignment(Qt::AlignCenter);
                 ui->tableWidget->setItem(tableRow, 4, item4);
                 
@@ -1896,8 +2225,18 @@ void tcpClient::processHexData(const QByteArray &data)
                 item5->setTextAlignment(Qt::AlignCenter);
                 ui->tableWidget->setItem(tableRow, 5, item5);
                 
-                // 保存到数据库
-                insertDataRecord(slotNoStr.toInt(), tray.statusStr, vehicleName, vehicleCode, count, currentTime);
+                // 保存到数据库 - 空托盘的数量应该为0
+                int saveCount = count;
+                if (!tray.isRealTray && (tray.statusStr == "空托盘搬入" || tray.statusStr == "空托盘搬出")) {
+                    saveCount = 0;
+                }
+                int slotNoInt = slotNoStr.toInt();
+                qDebug() << QString("processHexData: 准备保存数据 - slotNoStr=%1, slotNoInt=%2, tray.slotNo=%3, isRealTray=%4")
+                            .arg(slotNoStr).arg(slotNoInt).arg(tray.slotNo).arg(tray.isRealTray);
+                insertDataRecord(slotNoInt, tray.statusStr, vehicleName, vehicleCode, saveCount, currentTime);
+                
+                // 给当前班次表格添加记录
+                addDataToCurrentShiftTable(slotNoInt, tray.statusStr, vehicleCode, vehicleName, saveCount, currentTime);
                 
                 appendToLog(QString("托盘%1数据已添加到表格 - %2, 车型: %3").arg(slotNoStr).arg(tray.statusStr).arg(vehicleName), false);
                 
@@ -2022,6 +2361,7 @@ void tcpClient::addDataToTable(int status1, unsigned int value1, unsigned int va
         t5->setTextAlignment(Qt::AlignCenter);
         ui->tableWidget->setItem(row1, 5, t5);
         insertDataRecord(1, statusStr1, vehicleName1, vehicleCode1, count1, currentTime);
+        addDataToCurrentShiftTable(1, statusStr1, vehicleCode1, vehicleName1, count1, currentTime);
     }
     if (status1 != 0x00 && !vehicleName2.isEmpty()) {
         int row2 = ui->tableWidget->rowCount();
@@ -2045,8 +2385,10 @@ void tcpClient::addDataToTable(int status1, unsigned int value1, unsigned int va
         t11->setTextAlignment(Qt::AlignCenter);
         ui->tableWidget->setItem(row2, 5, t11);
         insertDataRecord(2, statusStr1, vehicleName2, vehicleCode2, count2, currentTime);
+        addDataToCurrentShiftTable(2, statusStr1, vehicleCode2, vehicleName2, count2, currentTime);
     }
     // 添加第6字节（满托/空托）数据
+    // 空托盘的数量应该为0
     if (status2 != 0x00 && !vehicleName3.isEmpty()) {
         int row1 = ui->tableWidget->rowCount();
         ui->tableWidget->insertRow(row1);
@@ -2062,13 +2404,15 @@ void tcpClient::addDataToTable(int status1, unsigned int value1, unsigned int va
         QTableWidgetItem* t15 = new QTableWidgetItem(vehicleName3);
         t15->setTextAlignment(Qt::AlignCenter);
         ui->tableWidget->setItem(row1, 3, t15);
-        QTableWidgetItem* t16 = new QTableWidgetItem(QString::number(count3));
+        // 空托盘数量设置为0
+        QTableWidgetItem* t16 = new QTableWidgetItem("0");
         t16->setTextAlignment(Qt::AlignCenter);
         ui->tableWidget->setItem(row1, 4, t16);
         QTableWidgetItem* t17 = new QTableWidgetItem(currentTime);
         t17->setTextAlignment(Qt::AlignCenter);
         ui->tableWidget->setItem(row1, 5, t17);
-        insertDataRecord(1, statusStr2, vehicleName3, vehicleCode3, count3, currentTime);
+        insertDataRecord(1, statusStr2, vehicleName3, vehicleCode3, 0, currentTime);
+        addDataToCurrentShiftTable(1, statusStr2, vehicleCode3, vehicleName3, 0, currentTime);
     }
     if (status2 != 0x00 && !vehicleName4.isEmpty()) {
         int row2 = ui->tableWidget->rowCount();
@@ -2085,19 +2429,81 @@ void tcpClient::addDataToTable(int status1, unsigned int value1, unsigned int va
         QTableWidgetItem* t21 = new QTableWidgetItem(vehicleName4);
         t21->setTextAlignment(Qt::AlignCenter);
         ui->tableWidget->setItem(row2, 3, t21);
-        QTableWidgetItem* t22 = new QTableWidgetItem(QString::number(count4));
+        // 空托盘数量设置为0
+        QTableWidgetItem* t22 = new QTableWidgetItem("0");
         t22->setTextAlignment(Qt::AlignCenter);
         ui->tableWidget->setItem(row2, 4, t22);
         QTableWidgetItem* t23 = new QTableWidgetItem(currentTime);
         t23->setTextAlignment(Qt::AlignCenter);
         ui->tableWidget->setItem(row2, 5, t23);
-        insertDataRecord(2, statusStr2, vehicleName4, vehicleCode4, count4, currentTime);
+        insertDataRecord(2, statusStr2, vehicleName4, vehicleCode4, 0, currentTime);
+        addDataToCurrentShiftTable(2, statusStr2, vehicleCode4, vehicleName4, 0, currentTime);
     }
     // 记录到日志
     if ((status1 != 0x00 && (!vehicleName1.isEmpty() || !vehicleName2.isEmpty())) ||
         (status2 != 0x00 && (!vehicleName3.isEmpty() || !vehicleName4.isEmpty()))) {
         appendToLog(QString("数据已添加到表格 - 时间: %1").arg(currentTime), false);
     }
+}
+
+/**
+ * @brief 添加数据到当前班次表格
+ * @param slotNo 滑槽号
+ * @param status 状态
+ * @param modelCode 车型代码
+ * @param modelName 车型名称
+ * @param count 数量
+ * @param currentTime 时间
+ */
+void tcpClient::addDataToCurrentShiftTable(int slotNo, const QString &status, const QString &modelCode,
+                                           const QString &modelName, int count, const QString &currentTime)
+{
+    // 只要有数据就写入，不根据班次判断（跟数据表格一样）
+    if (!currentShiftTableWidget) {
+        qWarning() << "currentShiftTableWidget为空，无法添加记录";
+        return;
+    }
+    
+    qDebug() << QString("addDataToCurrentShiftTable: slotNo=%1, status=%2, modelName=%3, currentTime=%4")
+                .arg(slotNo).arg(status).arg(modelName).arg(currentTime);
+    
+    int tableRow = currentShiftTableWidget->rowCount();
+    currentShiftTableWidget->insertRow(tableRow);
+    
+    // 滑槽号
+    QTableWidgetItem* item0 = new QTableWidgetItem(QString::number(slotNo));
+    item0->setTextAlignment(Qt::AlignCenter);
+    currentShiftTableWidget->setItem(tableRow, 0, item0);
+    
+    // 状态
+    QTableWidgetItem* item1 = new QTableWidgetItem(status);
+    item1->setTextAlignment(Qt::AlignCenter);
+    currentShiftTableWidget->setItem(tableRow, 1, item1);
+    
+    // 车型代码
+    QTableWidgetItem* item2 = new QTableWidgetItem(modelCode);
+    item2->setTextAlignment(Qt::AlignCenter);
+    currentShiftTableWidget->setItem(tableRow, 2, item2);
+    
+    // 车型名称
+    QTableWidgetItem* item3 = new QTableWidgetItem(modelName);
+    item3->setTextAlignment(Qt::AlignCenter);
+    currentShiftTableWidget->setItem(tableRow, 3, item3);
+    
+    // 数量
+    QTableWidgetItem* item4 = new QTableWidgetItem(QString::number(count));
+    item4->setTextAlignment(Qt::AlignCenter);
+    currentShiftTableWidget->setItem(tableRow, 4, item4);
+    
+    // 时间
+    QTableWidgetItem* item5 = new QTableWidgetItem(currentTime);
+    item5->setTextAlignment(Qt::AlignCenter);
+    currentShiftTableWidget->setItem(tableRow, 5, item5);
+    
+    // 保存到数据库
+    insertCurrentShiftRecord(slotNo, status, modelCode, modelName, count, currentTime);
+    
+    qDebug() << QString("已成功添加到当前班次表格，行号: %1").arg(tableRow);
 }
 
 /**
@@ -2453,11 +2859,27 @@ void tcpClient::initDatabase() {
     
     // 初始化班次记录表
     initShiftTable();
+    
+    // 当前班次表格记录表
+    if (query.exec("CREATE TABLE IF NOT EXISTS current_shift_records ("
+                   "id INT PRIMARY KEY AUTO_INCREMENT,"
+                   "slot_no INT,"
+                   "status VARCHAR(255),"
+                   "model_code VARCHAR(255),"
+                   "model_name VARCHAR(255),"
+                   "count INT,"
+                   "time VARCHAR(255))")) {
+        qDebug() << "当前班次表格记录表创建/检查成功";
+    } else {
+        qWarning() << "当前班次表格记录表创建失败:" << query.lastError().text();
+    }
 
     qInfo() << "数据库初始化完成";
 }
 
 void tcpClient::insertDataRecord(int slotNo, const QString &status, const QString &modelName, const QString &modelCode, int count, const QString &currentTime) {
+    qDebug() << QString("insertDataRecord被调用: slotNo=%1, status=%2, modelName=%3, modelCode=%4, count=%5, time=%6")
+                .arg(slotNo).arg(status).arg(modelName).arg(modelCode).arg(count).arg(currentTime);
     QSqlQuery query;
     query.prepare("INSERT INTO data_records (slot_no, status, model_name, model_code, count, time) VALUES (?, ?, ?, ?, ?, ?)");
     query.addBindValue(slotNo);
@@ -2557,6 +2979,117 @@ void tcpClient::clearDataRecords() {
     }
 }
 
+/**
+ * @brief 插入当前班次表格记录到数据库
+ */
+void tcpClient::insertCurrentShiftRecord(int slotNo, const QString &status, const QString &modelCode, const QString &modelName, int count, const QString &currentTime)
+{
+    QSqlQuery query;
+    query.prepare("INSERT INTO current_shift_records (slot_no, status, model_code, model_name, count, time) VALUES (?, ?, ?, ?, ?, ?)");
+    query.addBindValue(slotNo);
+    query.addBindValue(status);
+    query.addBindValue(modelCode);
+    query.addBindValue(modelName);
+    query.addBindValue(count);
+    query.addBindValue(currentTime);
+    if (!query.exec()) {
+        appendToLog("插入当前班次表格记录失败: " + query.lastError().text(), true);
+        qWarning() << "插入当前班次表格记录失败:" << query.lastError().text();
+    }
+}
+
+/**
+ * @brief 从数据库删除当前班次表格记录
+ */
+void tcpClient::deleteCurrentShiftRecord(int slotNo, const QString &status, const QString &modelCode, const QString &modelName, int count, const QString &currentTime)
+{
+    QSqlQuery query;
+    query.prepare("DELETE FROM current_shift_records WHERE slot_no = ? AND status = ? AND model_code = ? AND model_name = ? AND count = ? AND time = ?");
+    query.addBindValue(slotNo);
+    query.addBindValue(status);
+    query.addBindValue(modelCode);
+    query.addBindValue(modelName);
+    query.addBindValue(count);
+    query.addBindValue(currentTime);
+    if (!query.exec()) {
+        appendToLog("删除当前班次表格记录失败: " + query.lastError().text(), true);
+        qWarning() << "删除当前班次表格记录失败:" << query.lastError().text();
+    }
+}
+
+/**
+ * @brief 清空当前班次表格数据库记录
+ */
+void tcpClient::clearCurrentShiftRecords()
+{
+    QSqlQuery query;
+    if (!query.exec("DELETE FROM current_shift_records")) {
+        appendToLog("清空当前班次表格记录失败: " + query.lastError().text(), true);
+        qWarning() << "清空当前班次表格记录失败:" << query.lastError().text();
+    }
+}
+
+/**
+ * @brief 从数据库加载当前班次表格记录
+ */
+void tcpClient::loadCurrentShiftRecordsFromDb()
+{
+    if (!currentShiftTableWidget) {
+        return;
+    }
+    
+    currentShiftTableWidget->setRowCount(0);
+    
+    // 加载所有记录，不根据班次判断（跟数据表格一样）
+    QSqlQuery query;
+    query.prepare("SELECT slot_no, status, model_code, model_name, count, time FROM current_shift_records ORDER BY time DESC");
+    
+    if (!query.exec()) {
+        appendToLog(QString("查询当前班次表格记录失败: %1").arg(query.lastError().text()), true);
+        qWarning() << "查询当前班次表格记录失败:" << query.lastError().text();
+        return;
+    }
+    
+    int row = 0;
+    while (query.next()) {
+        QString timeStr = query.value(5).toString();
+        
+        currentShiftTableWidget->insertRow(row);
+        
+        // 滑槽号
+        QTableWidgetItem* item0 = new QTableWidgetItem(QString::number(query.value(0).toInt()));
+        item0->setTextAlignment(Qt::AlignCenter);
+        currentShiftTableWidget->setItem(row, 0, item0);
+        
+        // 状态
+        QTableWidgetItem* item1 = new QTableWidgetItem(query.value(1).toString());
+        item1->setTextAlignment(Qt::AlignCenter);
+        currentShiftTableWidget->setItem(row, 1, item1);
+        
+        // 车型代码
+        QTableWidgetItem* item2 = new QTableWidgetItem(query.value(2).toString());
+        item2->setTextAlignment(Qt::AlignCenter);
+        currentShiftTableWidget->setItem(row, 2, item2);
+        
+        // 车型名称
+        QTableWidgetItem* item3 = new QTableWidgetItem(query.value(3).toString());
+        item3->setTextAlignment(Qt::AlignCenter);
+        currentShiftTableWidget->setItem(row, 3, item3);
+        
+        // 数量
+        QTableWidgetItem* item4 = new QTableWidgetItem(QString::number(query.value(4).toInt()));
+        item4->setTextAlignment(Qt::AlignCenter);
+        currentShiftTableWidget->setItem(row, 4, item4);
+        
+        // 时间
+        QTableWidgetItem* item5 = new QTableWidgetItem(timeStr);
+        item5->setTextAlignment(Qt::AlignCenter);
+        currentShiftTableWidget->setItem(row, 5, item5);
+        
+        ++row;
+    }
+}
+
 void tcpClient::loadModelBindingsFromDb() {
     ui->tableWidgetVehicleBinding->setRowCount(0);
     QSqlQuery query("SELECT model_code, model_name, count FROM model_bindings");
@@ -2580,31 +3113,280 @@ void tcpClient::loadModelBindingsFromDb() {
 }
 
 void tcpClient::loadDataRecordsFromDb() {
+    // 清除筛选条件，加载所有数据
+    m_tableFilters.clear();
+    applyTableFilter();
+}
+
+/**
+ * @brief 表格表头点击处理（筛选功能）
+ * @param logicalIndex 列索引
+ */
+void tcpClient::onTableHeaderClicked(int logicalIndex)
+{
+    QString columnName;
+    QString currentFilter = m_tableFilters.value(logicalIndex, "");
+    
+    // 根据列索引确定列名
+    switch (logicalIndex) {
+    case 0:
+        columnName = "滑槽号";
+        break;
+    case 1:
+        columnName = "送入送出状态";
+        break;
+    case 2:
+        columnName = "车型代码";
+        break;
+    case 3:
+        columnName = "车型名称";
+        break;
+    case 4:
+        columnName = "数量（件）";
+        break;
+    case 5:
+        columnName = "时间";
+        break;
+    default:
+        return;
+    }
+    
+    // 如果是时间列，使用日期选择
+    if (logicalIndex == 5) {
+        QDate currentDate = QDate::currentDate();
+        if (!currentFilter.isEmpty()) {
+            // 尝试解析已有的筛选日期
+            QDate filterDate = QDate::fromString(currentFilter, "yyyy-MM-dd");
+            if (filterDate.isValid()) {
+                currentDate = filterDate;
+            }
+        }
+        
+        // 使用输入对话框选择日期
+        bool ok;
+        QString dateStr = QInputDialog::getText(this, QString("筛选%1").arg(columnName),
+                                                QString("请输入日期（格式：yyyy-MM-dd，留空清除筛选）：\n例如：2025-12-31"),
+                                                QLineEdit::Normal, 
+                                                currentFilter.isEmpty() ? currentDate.toString("yyyy-MM-dd") : currentFilter,
+                                                &ok);
+        if (ok) {
+            if (dateStr.isEmpty()) {
+                // 清除筛选
+                m_tableFilters.remove(logicalIndex);
+                appendToLog(QString("已清除%1筛选").arg(columnName), false);
+            } else {
+                // 验证日期格式
+                QDate selectedDate = QDate::fromString(dateStr, "yyyy-MM-dd");
+                if (selectedDate.isValid()) {
+                    m_tableFilters[logicalIndex] = selectedDate.toString("yyyy-MM-dd");
+                    appendToLog(QString("已设置%1筛选：%2").arg(columnName).arg(selectedDate.toString("yyyy-MM-dd")), false);
+                } else {
+                    QMessageBox::warning(this, "日期格式错误", "请输入正确的日期格式：yyyy-MM-dd\n例如：2025-12-31");
+                    return;
+                }
+            }
+            applyTableFilter();
+        }
+    } else {
+        // 其他列使用文本输入或下拉选择
+        // 先获取该列的所有唯一值
+        QSet<QString> uniqueValues;
+        for (int row = 0; row < ui->tableWidget->rowCount(); ++row) {
+            QTableWidgetItem* item = ui->tableWidget->item(row, logicalIndex);
+            if (item && !item->text().isEmpty()) {
+                uniqueValues.insert(item->text());
+            }
+        }
+        
+        QStringList valueList = uniqueValues.values();
+        valueList.sort();
+        valueList.prepend(""); // 添加空选项表示清除筛选
+        
+        bool ok;
+        QString selectedValue;
+        if (valueList.size() > 1 && valueList.size() <= 20) {
+            // 如果唯一值数量较少，使用下拉选择
+            selectedValue = QInputDialog::getItem(this, QString("筛选%1").arg(columnName),
+                                                  QString("请选择%1（选择空值清除筛选）：").arg(columnName),
+                                                  valueList, 0, false, &ok);
+        } else {
+            // 如果唯一值数量较多，使用文本输入
+            selectedValue = QInputDialog::getText(this, QString("筛选%1").arg(columnName),
+                                                  QString("请输入%1（留空清除筛选）：").arg(columnName),
+                                                  QLineEdit::Normal, currentFilter, &ok);
+        }
+        
+        if (ok) {
+            if (selectedValue.isEmpty()) {
+                m_tableFilters.remove(logicalIndex);
+                appendToLog(QString("已清除%1筛选").arg(columnName), false);
+            } else {
+                m_tableFilters[logicalIndex] = selectedValue;
+                appendToLog(QString("已设置%1筛选：%2").arg(columnName).arg(selectedValue), false);
+            }
+            applyTableFilter();
+        }
+    }
+}
+
+/**
+ * @brief 应用表格筛选
+ */
+void tcpClient::applyTableFilter()
+{
+    if (m_tableFilters.isEmpty()) {
+        // 如果没有筛选条件，重新加载所有数据
+        ui->tableWidget->setRowCount(0);
+        QSqlQuery query("SELECT slot_no, status, model_code, model_name, count, time FROM data_records");
+        int row = 0;
+        while (query.next()) {
+            ui->tableWidget->insertRow(row);
+            QTableWidgetItem* t0 = new QTableWidgetItem(QString::number(query.value(0).toInt())); // 直接使用数据库中的slotNo值
+            t0->setTextAlignment(Qt::AlignCenter);
+            ui->tableWidget->setItem(row, 0, t0);
+            QTableWidgetItem* t1 = new QTableWidgetItem(query.value(1).toString());
+            t1->setTextAlignment(Qt::AlignCenter);
+            ui->tableWidget->setItem(row, 1, t1);
+            QTableWidgetItem* t2 = new QTableWidgetItem(query.value(2).toString());
+            t2->setTextAlignment(Qt::AlignCenter);
+            ui->tableWidget->setItem(row, 2, t2);
+            QTableWidgetItem* t3 = new QTableWidgetItem(query.value(3).toString());
+            t3->setTextAlignment(Qt::AlignCenter);
+            ui->tableWidget->setItem(row, 3, t3);
+            QTableWidgetItem* t4 = new QTableWidgetItem(query.value(4).toString());
+            t4->setTextAlignment(Qt::AlignCenter);
+            ui->tableWidget->setItem(row, 4, t4);
+            QTableWidgetItem* t5 = new QTableWidgetItem(query.value(5).toString());
+            t5->setTextAlignment(Qt::AlignCenter);
+            ui->tableWidget->setItem(row, 5, t5);
+            ++row;
+        }
+        updateTableHeaderFilterIndicator();
+        return;
+    }
+    
+    // 重新从数据库加载所有数据并应用筛选
     ui->tableWidget->setRowCount(0);
     QSqlQuery query("SELECT slot_no, status, model_code, model_name, count, time FROM data_records");
     int row = 0;
     while (query.next()) {
-        ui->tableWidget->insertRow(row);
-        QTableWidgetItem* t0 = new QTableWidgetItem(query.value(0).toInt() == 1 ? "1" : "2");
-        t0->setTextAlignment(Qt::AlignCenter);
-        ui->tableWidget->setItem(row, 0, t0);
-        QTableWidgetItem* t1 = new QTableWidgetItem(query.value(1).toString());
-        t1->setTextAlignment(Qt::AlignCenter);
-        ui->tableWidget->setItem(row, 1, t1);
-        QTableWidgetItem* t2 = new QTableWidgetItem(query.value(2).toString());
-        t2->setTextAlignment(Qt::AlignCenter);
-        ui->tableWidget->setItem(row, 2, t2);
-        QTableWidgetItem* t3 = new QTableWidgetItem(query.value(3).toString());
-        t3->setTextAlignment(Qt::AlignCenter);
-        ui->tableWidget->setItem(row, 3, t3);
-        QTableWidgetItem* t4 = new QTableWidgetItem(query.value(4).toString());
-        t4->setTextAlignment(Qt::AlignCenter);
-        ui->tableWidget->setItem(row, 4, t4);
-        QTableWidgetItem* t5 = new QTableWidgetItem(query.value(5).toString());
-        t5->setTextAlignment(Qt::AlignCenter);
-        ui->tableWidget->setItem(row, 5, t5);
-        ++row;
+        QString slotNo = QString::number(query.value(0).toInt()); // 直接使用数据库中的slotNo值
+        QString status = query.value(1).toString();
+        QString modelCode = query.value(2).toString();
+        QString modelName = query.value(3).toString();
+        QString count = query.value(4).toString();
+        QString time = query.value(5).toString();
+        
+        // 检查是否满足筛选条件
+        bool match = true;
+        
+        // 检查滑槽号筛选
+        if (m_tableFilters.contains(0)) {
+            if (slotNo != m_tableFilters[0]) {
+                match = false;
+            }
+        }
+        
+        // 检查状态筛选
+        if (match && m_tableFilters.contains(1)) {
+            if (status != m_tableFilters[1]) {
+                match = false;
+            }
+        }
+        
+        // 检查车型代码筛选
+        if (match && m_tableFilters.contains(2)) {
+            if (modelCode != m_tableFilters[2]) {
+                match = false;
+            }
+        }
+        
+        // 检查车型名称筛选
+        if (match && m_tableFilters.contains(3)) {
+            if (modelName != m_tableFilters[3]) {
+                match = false;
+            }
+        }
+        
+        // 检查数量筛选
+        if (match && m_tableFilters.contains(4)) {
+            if (count != m_tableFilters[4]) {
+                match = false;
+            }
+        }
+        
+        // 检查时间筛选（按天数）
+        if (match && m_tableFilters.contains(5)) {
+            QString filterDate = m_tableFilters[5]; // 格式：yyyy-MM-dd
+            // 提取时间字符串中的日期部分
+            QString timeDate = time.split(" ").first(); // 假设时间格式为 "yyyy-MM-dd hh:mm:ss"
+            if (timeDate != filterDate) {
+                match = false;
+            }
+        }
+        
+        // 如果满足所有筛选条件，添加到表格
+        if (match) {
+            ui->tableWidget->insertRow(row);
+            QTableWidgetItem* t0 = new QTableWidgetItem(slotNo);
+            t0->setTextAlignment(Qt::AlignCenter);
+            ui->tableWidget->setItem(row, 0, t0);
+            QTableWidgetItem* t1 = new QTableWidgetItem(status);
+            t1->setTextAlignment(Qt::AlignCenter);
+            ui->tableWidget->setItem(row, 1, t1);
+            QTableWidgetItem* t2 = new QTableWidgetItem(modelCode);
+            t2->setTextAlignment(Qt::AlignCenter);
+            ui->tableWidget->setItem(row, 2, t2);
+            QTableWidgetItem* t3 = new QTableWidgetItem(modelName);
+            t3->setTextAlignment(Qt::AlignCenter);
+            ui->tableWidget->setItem(row, 3, t3);
+            QTableWidgetItem* t4 = new QTableWidgetItem(count);
+            t4->setTextAlignment(Qt::AlignCenter);
+            ui->tableWidget->setItem(row, 4, t4);
+            QTableWidgetItem* t5 = new QTableWidgetItem(time);
+            t5->setTextAlignment(Qt::AlignCenter);
+            ui->tableWidget->setItem(row, 5, t5);
+            ++row;
+        }
     }
+    
+    // 更新表头显示筛选状态
+    updateTableHeaderFilterIndicator();
+}
+
+/**
+ * @brief 更新表头筛选指示器
+ */
+void tcpClient::updateTableHeaderFilterIndicator()
+{
+    QStringList originalHeaders;
+    originalHeaders << "滑槽号" << "送入送出状态" << "车型代码" << "车型名称" << "数量（件）" << "时间";
+    
+    for (int i = 0; i < ui->tableWidget->columnCount() && i < originalHeaders.size(); ++i) {
+        QString headerText = originalHeaders[i];
+        
+        if (m_tableFilters.contains(i)) {
+            // 如果有筛选条件，在表头添加标记
+            headerText += " [筛选]";
+        }
+        
+        // 设置表头文本
+        if (ui->tableWidget->horizontalHeaderItem(i)) {
+            ui->tableWidget->horizontalHeaderItem(i)->setText(headerText);
+        } else {
+            ui->tableWidget->setHorizontalHeaderItem(i, new QTableWidgetItem(headerText));
+        }
+    }
+}
+
+/**
+ * @brief 清除表格筛选
+ */
+void tcpClient::clearTableFilter()
+{
+    m_tableFilters.clear();
+    applyTableFilter();
+    appendToLog("已清除所有筛选条件", false);
 }
 
 // 密码管理函数实现
@@ -4202,7 +4984,73 @@ void tcpClient::processServerJsonData(const QByteArray &data)
     appendToLog(QString("收到AGT滑槽指令: 状态=%1, 车型=%2, 车型代码=%3, 槽位=%4")
                 .arg(status).arg(modelName).arg(modelCode).arg(slotNumber), false);
     
-    // 根据状态处理
+    // 获取当前时间（如果timestamp为空，使用当前时间）
+    QString currentTime = timestamp;
+    if (currentTime.isEmpty()) {
+        currentTime = QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss");
+    }
+    
+    // 确定数量（空托盘的数量为0）
+    int count = 0;
+    if (status == "实托盘搬入" || status == "实托盘搬出") {
+        // 实托盘需要从车型绑定表中获取数量
+        for (int row = 0; row < ui->tableWidgetVehicleBinding->rowCount(); ++row) {
+            QTableWidgetItem* codeItem = ui->tableWidgetVehicleBinding->item(row, 1); // 车型代码列
+            if (codeItem && codeItem->text() == modelCode) {
+                QTableWidgetItem* countItem = ui->tableWidgetVehicleBinding->item(row, 2); // 数量列
+                if (countItem) {
+                    count = countItem->text().toInt();
+                    break;
+                }
+            }
+        }
+    }
+    
+    // 给数据表格添加记录
+    if (!modelName.isEmpty() && !modelCode.isEmpty()) {
+        int tableRow = ui->tableWidget->rowCount();
+        ui->tableWidget->insertRow(tableRow);
+        
+        // 滑槽号
+        QTableWidgetItem* item0 = new QTableWidgetItem(QString::number(slotNumber));
+        item0->setTextAlignment(Qt::AlignCenter);
+        ui->tableWidget->setItem(tableRow, 0, item0);
+        
+        // 状态
+        QTableWidgetItem* item1 = new QTableWidgetItem(status);
+        item1->setTextAlignment(Qt::AlignCenter);
+        ui->tableWidget->setItem(tableRow, 1, item1);
+        
+        // 车型代码
+        QTableWidgetItem* item2 = new QTableWidgetItem(modelCode);
+        item2->setTextAlignment(Qt::AlignCenter);
+        ui->tableWidget->setItem(tableRow, 2, item2);
+        
+        // 车型名称
+        QTableWidgetItem* item3 = new QTableWidgetItem(modelName);
+        item3->setTextAlignment(Qt::AlignCenter);
+        ui->tableWidget->setItem(tableRow, 3, item3);
+        
+        // 数量
+        QTableWidgetItem* item4 = new QTableWidgetItem(QString::number(count));
+        item4->setTextAlignment(Qt::AlignCenter);
+        ui->tableWidget->setItem(tableRow, 4, item4);
+        
+        // 时间
+        QTableWidgetItem* item5 = new QTableWidgetItem(currentTime);
+        item5->setTextAlignment(Qt::AlignCenter);
+        ui->tableWidget->setItem(tableRow, 5, item5);
+        
+        // 保存到数据库
+        insertDataRecord(slotNumber, status, modelName, modelCode, count, currentTime);
+        
+        // 给当前班次表格添加记录
+        addDataToCurrentShiftTable(slotNumber, status, modelCode, modelName, count, currentTime);
+        
+        appendToLog(QString("滑槽指令数据已添加到表格 - %1, 车型: %2").arg(status).arg(modelName), false);
+    }
+    
+    // 根据状态处理可视化界面
     if (status == "实托盘搬入") {
         handleRealTrayIn(modelName, slotNumber);
     } else if (status == "空托盘搬出") {
@@ -5142,6 +5990,15 @@ void tcpClient::checkShiftChange()
         saveStatisticsInfo(); // 保存清零后的实际便次
         
         appendToLog(QString("班次切换：夜班结束，实际便次已保存。白班开始，实际便次已清零"), false);
+        
+        // 更新工程组统计的班次按钮
+        if (projectGroupShiftButton) {
+            projectGroupShiftButton->setText("白班");
+        }
+        // 如果当前正在显示工程组记录页面，更新统计表格
+        if (ui->stackedWidget->currentIndex() == 3) {
+            updateProjectGroupStatistics();
+        }
     }
     // 检查是否是17:30（夜班开始）
     else if (currentTime.hour() == 17 && currentTime.minute() == 30) {
@@ -5157,6 +6014,15 @@ void tcpClient::checkShiftChange()
         saveStatisticsInfo(); // 保存清零后的实际便次
         
         appendToLog(QString("班次切换：白班结束，实际便次已保存。夜班开始，实际便次已清零"), false);
+        
+        // 更新工程组统计的班次按钮
+        if (projectGroupShiftButton) {
+            projectGroupShiftButton->setText("夜班");
+        }
+        // 如果当前正在显示工程组记录页面，更新统计表格
+        if (ui->stackedWidget->currentIndex() == 3) {
+            updateProjectGroupStatistics();
+        }
     }
 }
 
@@ -5658,8 +6524,24 @@ void tcpClient::updateProjectGroupStatistics()
         statistics[modelName]["空托盘搬出"] = 0;
     }
     
-    // 从数据记录表统计各车型的操作次数
-    query.prepare("SELECT model_name, status, COUNT(*) as count FROM data_records GROUP BY model_name, status");
+    // 获取当前班次
+    QString currentShift = getCurrentShift();
+    QDateTime now = QDateTime::currentDateTime();
+    
+    // 计算当前班次的时间范围
+    QDateTime shiftStartTime, shiftEndTime;
+    if (currentShift == "白班") {
+        // 白班：今天7:15 - 今天17:30
+        shiftStartTime = QDateTime(now.date(), QTime(7, 15, 0));
+        shiftEndTime = QDateTime(now.date(), QTime(17, 30, 0));
+    } else {
+        // 夜班：昨天17:30 - 今天7:15
+        shiftStartTime = QDateTime(now.date().addDays(-1), QTime(17, 30, 0));
+        shiftEndTime = QDateTime(now.date(), QTime(7, 15, 0));
+    }
+    
+    // 从数据记录表统计各车型的操作次数（只统计当前班次）
+    query.prepare("SELECT model_name, status, time FROM data_records WHERE status IN ('实托盘搬入', '实托盘搬出', '空托盘搬入', '空托盘搬出')");
     
     if (!query.exec()) {
         appendToLog(QString("查询统计数据失败: %1").arg(query.lastError().text()), true);
@@ -5670,13 +6552,32 @@ void tcpClient::updateProjectGroupStatistics()
     while (query.next()) {
         QString modelName = query.value(0).toString();
         QString status = query.value(1).toString();
-        int count = query.value(2).toInt();
+        QString timeStr = query.value(2).toString();
         
-        if (statistics.contains(modelName)) {
-            if (status == "实托盘搬入" || status == "实托盘搬出" || 
-                status == "空托盘搬入" || status == "空托盘搬出") {
-                statistics[modelName][status] = count;
-            }
+        // 解析时间字符串（格式：yyyy-MM-dd hh:mm:ss 或 yyyy-MM-dd HH:mm:ss）
+        QDateTime recordTime = QDateTime::fromString(timeStr, "yyyy-MM-dd HH:mm:ss");
+        if (!recordTime.isValid()) {
+            // 尝试12小时制格式
+            recordTime = QDateTime::fromString(timeStr, "yyyy-MM-dd hh:mm:ss");
+        }
+        
+        if (!recordTime.isValid()) {
+            qWarning() << "无法解析时间字符串:" << timeStr;
+            continue;
+        }
+        
+        // 判断记录是否属于当前班次
+        bool isInCurrentShift = false;
+        if (currentShift == "白班") {
+            // 白班：7:15 - 17:30（同一天）
+            isInCurrentShift = (recordTime >= shiftStartTime && recordTime < shiftEndTime);
+        } else {
+            // 夜班：17:30 - 次日7:15（跨天）
+            isInCurrentShift = (recordTime >= shiftStartTime && recordTime < shiftEndTime);
+        }
+        
+        if (isInCurrentShift && statistics.contains(modelName)) {
+            statistics[modelName][status]++;
         }
     }
     
