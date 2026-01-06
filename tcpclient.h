@@ -268,7 +268,11 @@ private:
     QLabel* m_labelEdSoftwareStatus; ///< ED软件连接状态标签（右下角）
     QPushButton* pushButtonCurrentShiftTablePage; ///< 当前班次表格页面按钮
     QWidget* currentShiftTablePage; ///< 当前班次表格页面
-    QTableWidget* currentShiftTableWidget; ///< 当前班次表格
+    QTableWidget* currentShiftTableWidget; ///< 当前班次表格（已废弃，保留用于兼容）
+    QTableWidget* realTrayInTableWidget; ///< 实托盘搬入表格
+    QTableWidget* realTrayOutTableWidget; ///< 实托盘搬出表格
+    QTableWidget* emptyTrayInTableWidget; ///< 空托盘搬入表格
+    QTableWidget* emptyTrayOutTableWidget; ///< 空托盘搬出表格
     QPushButton* pushButtonVisualizationPage; ///< 可视化记录页面按钮
     QWidget* visualizationPage; ///< 可视化记录页面
     QPushButton* pushButtonProjectGroupPage; ///< 工程组记录页面按钮
