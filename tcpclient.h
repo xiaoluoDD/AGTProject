@@ -248,7 +248,7 @@ private:
     QTimer *m_serverConnectionTimer; ///< 服务端连接超时定时器
     QTimer *m_edSoftwareConnectionTimer; ///< ED软件连接超时定时器
     QTimer *m_shiftCheckTimer;   ///< 班次检查定时器（每分钟检查一次）
-    QTimer *m_visualizationDataTimer; ///< 可视化数据发送定时器（每9秒触发一次，立即发送AGT搬运数据，3秒后发送工程组数据）
+    QTimer *m_visualizationDataTimer; ///< 可视化数据发送定时器（每3秒触发一次，立即发送AGT搬运数据，1秒后发送工程组数据，2秒后发送异常记录）
     QTimer *m_projectGroupDataTimer; ///< 工程组数据发送定时器（单次触发，3秒后发送工程组数据）
     QTimer *m_exceptionDataTimer; ///< 异常数据发送定时器（单次触发，发送工程组后3秒发送异常记录）
     QTimer *m_shiftDisplayAutoResetTimer; ///< 班次显示自动恢复定时器（1分钟后恢复）

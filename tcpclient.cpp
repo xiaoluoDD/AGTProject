@@ -243,20 +243,20 @@ tcpClient::tcpClient(QWidget *parent)
         m_projectGroupShiftAutoResetTimer->setSingleShot(true);
         m_projectGroupShiftAutoResetTimer->setInterval(60000); // 60秒 = 1分钟
         
-        // 初始化可视化数据发送定时器（每9秒触发一次，立即发送AGT搬运数据，3秒后发送工程组数据）
+        // 初始化可视化数据发送定时器（每3秒触发一次，立即发送AGT搬运数据，1秒后发送工程组数据，2秒后发送异常记录）
         connect(m_visualizationDataTimer, &QTimer::timeout, this, &tcpClient::sendVisualizationDataToServer);
-        m_visualizationDataTimer->setInterval(9000); // 9秒
+        m_visualizationDataTimer->setInterval(3000); // 3秒
         // 注意：定时器在服务端连接成功后才启动
         
-        // 初始化工程组数据发送定时器（单次触发，3秒后发送工程组数据）
+        // 初始化工程组数据发送定时器（单次触发，1秒后发送工程组数据）
         connect(m_projectGroupDataTimer, &QTimer::timeout, this, &tcpClient::sendProjectGroupDataToServer);
         m_projectGroupDataTimer->setSingleShot(true);
-        m_projectGroupDataTimer->setInterval(3000); // 3秒
+        m_projectGroupDataTimer->setInterval(1000); // 1秒
         
-        // 初始化异常数据发送定时器（单次触发，发送工程组后3秒发送异常记录）
+        // 初始化异常数据发送定时器（单次触发，发送工程组后1秒发送异常记录）
         connect(m_exceptionDataTimer, &QTimer::timeout, this, &tcpClient::sendExceptionDataToServer);
         m_exceptionDataTimer->setSingleShot(true);
-        m_exceptionDataTimer->setInterval(3000); // 3秒
+        m_exceptionDataTimer->setInterval(1000); // 1秒
         
         // 初始化可视化数组（21个槽位，3列7行，位置0-20）
         m_realTraySlots.resize(21);
@@ -5204,7 +5204,7 @@ void tcpClient::onServerSocketConnected()
     
     // 启动可视化数据发送定时器
     m_visualizationDataTimer->start();
-    appendToLog("数据发送定时器已启动（每9秒触发一次，3秒间隔上报AGT搬运、工程组和异常记录数据）", false);
+    appendToLog("数据发送定时器已启动（每3秒触发一次，1秒间隔上报AGT搬运、工程组和异常记录数据）", false);
     
     // 立即发送一次AGT搬运数据
     sendVisualizationDataToServer();
@@ -6160,11 +6160,9 @@ void tcpClient::advanceEmptyTrayVisualizationBy3()
         appendToLog("空滑槽21个槽位已满，已清空最外面3个槽位（索引18、19、20），开始推进所有槽位，已记录异常信息", false);
     } else {
         // 如果没满，使用原来的逻辑处理最前面3个槽位
-        // 如果索引0有内容，移动到出口（标签索引22），因为从下往上进入，最前面的会被推出
+        // 如果索引0有内容，直接清空（不显示在出口标签），因为从下往上进入，最前面的会被推出
         if (tempSlots.size() > 0 && !tempSlots[0].isEmpty()) {
-            if (m_emptyTrayLabels.size() > 22 && m_emptyTrayLabels[22]) {
-                m_emptyTrayLabels[22]->setText(m_emptyTrayExitLabelText + "\n" + tempSlots[0]);
-            }
+            // 不显示在出口标签，直接清空索引0
             m_emptyTraySlots[0] = "";
         }
         
@@ -6227,11 +6225,10 @@ void tcpClient::advanceEmptyTrayVisualizationBy3()
  */
 void tcpClient::advanceEmptyTrayVisualization()
 {
-    // 如果第一个槽位（索引0，最靠近入口）有内容，先移动到出口（标签索引22）
+    // 如果第一个槽位（索引0，最靠近入口）有内容，直接清空（不显示在出口标签）
+    // 因为从下往上进入，最前面的会被推出，但不显示在出口标签
     if (m_emptyTraySlots.size() > 0 && !m_emptyTraySlots[0].isEmpty()) {
-        if (22 < m_emptyTrayLabels.size() && m_emptyTrayLabels[22]) {
-            m_emptyTrayLabels[22]->setText(m_emptyTrayExitLabelText + "\n" + m_emptyTraySlots[0]);
-        }
+        m_emptyTraySlots[0] = "";
     }
     
     // 从左到右推进（从索引1到20），每个位置的内容移动到前一个位置（向入口方向移动）
@@ -6251,9 +6248,8 @@ void tcpClient::advanceEmptyTrayVisualization()
         }
     }
     
-    // 如果最后一个槽位（索引20）现在为空，清空出口标签
-    if ((m_emptyTraySlots.size() <= 20 || m_emptyTraySlots[20].isEmpty()) && 
-        22 < m_emptyTrayLabels.size() && m_emptyTrayLabels[22]) {
+    // 确保出口标签始终保持初始文本，不显示车型
+    if (22 < m_emptyTrayLabels.size() && m_emptyTrayLabels[22]) {
         m_emptyTrayLabels[22]->setText(m_emptyTrayExitLabelText);
     }
 }
@@ -6349,10 +6345,9 @@ void tcpClient::loadEmptyTrayVisualizationRecords()
         }
     }
     
-    // 如果最后一个槽位（索引20）有内容，也显示在出口（标签索引22）
-    if (m_emptyTraySlots.size() > 20 && !m_emptyTraySlots[20].isEmpty() && 
-        22 < m_emptyTrayLabels.size() && m_emptyTrayLabels[22]) {
-        m_emptyTrayLabels[22]->setText("出口\n" + m_emptyTraySlots[20]);
+    // 确保出口标签始终保持初始文本，不显示车型
+    if (22 < m_emptyTrayLabels.size() && m_emptyTrayLabels[22]) {
+        m_emptyTrayLabels[22]->setText(m_emptyTrayExitLabelText);
     }
     
     qDebug() << "空托盘可视化记录已从数据库加载";
@@ -7205,13 +7200,13 @@ void tcpClient::sendVisualizationDataToServer()
     qint64 bytesWritten = m_serverSocket->write(jsonBytes);
     if (bytesWritten > 0) {
         qDebug() << "已发送AGT搬运数据到服务端，大小:" << bytesWritten << "字节";
-        appendToLog(QString("已发送AGT搬运数据到服务端（%1字节）").arg(bytesWritten), false);
+        // 成功时不写入日志，减少日志量
     } else {
         appendToLog("发送AGT搬运数据到服务端失败", true);
         qWarning() << "发送AGT搬运数据失败";
     }
     
-    // 启动工程组数据发送定时器（3秒后发送）
+    // 启动工程组数据发送定时器（1秒后发送）
     m_projectGroupDataTimer->start();
 }
 
@@ -7352,13 +7347,13 @@ void tcpClient::sendProjectGroupDataToServer()
     qint64 bytesWritten = m_serverSocket->write(jsonBytes);
     if (bytesWritten > 0) {
         qDebug() << "已发送工程组数据到服务端，大小:" << bytesWritten << "字节";
-        appendToLog(QString("已发送工程组数据到服务端（%1字节）").arg(bytesWritten), false);
+        // 成功时不写入日志，减少日志量
     } else {
         appendToLog("发送工程组数据到服务端失败", true);
         qWarning() << "发送工程组数据失败";
     }
     
-    // 启动异常数据发送定时器（3秒后发送异常记录）
+    // 启动异常数据发送定时器（1秒后发送异常记录）
     m_exceptionDataTimer->start();
 }
 
@@ -7473,7 +7468,7 @@ void tcpClient::sendExceptionDataToServer()
     qint64 bytesWritten = m_serverSocket->write(jsonBytes);
     if (bytesWritten > 0) {
         qDebug() << "已发送异常记录数据到服务端，大小:" << bytesWritten << "字节";
-        appendToLog(QString("已发送异常记录数据到服务端（%1字节）").arg(bytesWritten), false);
+        // 成功时不写入日志，减少日志量
     } else {
         appendToLog("发送异常记录数据到服务端失败", true);
         qWarning() << "发送异常记录数据失败";
