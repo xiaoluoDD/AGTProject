@@ -208,6 +208,8 @@ private:
     QJsonObject buildVisualizationData(); ///< 构建可视化数据JSON对象
     void sendProjectGroupDataToServer(); ///< 发送工程组数据到服务端
     QJsonObject buildProjectGroupData(); ///< 构建工程组数据JSON对象
+    void sendExceptionDataToServer(); ///< 发送异常记录数据到服务端
+    QJsonObject buildExceptionData(); ///< 构建异常记录数据JSON对象（当前班次）
     void handleRealTrayIn(const QString &modelName, int slotNumber = -1); ///< 处理实托盘搬入，slotNumber为-1时使用原逻辑，否则根据slotNumber确定位置
     void handleEmptyTrayIn(const QString &modelName, int slotNo = -1); ///< 处理空托盘搬入，slotNo为-1时使用原逻辑，否则根据slotNo确定位置
     void handleEmptyTrayOut(const QString &modelName, int slotNumber = -1); ///< 处理空托盘搬出，slotNumber为-1时使用原逻辑，否则根据slotNumber确定位置
@@ -216,6 +218,7 @@ private:
     void saveEmptyTrayVisualizationRecords(); ///< 保存空托盘可视化记录到数据库
     void loadEmptyTrayVisualizationRecords(); ///< 从数据库加载空托盘可视化记录
     int mapSlotNumberToActualSlot(int slotNumber); ///< 将指令滑槽号映射为实际滑槽号（1->2001, 2->2002, 3->2003, 4->2103, 5->2102, 6->2101）
+    int getSlotNoFromIndex(int slotIndex, bool isRealTray); ///< 根据槽位索引获取滑槽号（实托盘：索引18、19、20对应2101、2102、2103；空托盘：索引18、19、20对应2001、2002、2003）
 
     // 密码管理函数
     void initPasswordTable();     ///< 初始化密码表
@@ -245,8 +248,9 @@ private:
     QTimer *m_serverConnectionTimer; ///< 服务端连接超时定时器
     QTimer *m_edSoftwareConnectionTimer; ///< ED软件连接超时定时器
     QTimer *m_shiftCheckTimer;   ///< 班次检查定时器（每分钟检查一次）
-    QTimer *m_visualizationDataTimer; ///< 可视化数据发送定时器（每6秒触发一次，立即发送AGT搬运数据，3秒后发送工程组数据）
+    QTimer *m_visualizationDataTimer; ///< 可视化数据发送定时器（每9秒触发一次，立即发送AGT搬运数据，3秒后发送工程组数据）
     QTimer *m_projectGroupDataTimer; ///< 工程组数据发送定时器（单次触发，3秒后发送工程组数据）
+    QTimer *m_exceptionDataTimer; ///< 异常数据发送定时器（单次触发，发送工程组后3秒发送异常记录）
     QTimer *m_shiftDisplayAutoResetTimer; ///< 班次显示自动恢复定时器（1分钟后恢复）
     QTimer *m_plcAutoReconnectTimer; ///< PLC自动重连定时器（每3秒检测一次）
     QTimer *m_currentShiftTableDailyClearTimer; ///< 当前班次表格每日清空定时器（每分钟检查一次，凌晨6点清空）
@@ -341,6 +345,12 @@ private:
     // 表格筛选相关
     QMap<int, QString> m_tableFilters; ///< 表格筛选条件（列索引 -> 筛选值）
     QList<QTableWidgetItem*> m_allTableItems; ///< 存储所有表格数据（用于筛选）
+
+    // 异常表格相关
+    QTableWidget* exceptionTableWidget; ///< 异常表格
+    void insertExceptionRecord(int slotNo, const QString &modelName, const QString &status, const QString &exceptionInfo, const QString &date); ///< 插入异常记录到数据库
+    void loadExceptionRecords(); ///< 从数据库加载异常记录（仅加载当前班次的记录）
+    QString getShiftFromDateTime(const QDateTime &dateTime); ///< 根据日期时间获取班次（"白班"或"夜班"）
 };
 
 #endif // TCPCLIENT_H

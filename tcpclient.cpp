@@ -62,6 +62,7 @@ tcpClient::tcpClient(QWidget *parent)
     , m_shiftCheckTimer(new QTimer(this))
     , m_visualizationDataTimer(new QTimer(this))
     , m_projectGroupDataTimer(new QTimer(this))
+    , m_exceptionDataTimer(new QTimer(this))
     , m_shiftDisplayAutoResetTimer(new QTimer(this))
     , m_plcAutoReconnectTimer(new QTimer(this))
     , m_currentShiftTableDailyClearTimer(new QTimer(this))
@@ -77,6 +78,7 @@ tcpClient::tcpClient(QWidget *parent)
     , plannedCountLabel(nullptr)
     , actualCountLabel(nullptr)
     , delayedCountLabel(nullptr)
+    , exceptionTableWidget(nullptr)
     , m_plannedCount(100)
     , m_actualCount(89)
     , m_delayedCount(0)
@@ -161,6 +163,10 @@ tcpClient::tcpClient(QWidget *parent)
             // 加载统计信息
             loadStatisticsInfo();
             qDebug() << "loadStatisticsInfo completed";
+            
+            // 加载异常记录
+            loadExceptionRecords();
+            qDebug() << "loadExceptionRecords completed";
         });
 
         // 加载连接配置
@@ -237,15 +243,20 @@ tcpClient::tcpClient(QWidget *parent)
         m_projectGroupShiftAutoResetTimer->setSingleShot(true);
         m_projectGroupShiftAutoResetTimer->setInterval(60000); // 60秒 = 1分钟
         
-        // 初始化可视化数据发送定时器（每6秒触发一次，立即发送AGT搬运数据，3秒后发送工程组数据）
+        // 初始化可视化数据发送定时器（每9秒触发一次，立即发送AGT搬运数据，3秒后发送工程组数据）
         connect(m_visualizationDataTimer, &QTimer::timeout, this, &tcpClient::sendVisualizationDataToServer);
-        m_visualizationDataTimer->setInterval(6000); // 6秒
+        m_visualizationDataTimer->setInterval(9000); // 9秒
         // 注意：定时器在服务端连接成功后才启动
         
         // 初始化工程组数据发送定时器（单次触发，3秒后发送工程组数据）
         connect(m_projectGroupDataTimer, &QTimer::timeout, this, &tcpClient::sendProjectGroupDataToServer);
         m_projectGroupDataTimer->setSingleShot(true);
         m_projectGroupDataTimer->setInterval(3000); // 3秒
+        
+        // 初始化异常数据发送定时器（单次触发，发送工程组后3秒发送异常记录）
+        connect(m_exceptionDataTimer, &QTimer::timeout, this, &tcpClient::sendExceptionDataToServer);
+        m_exceptionDataTimer->setSingleShot(true);
+        m_exceptionDataTimer->setInterval(3000); // 3秒
         
         // 初始化可视化数组（21个槽位，3列7行，位置0-20）
         m_realTraySlots.resize(21);
@@ -658,7 +669,70 @@ void tcpClient::setupUI()
     // 将AGT路线部品GroupBox直接添加到主布局中，填充整个宽度和可用高度
     visualizationLayout->addWidget(agtRoutePartsGroupBox, 1);
     
-    // 创建统计区域
+    // 创建底部区域（异常表格和统计信息）的水平布局
+    QHBoxLayout* bottomLayout = new QHBoxLayout();
+    bottomLayout->setSpacing(15);
+    bottomLayout->setContentsMargins(0, 0, 0, 0);
+    
+    // 创建异常表格区域（左侧）
+    QGroupBox* exceptionGroupBox = new QGroupBox(visualizationPage);
+    exceptionGroupBox->setTitle("异常记录");
+    exceptionGroupBox->setStyleSheet(
+        "QGroupBox {"
+        "font-size: 14pt;"
+        "font-weight: bold;"
+        "border: 2px solid #d0d0d0;"
+        "border-radius: 8px;"
+        "margin-top: 10px;"
+        "padding-top: 15px;"
+        "}"
+        "QGroupBox::title {"
+        "subcontrol-origin: margin;"
+        "left: 15px;"
+        "padding: 0 8px 0 8px;"
+        "}"
+    );
+    
+    QVBoxLayout* exceptionLayout = new QVBoxLayout(exceptionGroupBox);
+    exceptionLayout->setContentsMargins(10, 20, 10, 10);
+    
+    // 创建异常表格
+    exceptionTableWidget = new QTableWidget(exceptionGroupBox);
+    exceptionTableWidget->setColumnCount(5);
+    QStringList exceptionHeaders;
+    exceptionHeaders << "滑槽号" << "车型名称" << "送入送出状态" << "异常信息" << "日期";
+    exceptionTableWidget->setHorizontalHeaderLabels(exceptionHeaders);
+    exceptionTableWidget->setStyleSheet(
+        "QTableWidget {"
+        "font-size: 10pt;"
+        "gridline-color: #d0d0d0;"
+        "background-color: white;"
+        "alternate-background-color: #f5f5f5;"
+        "}"
+        "QTableWidget::item {"
+        "padding: 5px;"
+        "}"
+        "QHeaderView::section {"
+        "background-color: #e0e0e0;"
+        "padding: 5px;"
+        "font-weight: bold;"
+        "border: 1px solid #d0d0d0;"
+        "}"
+    );
+    exceptionTableWidget->setAlternatingRowColors(true);
+    exceptionTableWidget->setSelectionBehavior(QAbstractItemView::SelectRows);
+    exceptionTableWidget->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    exceptionTableWidget->horizontalHeader()->setStretchLastSection(true);
+    exceptionTableWidget->setColumnWidth(0, 80);   // 滑槽号
+    exceptionTableWidget->setColumnWidth(1, 120);  // 车型名称
+    exceptionTableWidget->setColumnWidth(2, 120); // 送入送出状态
+    exceptionTableWidget->setColumnWidth(3, 200); // 异常信息
+    exceptionTableWidget->setColumnWidth(4, 150); // 日期
+    exceptionLayout->addWidget(exceptionTableWidget);
+    
+    bottomLayout->addWidget(exceptionGroupBox, 1); // 异常表格占50%宽度
+    
+    // 创建统计区域（右侧，宽度减小）
     QGroupBox* statisticsGroupBox = new QGroupBox(visualizationPage);
     statisticsGroupBox->setTitle("统计信息");
     statisticsGroupBox->setStyleSheet(
@@ -677,32 +751,25 @@ void tcpClient::setupUI()
         "}"
     );
     
-    QHBoxLayout* statisticsLayout = new QHBoxLayout(statisticsGroupBox);
-    statisticsLayout->setSpacing(20);
-    statisticsLayout->setContentsMargins(20, 20, 20, 20);
+    QVBoxLayout* statisticsLayout = new QVBoxLayout(statisticsGroupBox);
+    statisticsLayout->setSpacing(15);
+    statisticsLayout->setContentsMargins(15, 20, 15, 15);
     
-    // 添加左侧弹性空间，使内容向中间靠拢
-    statisticsLayout->addStretch();
-    
-    // 左边：计划便次
+    // 计划便次
     plannedCountLabel = new QLabel(statisticsGroupBox);
     m_plannedCount = 100;
     m_displayedPlannedCount = m_plannedCount;
     plannedCountLabel->setText(QString("计划便次：%1便").arg(m_plannedCount));
     plannedCountLabel->setStyleSheet(
         "QLabel {"
-        "font-size: 14pt;"
+        "font-size: 13pt;"
         "font-weight: bold;"
-        "padding: 10px;"
+        "padding: 8px;"
         "}"
     );
-    plannedCountLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    plannedCountLabel->setAlignment(Qt::AlignCenter);
     plannedCountLabel->installEventFilter(this); // 安装事件过滤器以支持双击
     statisticsLayout->addWidget(plannedCountLabel);
-    
-    // 右边：实际便次和延迟便次（垂直布局）
-    QVBoxLayout* rightStatisticsLayout = new QVBoxLayout();
-    rightStatisticsLayout->setSpacing(10);
     
     // 实际便次
     actualCountLabel = new QLabel(statisticsGroupBox);
@@ -711,14 +778,14 @@ void tcpClient::setupUI()
     actualCountLabel->setText(QString("实际便次：%1便").arg(m_actualCount));
     actualCountLabel->setStyleSheet(
         "QLabel {"
-        "font-size: 14pt;"
+        "font-size: 13pt;"
         "font-weight: bold;"
-        "padding: 10px;"
+        "padding: 8px;"
         "}"
     );
-    actualCountLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    actualCountLabel->setAlignment(Qt::AlignCenter);
     actualCountLabel->installEventFilter(this); // 安装事件过滤器以支持双击
-    rightStatisticsLayout->addWidget(actualCountLabel);
+    statisticsLayout->addWidget(actualCountLabel);
     
     // 延迟便次
     delayedCountLabel = new QLabel(statisticsGroupBox);
@@ -727,30 +794,25 @@ void tcpClient::setupUI()
     delayedCountLabel->setText(QString("延迟便次：%1便").arg(m_delayedCount));
     delayedCountLabel->setStyleSheet(
         "QLabel {"
-        "font-size: 14pt;"
+        "font-size: 13pt;"
         "font-weight: bold;"
-        "padding: 10px;"
+        "padding: 8px;"
         "}"
     );
-    delayedCountLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    delayedCountLabel->setAlignment(Qt::AlignCenter);
     delayedCountLabel->installEventFilter(this); // 安装事件过滤器以支持双击
-    rightStatisticsLayout->addWidget(delayedCountLabel);
+    statisticsLayout->addWidget(delayedCountLabel);
     
-    statisticsLayout->addLayout(rightStatisticsLayout);
-    
-    // 添加右侧弹性空间，使按钮靠右
-    statisticsLayout->addStretch();
-    
-    // 添加班次显示按钮（靠右显示）
+    // 添加班次显示按钮
     shiftDisplayButton = new QPushButton(statisticsGroupBox);
     m_currentDisplayShift = "current"; // 初始显示当前班次
     updateShiftDisplayButton();
     shiftDisplayButton->setStyleSheet(
         "QPushButton {"
-        "font-size: 12pt;"
+        "font-size: 11pt;"
         "font-weight: bold;"
-        "padding: 8px 16px;"
-        "min-width: 100px;"
+        "padding: 6px 12px;"
+        "min-width: 80px;"
         "border: 2px solid #4CAF50;"
         "border-radius: 5px;"
         "background-color: #E8F5E9;"
@@ -762,8 +824,10 @@ void tcpClient::setupUI()
     connect(shiftDisplayButton, &QPushButton::clicked, this, &tcpClient::onShiftDisplayButtonClicked);
     statisticsLayout->addWidget(shiftDisplayButton);
     
-    // 将统计区域添加到主布局中
-    visualizationLayout->addWidget(statisticsGroupBox);
+    bottomLayout->addWidget(statisticsGroupBox, 1); // 统计信息占50%宽度
+    
+    // 将底部区域添加到主布局中
+    visualizationLayout->addLayout(bottomLayout);
     
     // 注意：可视化记录的加载将在数据库初始化完成后进行
     // 不在这里调用 loadVisualizationRecords()，避免数据库未初始化的问题
@@ -3097,6 +3161,19 @@ void tcpClient::initDatabase() {
         qWarning() << "当前班次表格记录表创建失败:" << query.lastError().text();
     }
 
+    // 异常记录表
+    if (query.exec("CREATE TABLE IF NOT EXISTS exception_records ("
+                   "id INT PRIMARY KEY AUTO_INCREMENT,"
+                   "slot_no INT,"
+                   "model_name VARCHAR(255),"
+                   "status VARCHAR(255),"
+                   "exception_info VARCHAR(500),"
+                   "date VARCHAR(255))")) {
+        qDebug() << "异常记录表创建/检查成功";
+    } else {
+        qWarning() << "异常记录表创建失败:" << query.lastError().text();
+    }
+
     qInfo() << "数据库初始化完成";
 }
 
@@ -3115,6 +3192,59 @@ int tcpClient::mapSlotNumberToActualSlot(int slotNumber)
         case 5: return 2102;
         case 6: return 2101;
         default: return slotNumber; // 如果不在1-6范围内，返回原值
+    }
+}
+
+/**
+ * @brief 根据槽位索引获取滑槽号
+ * @param slotIndex 槽位索引（0-20）
+ * @param isRealTray 是否为实托盘
+ * @return 滑槽号（实托盘：索引18、19、20对应2101、2102、2103；空托盘：索引18、19、20对应2001、2002、2003）
+ */
+int tcpClient::getSlotNoFromIndex(int slotIndex, bool isRealTray)
+{
+    // 对于最靠近出口的3个槽位（索引18、19、20），直接映射
+    if (slotIndex == 18) {
+        return isRealTray ? 2101 : 2001;
+    } else if (slotIndex == 19) {
+        return isRealTray ? 2102 : 2002;
+    } else if (slotIndex == 20) {
+        return isRealTray ? 2103 : 2003;
+    }
+    
+    // 对于其他槽位，根据行和列计算
+    // 每行3个槽位，索引0-2是第一行，3-5是第二行，等等
+    // 实托盘：列标签2101、2102、2103（第7行，索引18、19、20）
+    // 空托盘：列标签2001、2002、2003（第7行，索引18、19、20）
+    // 其他行的映射：行0对应1001/1101、1002/1102、1003/1103（实托盘）或2001、2002、2003（空托盘）
+    // 这里简化处理，对于非18、19、20的索引，返回一个基于索引的计算值
+    // 实际上，根据布局，索引i对应的列是 i % 3，行是 i / 3
+    int row = slotIndex / 3;
+    int col = slotIndex % 3;
+    
+    if (isRealTray) {
+        // 实托盘：根据行和列计算滑槽号
+        // 第7行（索引18、19、20）对应2101、2102、2103
+        // 第0行（索引0、1、2）对应1001、1002、1003
+        // 这里简化处理，只处理最靠近出口的情况
+        if (row == 6) { // 第7行（索引18、19、20）
+            return 2101 + col;
+        } else if (row == 0) { // 第1行（索引0、1、2）
+            return 1001 + col;
+        } else {
+            // 其他行，返回一个基于索引的计算值
+            // 这里返回索引+1作为默认值，实际应该根据具体布局确定
+            return slotIndex + 1;
+        }
+    } else {
+        // 空托盘：根据行和列计算滑槽号
+        // 第7行（索引18、19、20）对应2001、2002、2003
+        if (row == 6) { // 第7行（索引18、19、20）
+            return 2001 + col;
+        } else {
+            // 其他行，返回一个基于索引的计算值
+            return slotIndex + 1;
+        }
     }
 }
 
@@ -4527,6 +4657,25 @@ void tcpClient::advanceVisualizationBy3()
     
     // 如果21个槽位都满了，先清空最外面3个槽位（索引18、19、20），不写入到出口标签
     if (allSlotsFull) {
+        // 记录异常信息：最外面3个槽位（索引18、19、20）对应的列标签是2101、2102、2103
+        QStringList columnLabels = {"2101", "2102", "2103"};
+        QString currentDate = QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss");
+        
+        // 记录索引18的异常（列标签2101）
+        if (tempSlots.size() > 18 && !tempSlots[18].isEmpty()) {
+            insertExceptionRecord(2101, tempSlots[18], "实托盘搬入", "槽位满，异常取出", currentDate);
+        }
+        
+        // 记录索引19的异常（列标签2102）
+        if (tempSlots.size() > 19 && !tempSlots[19].isEmpty()) {
+            insertExceptionRecord(2102, tempSlots[19], "实托盘搬入", "槽位满，异常取出", currentDate);
+        }
+        
+        // 记录索引20的异常（列标签2103）
+        if (tempSlots.size() > 20 && !tempSlots[20].isEmpty()) {
+            insertExceptionRecord(2103, tempSlots[20], "实托盘搬入", "槽位满，异常取出", currentDate);
+        }
+        
         // 清空最外面3个槽位（索引18、19、20），不写入到出口标签
         m_realTraySlots[18] = "";
         m_realTraySlots[19] = "";
@@ -4537,7 +4686,7 @@ void tcpClient::advanceVisualizationBy3()
             m_realTrayLabels[22]->setText(m_realTrayExitLabelText);
         }
         
-        appendToLog("21个槽位已满，已清空最外面3个槽位（索引18、19、20），开始推进所有槽位", false);
+        appendToLog("21个槽位已满，已清空最外面3个槽位（索引18、19、20），开始推进所有槽位，已记录异常信息", false);
     } else {
         // 如果没满，使用原来的逻辑处理最后3个槽位
         // 如果索引20有内容，直接清空，不写入到出口标签
@@ -5055,7 +5204,7 @@ void tcpClient::onServerSocketConnected()
     
     // 启动可视化数据发送定时器
     m_visualizationDataTimer->start();
-    appendToLog("数据发送定时器已启动（每6秒触发一次，3秒间隔上报AGT搬运和工程组数据）", false);
+    appendToLog("数据发送定时器已启动（每9秒触发一次，3秒间隔上报AGT搬运、工程组和异常记录数据）", false);
     
     // 立即发送一次AGT搬运数据
     sendVisualizationDataToServer();
@@ -5080,6 +5229,7 @@ void tcpClient::onServerSocketDisconnected()
     // 停止数据发送定时器
     m_visualizationDataTimer->stop();
     m_projectGroupDataTimer->stop();
+    m_exceptionDataTimer->stop();
     
     appendToLog("服务端连接已断开", false);
 }
@@ -5493,9 +5643,11 @@ void tcpClient::handleRealTrayIn(const QString &modelName, int slotNumber)
                                                .arg(targetSlotIndex + 1).arg(slotNumber).arg(positionInRow + 1).arg(modelName), false);
                                     return;
                                 } else {
-                                    // 车型不匹配，跳过
-                                    appendToLog(QString("实托盘搬入: 槽位%1（slotNumber=%2，位置%3）的车型%4与%5不匹配，跳过")
-                                               .arg(targetSlotIndex + 1).arg(slotNumber).arg(positionInRow + 1).arg(vehicleName).arg(modelName), false);
+                                    // 车型不匹配，记录异常
+                                    int actualSlotNo = mapSlotNumberToActualSlot(slotNumber);
+                                    QString currentDate = QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss");
+                                    insertExceptionRecord(actualSlotNo, modelName, "实托盘搬入", "出口车型不匹配", currentDate);
+                                    appendToLog(QString("实托盘搬入: 槽位%1（slotNumber=%2，位置%3）的车型%4与%5不匹配，已记录异常").arg(targetSlotIndex + 1).arg(slotNumber).arg(positionInRow + 1).arg(vehicleName).arg(modelName), false);
                                     return;
                                 }
                             }
@@ -5529,9 +5681,11 @@ void tcpClient::handleRealTrayIn(const QString &modelName, int slotNumber)
                                            .arg(targetSlotIndex + 1).arg(slotNumber).arg(positionInRow + 1).arg(modelName), false);
                                 return;
                             } else {
-                                // 车型不匹配，跳过
-                                appendToLog(QString("实托盘搬入: 槽位%1（slotNumber=%2，位置%3）的车型%4与%5不匹配，跳过")
-                                           .arg(targetSlotIndex + 1).arg(slotNumber).arg(positionInRow + 1).arg(labelText).arg(modelName), false);
+                                // 车型不匹配，记录异常
+                                int actualSlotNo = mapSlotNumberToActualSlot(slotNumber);
+                                QString currentDate = QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss");
+                                insertExceptionRecord(actualSlotNo, modelName, "实托盘搬入", "出口车型不匹配", currentDate);
+                                appendToLog(QString("实托盘搬入: 槽位%1（slotNumber=%2，位置%3）的车型%4与%5不匹配，已记录异常").arg(targetSlotIndex + 1).arg(slotNumber).arg(positionInRow + 1).arg(labelText).arg(modelName), false);
                                 return;
                             }
                         } else {
@@ -5584,8 +5738,10 @@ void tcpClient::handleRealTrayIn(const QString &modelName, int slotNumber)
                     appendToLog(QString("实托盘搬入: 匹配到出口的车型%1，已清空，实际便次+1").arg(modelName), false);
                     return;
                 } else {
-                    // 出口位置的车型不匹配，直接跳过
-                    appendToLog(QString("实托盘搬入: 最靠近出口的车型%1与%2不匹配，跳过").arg(vehicleName).arg(modelName), false);
+                    // 出口位置的车型不匹配，记录异常（出口位置对应索引20，滑槽号2103）
+                    QString currentDate = QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss");
+                    insertExceptionRecord(2103, modelName, "实托盘搬入", "出口车型不匹配", currentDate);
+                    appendToLog(QString("实托盘搬入: 最靠近出口的车型%1与%2不匹配，已记录异常").arg(vehicleName).arg(modelName), false);
                     return;
                 }
             }
@@ -5626,8 +5782,11 @@ void tcpClient::handleRealTrayIn(const QString &modelName, int slotNumber)
                     appendToLog(QString("实托盘搬入: 匹配到槽位%1的车型%2，已清空，实际便次+1").arg(i + 1).arg(modelName), false);
                     return;
                 } else {
-                    // 最靠近出口且不为空的槽位车型不匹配，直接跳过
-                    appendToLog(QString("实托盘搬入: 最靠近出口的槽位%1的车型%2与%3不匹配，跳过").arg(i + 1).arg(labelText).arg(modelName), false);
+                    // 最靠近出口且不为空的槽位车型不匹配，记录异常
+                    int slotNo = getSlotNoFromIndex(i, true); // 实托盘
+                    QString currentDate = QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss");
+                    insertExceptionRecord(slotNo, modelName, "实托盘搬入", "出口车型不匹配", currentDate);
+                    appendToLog(QString("实托盘搬入: 最靠近出口的槽位%1的车型%2与%3不匹配，已记录异常").arg(i + 1).arg(labelText).arg(modelName), false);
                     return;
                 }
             }
@@ -5727,9 +5886,12 @@ void tcpClient::handleEmptyTrayIn(const QString &modelName, int slotNo)
                                            .arg(targetSlotIndex + 1).arg(slotNo).arg(positionInRow + 1).arg(modelName), false);
                                 return;
                             } else {
-                                // 车型不匹配，跳过
-                                appendToLog(QString("空托盘搬入: 槽位%1（slotNo=%2，位置%3）的车型%4与%5不匹配，跳过")
-                                           .arg(targetSlotIndex + 1).arg(slotNo).arg(positionInRow + 1).arg(vehicleName).arg(modelName), false);
+                                // 车型不匹配，记录异常
+                                // slotNo=4对应2001, slotNo=5对应2002, slotNo=6对应2003
+                                int actualSlotNo = 2000 + (slotNo - 3); // slotNo=4->2001, slotNo=5->2002, slotNo=6->2003
+                                QString currentDate = QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss");
+                                insertExceptionRecord(actualSlotNo, modelName, "空托盘搬入", "出口车型不匹配", currentDate);
+                                appendToLog(QString("空托盘搬入: 槽位%1（slotNo=%2，位置%3）的车型%4与%5不匹配，已记录异常").arg(targetSlotIndex + 1).arg(slotNo).arg(positionInRow + 1).arg(vehicleName).arg(modelName), false);
                                 return;
                             }
                         }
@@ -5755,9 +5917,12 @@ void tcpClient::handleEmptyTrayIn(const QString &modelName, int slotNo)
                                        .arg(targetSlotIndex + 1).arg(slotNo).arg(positionInRow + 1).arg(modelName), false);
                             return;
                         } else {
-                            // 车型不匹配，跳过
-                            appendToLog(QString("空托盘搬入: 槽位%1（slotNo=%2，位置%3）的车型%4与%5不匹配，跳过")
-                                       .arg(targetSlotIndex + 1).arg(slotNo).arg(positionInRow + 1).arg(labelText).arg(modelName), false);
+                            // 车型不匹配，记录异常
+                            // slotNo=4对应2001, slotNo=5对应2002, slotNo=6对应2003
+                            int actualSlotNo = 2000 + (slotNo - 3); // slotNo=4->2001, slotNo=5->2002, slotNo=6->2003
+                            QString currentDate = QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss");
+                            insertExceptionRecord(actualSlotNo, modelName, "空托盘搬入", "出口车型不匹配", currentDate);
+                            appendToLog(QString("空托盘搬入: 槽位%1（slotNo=%2，位置%3）的车型%4与%5不匹配，已记录异常").arg(targetSlotIndex + 1).arg(slotNo).arg(positionInRow + 1).arg(labelText).arg(modelName), false);
                             return;
                         }
                     } else {
@@ -5802,8 +5967,10 @@ void tcpClient::handleEmptyTrayIn(const QString &modelName, int slotNo)
                     appendToLog(QString("空托盘搬入: 匹配到出口的车型%1，已清空").arg(modelName), false);
                     return;
                 } else {
-                    // 出口位置的车型不匹配，直接跳过
-                    appendToLog(QString("空托盘搬入: 最靠近出口的车型%1与%2不匹配，跳过").arg(vehicleName).arg(modelName), false);
+                    // 出口位置的车型不匹配，记录异常（出口位置对应索引20，滑槽号2003）
+                    QString currentDate = QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss");
+                    insertExceptionRecord(2003, modelName, "空托盘搬入", "出口车型不匹配", currentDate);
+                    appendToLog(QString("空托盘搬入: 最靠近出口的车型%1与%2不匹配，已记录异常").arg(vehicleName).arg(modelName), false);
                     return;
                 }
             }
@@ -5835,8 +6002,11 @@ void tcpClient::handleEmptyTrayIn(const QString &modelName, int slotNo)
                     appendToLog(QString("空托盘搬入: 匹配到槽位%1的车型%2，已清空").arg(i + 1).arg(modelName), false);
                     return;
                 } else {
-                    // 最靠近出口且不为空的槽位车型不匹配，直接跳过
-                    appendToLog(QString("空托盘搬入: 最靠近出口的槽位%1的车型%2与%3不匹配，跳过").arg(i + 1).arg(labelText).arg(modelName), false);
+                    // 最靠近出口且不为空的槽位车型不匹配，记录异常
+                    int slotNo = getSlotNoFromIndex(i, false); // 空托盘
+                    QString currentDate = QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss");
+                    insertExceptionRecord(slotNo, modelName, "空托盘搬入", "出口车型不匹配", currentDate);
+                    appendToLog(QString("空托盘搬入: 最靠近出口的槽位%1的车型%2与%3不匹配，已记录异常").arg(i + 1).arg(labelText).arg(modelName), false);
                     return;
                 }
             }
@@ -5849,23 +6019,25 @@ void tcpClient::handleEmptyTrayIn(const QString &modelName, int slotNo)
 
 /**
  * @brief 处理空托盘搬出
- * 改为从下往上进入（从出口向入口方向）
+ * 改为从下往上进入（从出口向入口方向，上下顺序跟实滑槽相反）
+ * 从左往右进入（左右顺序跟实滑槽相同：2001->2002->2003）
  * 如果指定了slotNumber，在第一次收到时先推进3个槽位，然后根据slotNumber写入对应位置
- * slotNumber=1或4 -> 第一个位置（索引20，最靠近出口），slotNumber=2或5 -> 第二个位置（索引19），slotNumber=3或6 -> 第三个位置（索引18）
+ * slotNumber=1或4 -> 第一个位置（索引18，最靠近出口，列2001），slotNumber=2或5 -> 第二个位置（索引19，列2002），slotNumber=3或6 -> 第三个位置（索引20，列2003）
  * 如果未指定slotNumber，使用原来的逻辑
  */
 void tcpClient::handleEmptyTrayOut(const QString &modelName, int slotNumber)
 {
     // 如果指定了slotNumber，使用新的逻辑
     if (slotNumber > 0) {
-        // 确定slotNumber对应的位置（从下往上：20、19、18）
+        // 确定slotNumber对应的位置（从下往上，从左往右：18、19、20）
+        // 与实滑槽的左右顺序相同（从左往右），但上下顺序相反（从下往上）
         int positionInRow = -1;
         if (slotNumber == 1 || slotNumber == 4) {
-            positionInRow = 20; // 第一个位置（最靠近出口）
+            positionInRow = 18; // 第一个位置（最靠近出口，列2001，从左往右第一个）
         } else if (slotNumber == 2 || slotNumber == 5) {
-            positionInRow = 19; // 第二个位置
+            positionInRow = 19; // 第二个位置（列2002，从左往右第二个）
         } else if (slotNumber == 3 || slotNumber == 6) {
-            positionInRow = 18; // 第三个位置
+            positionInRow = 20; // 第三个位置（列2003，从左往右第三个）
         }
         
         if (positionInRow >= 18 && positionInRow <= 20) {
@@ -5956,6 +6128,25 @@ void tcpClient::advanceEmptyTrayVisualizationBy3()
     
     // 如果21个槽位都满了，先清空最外面3个槽位（索引18、19、20，最靠近出口），不写入到出口标签
     if (allSlotsFull) {
+        // 记录异常信息：最外面3个槽位（索引18、19、20）对应的列标签是2001、2002、2003
+        QStringList columnLabels = {"2001", "2002", "2003"};
+        QString currentDate = QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss");
+        
+        // 记录索引18的异常（列标签2001）
+        if (tempSlots.size() > 18 && !tempSlots[18].isEmpty()) {
+            insertExceptionRecord(2001, tempSlots[18], "空托盘搬入", "槽位满，异常取出", currentDate);
+        }
+        
+        // 记录索引19的异常（列标签2002）
+        if (tempSlots.size() > 19 && !tempSlots[19].isEmpty()) {
+            insertExceptionRecord(2002, tempSlots[19], "空托盘搬入", "槽位满，异常取出", currentDate);
+        }
+        
+        // 记录索引20的异常（列标签2003）
+        if (tempSlots.size() > 20 && !tempSlots[20].isEmpty()) {
+            insertExceptionRecord(2003, tempSlots[20], "空托盘搬入", "槽位满，异常取出", currentDate);
+        }
+        
         // 清空最外面3个槽位（索引18、19、20），不写入到出口标签
         m_emptyTraySlots[18] = "";
         m_emptyTraySlots[19] = "";
@@ -5966,7 +6157,7 @@ void tcpClient::advanceEmptyTrayVisualizationBy3()
             m_emptyTrayLabels[22]->setText(m_emptyTrayExitLabelText);
         }
         
-        appendToLog("空滑槽21个槽位已满，已清空最外面3个槽位（索引18、19、20），开始推进所有槽位", false);
+        appendToLog("空滑槽21个槽位已满，已清空最外面3个槽位（索引18、19、20），开始推进所有槽位，已记录异常信息", false);
     } else {
         // 如果没满，使用原来的逻辑处理最前面3个槽位
         // 如果索引0有内容，移动到出口（标签索引22），因为从下往上进入，最前面的会被推出
@@ -6287,6 +6478,161 @@ void tcpClient::loadStatisticsInfo()
 }
 
 /**
+ * @brief 插入异常记录到数据库
+ */
+void tcpClient::insertExceptionRecord(int slotNo, const QString &modelName, const QString &status, const QString &exceptionInfo, const QString &date)
+{
+    // 检查数据库是否已打开
+    QSqlDatabase db = QSqlDatabase::database();
+    if (!db.isOpen()) {
+        qDebug() << "数据库未打开，跳过插入异常记录";
+        return;
+    }
+    
+    QSqlQuery query;
+    query.prepare("INSERT INTO exception_records (slot_no, model_name, status, exception_info, date) VALUES (?, ?, ?, ?, ?)");
+    query.addBindValue(slotNo);
+    query.addBindValue(modelName);
+    query.addBindValue(status);
+    query.addBindValue(exceptionInfo);
+    query.addBindValue(date);
+    if (!query.exec()) {
+        appendToLog("插入异常记录失败: " + query.lastError().text(), true);
+        qWarning() << "插入异常记录失败:" << query.lastError().text();
+    } else {
+        qDebug() << QString("异常记录已插入: 滑槽号=%1, 车型=%2, 状态=%3, 异常信息=%4, 日期=%5")
+                    .arg(slotNo).arg(modelName).arg(status).arg(exceptionInfo).arg(date);
+        
+        // 同时更新表格显示（仅当该记录属于当前班次时才显示）
+        if (exceptionTableWidget) {
+            // 根据日期时间判断该记录属于哪个班次
+            QDateTime recordDateTime = QDateTime::fromString(date, "yyyy-MM-dd HH:mm:ss");
+            if (recordDateTime.isValid()) {
+                QString recordShift = getShiftFromDateTime(recordDateTime);
+                QString currentShift = getCurrentShift();
+                
+                // 只显示当前班次的记录
+                if (recordShift == currentShift) {
+                    exceptionTableWidget->insertRow(0);
+                    
+                    // 滑槽号
+                    QTableWidgetItem* item0 = new QTableWidgetItem(QString::number(slotNo));
+                    item0->setTextAlignment(Qt::AlignCenter);
+                    exceptionTableWidget->setItem(0, 0, item0);
+                    
+                    // 车型名称
+                    QTableWidgetItem* item1 = new QTableWidgetItem(modelName);
+                    item1->setTextAlignment(Qt::AlignCenter);
+                    exceptionTableWidget->setItem(0, 1, item1);
+                    
+                    // 送入送出状态
+                    QTableWidgetItem* item2 = new QTableWidgetItem(status);
+                    item2->setTextAlignment(Qt::AlignCenter);
+                    exceptionTableWidget->setItem(0, 2, item2);
+                    
+                    // 异常信息
+                    QTableWidgetItem* item3 = new QTableWidgetItem(exceptionInfo);
+                    item3->setTextAlignment(Qt::AlignCenter);
+                    exceptionTableWidget->setItem(0, 3, item3);
+                    
+                    // 日期
+                    QTableWidgetItem* item4 = new QTableWidgetItem(date);
+                    item4->setTextAlignment(Qt::AlignCenter);
+                    exceptionTableWidget->setItem(0, 4, item4);
+                }
+            }
+        }
+    }
+}
+
+/**
+ * @brief 从数据库加载异常记录（仅加载当前班次的记录）
+ */
+void tcpClient::loadExceptionRecords()
+{
+    // 检查数据库是否已打开
+    QSqlDatabase db = QSqlDatabase::database();
+    if (!db.isOpen()) {
+        qDebug() << "数据库未打开，跳过加载异常记录";
+        return;
+    }
+    
+    // 检查表格是否已创建
+    if (!exceptionTableWidget) {
+        qDebug() << "异常表格未创建，跳过加载异常记录";
+        return;
+    }
+    
+    // 清空表格
+    exceptionTableWidget->setRowCount(0);
+    
+    // 获取当前班次
+    QString currentShift = getCurrentShift();
+    
+    // 查询所有异常记录
+    QSqlQuery query("SELECT slot_no, model_name, status, exception_info, date FROM exception_records ORDER BY id DESC");
+    
+    if (query.lastError().isValid()) {
+        qDebug() << "查询异常记录失败:" << query.lastError().text();
+        return;
+    }
+    
+    int row = 0;
+    while (query.next()) {
+        int slotNo = query.value(0).toInt();
+        QString modelName = query.value(1).toString();
+        QString status = query.value(2).toString();
+        QString exceptionInfo = query.value(3).toString();
+        QString dateStr = query.value(4).toString();
+        
+        // 根据日期时间判断该记录属于哪个班次
+        QDateTime recordDateTime = QDateTime::fromString(dateStr, "yyyy-MM-dd HH:mm:ss");
+        if (!recordDateTime.isValid()) {
+            // 如果日期格式不正确，跳过该记录
+            continue;
+        }
+        
+        QString recordShift = getShiftFromDateTime(recordDateTime);
+        
+        // 只显示当前班次的记录
+        if (recordShift != currentShift) {
+            continue;
+        }
+        
+        exceptionTableWidget->insertRow(row);
+        
+        // 滑槽号
+        QTableWidgetItem* item0 = new QTableWidgetItem(QString::number(slotNo));
+        item0->setTextAlignment(Qt::AlignCenter);
+        exceptionTableWidget->setItem(row, 0, item0);
+        
+        // 车型名称
+        QTableWidgetItem* item1 = new QTableWidgetItem(modelName);
+        item1->setTextAlignment(Qt::AlignCenter);
+        exceptionTableWidget->setItem(row, 1, item1);
+        
+        // 送入送出状态
+        QTableWidgetItem* item2 = new QTableWidgetItem(status);
+        item2->setTextAlignment(Qt::AlignCenter);
+        exceptionTableWidget->setItem(row, 2, item2);
+        
+        // 异常信息
+        QTableWidgetItem* item3 = new QTableWidgetItem(exceptionInfo);
+        item3->setTextAlignment(Qt::AlignCenter);
+        exceptionTableWidget->setItem(row, 3, item3);
+        
+        // 日期
+        QTableWidgetItem* item4 = new QTableWidgetItem(dateStr);
+        item4->setTextAlignment(Qt::AlignCenter);
+        exceptionTableWidget->setItem(row, 4, item4);
+        
+        row++;
+    }
+    
+    qDebug() << QString("异常记录已从数据库加载（当前班次：%1），共%2条").arg(currentShift).arg(row);
+}
+
+/**
  * @brief 初始化班次记录表
  */
 void tcpClient::initShiftTable()
@@ -6363,6 +6709,9 @@ void tcpClient::checkShiftChange()
         if (ui->stackedWidget->currentIndex() == 3) {
             updateProjectGroupStatistics();
         }
+        
+        // 重新加载异常记录（显示新班次的记录）
+        loadExceptionRecords();
     }
     // 检查是否是17:30（夜班开始）
     else if (currentTime.hour() == 17 && currentTime.minute() == 30) {
@@ -6398,6 +6747,9 @@ void tcpClient::checkShiftChange()
         if (ui->stackedWidget->currentIndex() == 3) {
             updateProjectGroupStatistics();
         }
+        
+        // 重新加载异常记录（显示新班次的记录）
+        loadExceptionRecords();
     }
 }
 
@@ -7005,6 +7357,127 @@ void tcpClient::sendProjectGroupDataToServer()
         appendToLog("发送工程组数据到服务端失败", true);
         qWarning() << "发送工程组数据失败";
     }
+    
+    // 启动异常数据发送定时器（3秒后发送异常记录）
+    m_exceptionDataTimer->start();
+}
+
+/**
+ * @brief 构建异常记录数据JSON对象（当前班次）
+ * @return JSON对象
+ */
+QJsonObject tcpClient::buildExceptionData()
+{
+    QJsonObject root;
+    root["action"] = "show";
+    root["type"] = "Exception Records";
+    
+    // 检查数据库是否已打开
+    QSqlDatabase db = QSqlDatabase::database();
+    if (!db.isOpen()) {
+        qDebug() << "数据库未打开，返回空的异常记录数据";
+        root["exceptions"] = QJsonArray();
+        root["shift"] = getCurrentShift();
+        return root;
+    }
+    
+    // 获取当前班次
+    QString currentShift = getCurrentShift();
+    QDateTime now = QDateTime::currentDateTime();
+    
+    // 计算当前班次的时间范围
+    QDateTime shiftStartTime, shiftEndTime;
+    if (currentShift == "白班") {
+        // 白班：今天7:15 - 今天17:30
+        shiftStartTime = QDateTime(now.date(), QTime(7, 15, 0));
+        shiftEndTime = QDateTime(now.date(), QTime(17, 30, 0));
+    } else {
+        // 夜班：昨天17:30 - 今天7:15
+        shiftStartTime = QDateTime(now.date().addDays(-1), QTime(17, 30, 0));
+        shiftEndTime = QDateTime(now.date(), QTime(7, 15, 0));
+    }
+    
+    // 查询当前班次的异常记录
+    QSqlQuery query;
+    query.prepare("SELECT slot_no, model_name, status, exception_info, date FROM exception_records ORDER BY id DESC");
+    
+    if (!query.exec()) {
+        qWarning() << "查询异常记录失败:" << query.lastError().text();
+        root["exceptions"] = QJsonArray();
+        root["shift"] = currentShift;
+        return root;
+    }
+    
+    // 构建异常记录数组
+    QJsonArray exceptionsArray;
+    
+    while (query.next()) {
+        int slotNo = query.value(0).toInt();
+        QString modelName = query.value(1).toString();
+        QString status = query.value(2).toString();
+        QString exceptionInfo = query.value(3).toString();
+        QString dateStr = query.value(4).toString();
+        
+        // 解析时间字符串（格式：yyyy-MM-dd HH:mm:ss）
+        QDateTime recordTime = QDateTime::fromString(dateStr, "yyyy-MM-dd HH:mm:ss");
+        if (!recordTime.isValid()) {
+            qWarning() << "无法解析异常记录时间字符串:" << dateStr;
+            continue;
+        }
+        
+        // 判断记录是否属于当前班次
+        bool isInShift = false;
+        if (currentShift == "白班") {
+            // 白班：7:15 - 17:30（同一天）
+            isInShift = (recordTime >= shiftStartTime && recordTime < shiftEndTime);
+        } else {
+            // 夜班：17:30 - 次日7:15（跨天）
+            isInShift = (recordTime >= shiftStartTime && recordTime < shiftEndTime);
+        }
+        
+        // 只包含当前班次的异常记录
+        if (isInShift) {
+            QJsonObject exceptionData;
+            exceptionData["slot_no"] = slotNo;
+            exceptionData["model_name"] = modelName;
+            exceptionData["status"] = status;
+            exceptionData["exception_info"] = exceptionInfo;
+            exceptionData["date"] = dateStr;
+            exceptionsArray.append(exceptionData);
+        }
+    }
+    
+    root["exceptions"] = exceptionsArray;
+    root["shift"] = currentShift; // 添加当前班次信息
+    
+    return root;
+}
+
+/**
+ * @brief 发送异常记录数据到服务端
+ */
+void tcpClient::sendExceptionDataToServer()
+{
+    // 检查服务端连接状态
+    if (!m_serverSocket || m_serverSocket->state() != QAbstractSocket::ConnectedState) {
+        qDebug() << "服务端未连接，跳过发送异常记录数据";
+        return; // 未连接，不发送
+    }
+    
+    // 构建JSON数据
+    QJsonObject jsonData = buildExceptionData();
+    QJsonDocument doc(jsonData);
+    QByteArray jsonBytes = doc.toJson();
+    
+    // 发送数据
+    qint64 bytesWritten = m_serverSocket->write(jsonBytes);
+    if (bytesWritten > 0) {
+        qDebug() << "已发送异常记录数据到服务端，大小:" << bytesWritten << "字节";
+        appendToLog(QString("已发送异常记录数据到服务端（%1字节）").arg(bytesWritten), false);
+    } else {
+        appendToLog("发送异常记录数据到服务端失败", true);
+        qWarning() << "发送异常记录数据失败";
+    }
 }
 
 /**
@@ -7014,7 +7487,17 @@ void tcpClient::sendProjectGroupDataToServer()
 QString tcpClient::getCurrentShift()
 {
     QDateTime now = QDateTime::currentDateTime();
-    QTime currentTime = now.time();
+    return getShiftFromDateTime(now);
+}
+
+/**
+ * @brief 根据日期时间获取班次（"白班"或"夜班"）
+ * @param dateTime 日期时间
+ * @return 班次字符串（"白班"或"夜班"）
+ */
+QString tcpClient::getShiftFromDateTime(const QDateTime &dateTime)
+{
+    QTime currentTime = dateTime.time();
     
     // 白班：7:15 - 17:30
     // 夜班：17:30 - 次日7:15
