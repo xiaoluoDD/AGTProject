@@ -23,10 +23,12 @@
 #include <QTableWidget>
 #include <QInputDialog>
 #include <QDate>
+#include <QTime>
 
 // 前向声明
 class QTableWidgetItem;
 class QPushButton;
+class QTimeEdit;
 
 QT_BEGIN_NAMESPACE
 namespace Ui {
@@ -113,6 +115,9 @@ private slots:
     void onSaveDatabaseConfigClicked(); ///< 保存数据库配置按钮点击处理
     void onTestDatabaseConnectionClicked(); ///< 测试数据库连接按钮点击处理
 
+    // 班次设置槽函数
+    void onSaveShiftConfigClicked(); ///< 保存班次设置按钮点击处理
+
     // 连接配置槽函数
     void onSavePlcConnectionConfigClicked(); ///< 保存PLC连接配置按钮点击处理
     void onSaveServerConnectionConfigClicked(); ///< 保存服务端连接配置按钮点击处理
@@ -193,8 +198,12 @@ private:
     QStringList getVehicleModelList(); ///< 获取所有绑定的车型名称列表
     void saveConnectionConfig(const QString &configType, const QString &ip, int port); ///< 保存连接配置到数据库
     void loadConnectionConfig(); ///< 从数据库加载连接配置
+    void initShiftConfigTable(); ///< 初始化班次设置表
+    void saveShiftConfig(); ///< 保存班次设置到数据库
+    void loadShiftConfig(); ///< 从数据库加载班次设置
     void updateServerConnectionStatus(bool connected); ///< 更新服务端连接状态显示
-    void processServerJsonData(const QByteArray &data); ///< 处理服务端JSON数据
+    void processServerJsonData(const QByteArray &data, bool saveToTable = true); ///< 处理服务端JSON数据（支持多个连续的JSON对象）
+    bool processSingleJsonObject(const QString &jsonString, bool saveToTable = true); ///< 处理单个JSON对象
     void sendVisualizationDataToServer(); ///< 发送可视化数据到服务端
     QJsonObject buildVisualizationData(); ///< 构建可视化数据JSON对象
     void sendProjectGroupDataToServer(); ///< 发送工程组数据到服务端
@@ -206,6 +215,7 @@ private:
     void advanceEmptyTrayVisualizationBy3(); ///< 推进空托盘可视化显示3个位置
     void saveEmptyTrayVisualizationRecords(); ///< 保存空托盘可视化记录到数据库
     void loadEmptyTrayVisualizationRecords(); ///< 从数据库加载空托盘可视化记录
+    int mapSlotNumberToActualSlot(int slotNumber); ///< 将指令滑槽号映射为实际滑槽号（1->2001, 2->2002, 3->2003, 4->2103, 5->2102, 6->2101）
 
     // 密码管理函数
     void initPasswordTable();     ///< 初始化密码表
@@ -249,7 +259,9 @@ private:
     QDateTime m_lastStatus1Time;  ///< 旧版本兼容，已废弃
     QDateTime m_lastStatus2Time; ///< 旧版本兼容，已废弃
     QMap<QString, QDateTime> m_lastTrayTime; ///< 每个托盘的最后处理时间（key格式: "real_1" 或 "empty_1"）
-    QLabel* labelConnectionStatus;
+    QLabel* labelConnectionStatus; ///< PLC连接状态标签（右下角）
+    QLabel* m_labelServerStatus; ///< 服务端连接状态标签（右下角）
+    QLabel* m_labelEdSoftwareStatus; ///< ED软件连接状态标签（右下角）
     QPushButton* pushButtonCurrentShiftTablePage; ///< 当前班次表格页面按钮
     QWidget* currentShiftTablePage; ///< 当前班次表格页面
     QTableWidget* currentShiftTableWidget; ///< 当前班次表格
@@ -263,6 +275,8 @@ private:
     QVector<QLabel*> m_emptyTrayLabels; ///< 空滑槽标签（23个：入口1个 + 21个槽位 + 出口1个）
     QVector<QString> m_realTraySlots; ///< 实滑槽每个位置显示的车型名称（21个槽位，位置0-20）
     QVector<QString> m_emptyTraySlots; ///< 空滑槽每个位置显示的车型名称（21个槽位，位置0-20）
+    QString m_realTrayExitLabelText; ///< 实滑槽出口标签的初始文本（用于重置时恢复）
+    QString m_emptyTrayExitLabelText; ///< 空滑槽出口标签的初始文本（用于重置时恢复）
     QGroupBox* groupBoxServerConnection; ///< 服务端连接设置GroupBox
     QLineEdit* lineEditServerIP; ///< 服务端IP输入框
     QLineEdit* lineEditServerPort; ///< 服务端端口输入框
@@ -278,6 +292,12 @@ private:
     QPushButton* pushButtonEdSoftwareConnect; ///< ED软件连接按钮
     QPushButton* pushButtonEdSoftwareDisconnect; ///< ED软件断开按钮
     QLabel* labelEdSoftwareConnectionStatus; ///< ED软件连接状态标签
+    QGroupBox* groupBoxShiftConfig; ///< 班次设置GroupBox
+    QTimeEdit* timeEditDayShiftStart; ///< 白班开始时间输入框
+    QTimeEdit* timeEditDayShiftEnd; ///< 白班结束时间输入框
+    QTimeEdit* timeEditNightShiftStart; ///< 夜班开始时间输入框
+    QTimeEdit* timeEditNightShiftEnd; ///< 夜班结束时间输入框
+    QPushButton* pushButtonSaveShiftConfig; ///< 保存班次设置按钮
     QString m_password;           ///< 存储的密码
     bool m_isPasswordSet;         ///< 密码是否已设置
     QDate m_lastCurrentShiftTableClearDate; ///< 上次清空当前班次表格的日期
@@ -317,7 +337,7 @@ private:
     QTextStream* m_logStream;     ///< 日志流对象
     QMutex m_logMutex;            ///< 日志互斥锁
     static tcpClient* s_instance; ///< 静态实例指针（用于静态日志处理器）
-    
+
     // 表格筛选相关
     QMap<int, QString> m_tableFilters; ///< 表格筛选条件（列索引 -> 筛选值）
     QList<QTableWidgetItem*> m_allTableItems; ///< 存储所有表格数据（用于筛选）
