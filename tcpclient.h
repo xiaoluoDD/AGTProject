@@ -309,6 +309,13 @@ private:
     QString m_password;           ///< 存储的密码
     bool m_isPasswordSet;         ///< 密码是否已设置
     QDate m_lastCurrentShiftTableClearDate; ///< 上次清空当前班次表格的日期
+    
+    // 班次设置（从数据库读取）
+    QTime m_dayShiftStart;        ///< 白班开始时间
+    QTime m_dayShiftEnd;          ///< 白班结束时间
+    QTime m_nightShiftStart;      ///< 夜班开始时间
+    QTime m_nightShiftEnd;        ///< 夜班结束时间
+    bool m_shiftConfigLoaded;     ///< 班次设置是否已加载
 
     // 统计信息标签和数值
     QLabel* plannedCountLabel;    ///< 计划便次标签
