@@ -24,11 +24,41 @@
 #include <QInputDialog>
 #include <QDate>
 #include <QTime>
+#include <QHeaderView>
+#include <QPainter>
 
 // 前向声明
 class QTableWidgetItem;
 class QPushButton;
 class QTimeEdit;
+
+/**
+ * @brief 自定义QHeaderView类，支持二级表头
+ */
+class TwoLevelHeaderView : public QHeaderView
+{
+public:
+    explicit TwoLevelHeaderView(Qt::Orientation orientation, QWidget *parent = nullptr);
+
+    // 设置一级表头文本
+    void setFirstLevelHeader(int firstLevelIndex, const QString &text);
+    // 设置二级表头文本
+    void setSecondLevelHeader(int section, const QString &text);
+    // 设置列索引到一级表头索引的映射
+    void setSectionToFirstLevel(int section, int firstLevelIndex);
+
+protected:
+    void paintEvent(QPaintEvent *e) override;
+    void paintSection(QPainter *painter, const QRect &rect, int logicalIndex) const override;
+    QSize sectionSizeFromContents(int logicalIndex) const override;
+    QSize sizeHint() const override;
+    QSize minimumSizeHint() const override;
+
+private:
+    QMap<int, QString> m_firstLevelHeaders;  // 一级表头文本（firstLevelIndex -> text）
+    QMap<int, QString> m_secondLevelHeaders; // 二级表头文本（section -> text）
+    QMap<int, int> m_sectionToFirstLevel;     // 列索引到一级表头索引的映射（section -> firstLevelIndex）
+};
 
 QT_BEGIN_NAMESPACE
 namespace Ui {
@@ -62,8 +92,10 @@ private slots:
     void onTablePageClicked();      ///< 切换到表格界面
     void onVisualizationPageClicked(); ///< 切换到可视化记录界面
     void onProjectGroupPageClicked(); ///< 切换到工程组记录界面
+    void onAssemblyIndicatorPageClicked(); ///< 切换到总成指示表界面
     void onVehicleBindingPageClicked(); ///< 切换到车型绑定界面
     void updateProjectGroupStatistics(); ///< 更新工程组统计表格
+    void loadVehicleModelsToAssemblyIndicator(); ///< 加载绑定车型到总成指示表
 
     // 连接管理槽函数
     void onConnectClicked();      ///< 连接按钮点击处理
@@ -279,6 +311,9 @@ private:
     QWidget* projectGroupPage; ///< 工程组记录页面
     QTableWidget* projectGroupTable; ///< 工程组记录表格
     QPushButton* projectGroupShiftButton; ///< 工程组统计区域班次显示按钮
+    QPushButton* pushButtonAssemblyIndicatorPage; ///< 总成指示表页面按钮
+    QWidget* assemblyIndicatorPage; ///< 总成指示表页面
+    QTableWidget* assemblyIndicatorTable; ///< 总成指示表表格
     QVector<QLabel*> m_realTrayLabels; ///< 实滑槽标签（23个：入口1个 + 21个槽位 + 出口1个）
     QVector<QLabel*> m_emptyTrayLabels; ///< 空滑槽标签（23个：入口1个 + 21个槽位 + 出口1个）
     QVector<QString> m_realTraySlots; ///< 实滑槽每个位置显示的车型名称（21个槽位，位置0-20）
@@ -309,7 +344,7 @@ private:
     QString m_password;           ///< 存储的密码
     bool m_isPasswordSet;         ///< 密码是否已设置
     QDate m_lastCurrentShiftTableClearDate; ///< 上次清空当前班次表格的日期
-    
+
     // 班次设置（从数据库读取）
     QTime m_dayShiftStart;        ///< 白班开始时间
     QTime m_dayShiftEnd;          ///< 白班结束时间
