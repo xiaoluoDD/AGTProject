@@ -6759,12 +6759,12 @@ void tcpClient::loadExceptionRecords()
     // 清空表格
     exceptionTableWidget->setRowCount(0);
     
-    // 如果班次设置未加载，先加载
+    // 确保班次设置已加载（如果未加载，先加载）
     if (!m_shiftConfigLoaded) {
         loadShiftConfig();
     }
     
-    // 获取当前班次
+    // 获取当前班次（使用最新的班次设置）
     QString currentShift = getCurrentShift();
     QDateTime now = QDateTime::currentDateTime();
     QDate today = now.date();
@@ -6780,6 +6780,11 @@ void tcpClient::loadExceptionRecords()
         shiftStartTime = QDateTime(today, m_nightShiftStart);
         shiftEndTime = QDateTime(today.addDays(1), m_nightShiftEnd);
     }
+    
+    qDebug() << QString("loadExceptionRecords: 当前班次=%1, 时间范围=%2 到 %3")
+                .arg(currentShift)
+                .arg(shiftStartTime.toString("yyyy-MM-dd HH:mm:ss"))
+                .arg(shiftEndTime.toString("yyyy-MM-dd HH:mm:ss"));
     
     // 查询所有异常记录
     QSqlQuery query("SELECT slot_no, model_name, status, exception_info, date FROM exception_records ORDER BY id DESC");
@@ -7137,10 +7142,29 @@ void tcpClient::saveShiftConfig()
                 .arg(dayShiftEnd.toString("HH:mm"))
                 .arg(nightShiftStart.toString("HH:mm"))
                 .arg(nightShiftEnd.toString("HH:mm")));
+    
+    // 确保使用最新的班次设置刷新相关表格
+    // 注意：成员变量已经更新，getCurrentShift() 会使用新的班次设置
+    QString currentShift = getCurrentShift();
+    qDebug() << QString("班次设置已更新，当前班次: %1, 开始刷新表格").arg(currentShift);
+    qDebug() << QString("白班: %1-%2, 夜班: %3-%4")
+                .arg(m_dayShiftStart.toString("HH:mm"))
+                .arg(m_dayShiftEnd.toString("HH:mm"))
+                .arg(m_nightShiftStart.toString("HH:mm"))
+                .arg(m_nightShiftEnd.toString("HH:mm"));
+    
+    // 刷新相关表格（根据新的班次设置重新加载数据）
+    loadCurrentShiftRecordsFromDb();  // 刷新当前班次表格
+    loadExceptionRecords();           // 刷新异常记录表格
+    updateProjectGroupStatistics();   // 刷新工程组记录表格
+    
+    appendToLog(QString("表格已根据新的班次设置刷新（当前班次: %1）").arg(currentShift), false);
+    
     QMessageBox::information(this, "保存成功", 
                             QString("班次设置已保存！\n\n"
                                    "白班: %1 - %2\n"
-                                   "夜班: %3 - %4")
+                                   "夜班: %3 - %4\n\n"
+                                   "相关表格已自动刷新")
                             .arg(dayShiftStart.toString("HH:mm"))
                             .arg(dayShiftEnd.toString("HH:mm"))
                             .arg(nightShiftStart.toString("HH:mm"))
@@ -7748,23 +7772,23 @@ QString tcpClient::getShiftFromDateTime(const QDateTime &dateTime)
     QTime nightShiftEnd = m_nightShiftEnd;
     
     // 判断当前时间属于哪个班次
-    // 白班：dayShiftStart - dayShiftEnd（同一天）
+    // 白班：dayShiftStart - dayShiftEnd（通常在同一天）
     // 夜班：nightShiftStart - 次日 nightShiftEnd（跨天）
     
+    // 先判断是否在白班时间范围内
+    bool isDayShift = false;
     if (dayShiftStart <= dayShiftEnd) {
         // 白班在同一天内（例如 7:15 - 17:30）
-        if (currentTime >= dayShiftStart && currentTime < dayShiftEnd) {
-            return "白班";
-        } else {
-            return "夜班";
-        }
+        isDayShift = (currentTime >= dayShiftStart && currentTime < dayShiftEnd);
     } else {
         // 白班跨天（例如 22:00 - 次日 6:00），这种情况较少见
-        if (currentTime >= dayShiftStart || currentTime < dayShiftEnd) {
-            return "白班";
-        } else {
-            return "夜班";
-        }
+        isDayShift = (currentTime >= dayShiftStart || currentTime < dayShiftEnd);
+    }
+    
+    if (isDayShift) {
+        return "白班";
+    } else {
+        return "夜班";
     }
 }
 
