@@ -246,7 +246,7 @@ private:
     void handleEmptyTrayIn(const QString &modelName, int slotNo = -1); ///< 处理空托盘搬入，slotNo为-1时使用原逻辑，否则根据slotNo确定位置
     void handleEmptyTrayOut(const QString &modelName, int slotNumber = -1); ///< 处理空托盘搬出，slotNumber为-1时使用原逻辑，否则根据slotNumber确定位置
     void advanceEmptyTrayVisualization(); ///< 推进空托盘可视化显示
-    void advanceEmptyTrayVisualizationBy3(); ///< 推进空托盘可视化显示3个位置
+    void advanceEmptyTrayVisualizationBy3(const QString &modelName = ""); ///< 推进空托盘可视化显示3个位置，modelName为新进入的车型名称（用于记录异常）
     void saveEmptyTrayVisualizationRecords(); ///< 保存空托盘可视化记录到数据库
     void loadEmptyTrayVisualizationRecords(); ///< 从数据库加载空托盘可视化记录
     int mapSlotNumberToActualSlot(int slotNumber); ///< 将指令滑槽号映射为实际滑槽号（1->2001, 2->2002, 3->2003, 4->2103, 5->2102, 6->2101）
