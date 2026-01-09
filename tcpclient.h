@@ -46,6 +46,8 @@ public:
     void setSecondLevelHeader(int section, const QString &text);
     // 设置列索引到一级表头索引的映射
     void setSectionToFirstLevel(int section, int firstLevelIndex);
+    // 获取二级表头文本
+    QString getSecondLevelHeader(int section) const;
 
 protected:
     void paintEvent(QPaintEvent *e) override;
@@ -98,6 +100,8 @@ private slots:
     void loadVehicleModelsToAssemblyIndicator(); ///< 加载绑定车型到总成指示表
     void onOvertimeTimeButtonClicked(); ///< 加班时间选择按钮点击处理
     void addOvertimeColumns(double hours); ///< 添加加班时间列到总成指示表
+    void updatePlanRowsForOvertimeColumns(int startCol); ///< 更新所有计划行在加班列中的值
+    void onLoadAssemblyIndicatorClicked(); ///< 加载数据按钮点击处理
 
     // 连接管理槽函数
     void onConnectClicked();      ///< 连接按钮点击处理
@@ -122,6 +126,7 @@ private slots:
     void onClearVehicleTableClicked(); ///< 清空车型表格按钮点击处理
     void onExportVehicleTableClicked(); ///< 导出车型表格按钮点击处理
     void onVehicleBindingItemChanged(QTableWidgetItem *item); ///< 车型绑定表格数据变化处理
+    void onAssemblyIndicatorItemChanged(QTableWidgetItem *item); ///< 总装指示表数据变化处理
 
     // 数据解析槽函数
     void onDataParsed(int status1, unsigned int value1, unsigned int value2,
@@ -221,6 +226,8 @@ private:
     void loadVisualizationRecords(); ///< 从数据库加载可视化记录
     void saveStatisticsInfo(); ///< 保存统计信息到数据库
     void loadStatisticsInfo(); ///< 从数据库加载统计信息
+    void saveAssemblyIndicatorToDb(); ///< 保存总装指示表到数据库
+    void loadAssemblyIndicatorFromDb(const QDate& date, const QString& shiftType); ///< 从数据库加载总装指示表
     QString getCurrentShift(); ///< 获取当前班次（"白班"或"夜班"）
     void onShiftDisplayButtonClicked(); ///< 班次显示按钮点击处理
     void loadPreviousShiftStatistics(); ///< 加载前一个班次的统计信息
@@ -316,7 +323,9 @@ private:
     QPushButton* pushButtonAssemblyIndicatorPage; ///< 总成指示表页面按钮
     QWidget* assemblyIndicatorPage; ///< 总成指示表页面
     QTableWidget* assemblyIndicatorTable; ///< 总成指示表表格
+    QPushButton* pushButtonLoadAssemblyIndicator; ///< 加载总装指示表按钮
     QPushButton* pushButtonOvertimeTime; ///< 加班时间选择按钮
+    QPushButton* pushButtonSaveAssemblyIndicator; ///< 保存总装指示表按钮
     double m_overtimeHours; ///< 当前选择的加班时间（小时）
     QVector<QLabel*> m_realTrayLabels; ///< 实滑槽标签（23个：入口1个 + 21个槽位 + 出口1个）
     QVector<QLabel*> m_emptyTrayLabels; ///< 空滑槽标签（23个：入口1个 + 21个槽位 + 出口1个）
