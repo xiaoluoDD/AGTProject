@@ -55,10 +55,10 @@
 TwoLevelHeaderView::TwoLevelHeaderView(Qt::Orientation orientation, QWidget *parent)
     : QHeaderView(orientation, parent)
 {
-    setDefaultSectionSize(80);
+    setDefaultSectionSize(100);
     setMinimumSectionSize(50);
-    setMinimumHeight(80);
-    setFixedHeight(80); // 固定高度确保二级表头有足够空间
+    setMinimumHeight(100);
+    setFixedHeight(100); // 固定高度确保二级表头有足够空间，加班信息可以完整显示
 }
 
 /**
@@ -1264,6 +1264,23 @@ void tcpClient::setupUI()
     assemblyIndicatorTableLayout->setSpacing(10);
     assemblyIndicatorTableLayout->setContentsMargins(15, 15, 15, 15);
     
+    // 创建水平布局，用于在右上方放置加班时间选择按钮
+    QHBoxLayout* topButtonLayout = new QHBoxLayout();
+    topButtonLayout->setContentsMargins(0, 0, 0, 0);
+    topButtonLayout->addStretch(); // 左侧添加弹性空间，使按钮靠右
+    
+    // 创建加班时间选择按钮
+    pushButtonOvertimeTime = new QPushButton(assemblyIndicatorBox);
+    pushButtonOvertimeTime->setText("选择加班时间");
+    pushButtonOvertimeTime->setObjectName("pushButtonOvertimeTime");
+    pushButtonOvertimeTime->setMinimumSize(120, 30);
+    topButtonLayout->addWidget(pushButtonOvertimeTime);
+    
+    assemblyIndicatorTableLayout->addLayout(topButtonLayout);
+    
+    // 初始化加班时间为0
+    m_overtimeHours = 0.0;
+    
     // 创建总成指示表表格
     assemblyIndicatorTable = new QTableWidget(assemblyIndicatorBox);
     // 设置列数：车型名称，收容数，产量，生产总托数，节拍，托盘搬运，以及33列时间（8个时间列每个细分为4列 + 1个休息列1列）
@@ -1351,10 +1368,10 @@ void tcpClient::setupUI()
     assemblyIndicatorTable->verticalHeader()->setDefaultSectionSize(30); // 默认行高30px
     assemblyIndicatorTable->verticalHeader()->setMinimumSectionSize(30);
     
-    // 设置表头高度为原来的2倍（默认约30px，设置为80px，因为需要显示两级表头）
-    header->setMinimumHeight(80);
-    header->setDefaultSectionSize(80);
-    header->setFixedHeight(80); // 固定高度确保二级表头有足够空间
+    // 设置表头高度为原来的2倍（默认约30px，设置为100px，因为需要显示两级表头，加班信息需要更多空间）
+    header->setMinimumHeight(100);
+    header->setDefaultSectionSize(100);
+    header->setFixedHeight(100); // 固定高度确保二级表头有足够空间，加班信息可以完整显示
     
     // 设置表头文本换行显示（通过样式表实现，支持换行符\n）
     header->setStyleSheet(
@@ -1441,6 +1458,7 @@ void tcpClient::setupUI()
     connect(pushButtonProjectGroupPage, &QPushButton::clicked, this, &tcpClient::onProjectGroupPageClicked);
     connect(pushButtonAssemblyIndicatorPage, &QPushButton::clicked, this, &tcpClient::onAssemblyIndicatorPageClicked);
     connect(ui->pushButtonVehicleBindingPage, &QPushButton::clicked, this, &tcpClient::onVehicleBindingPageClicked);
+    connect(pushButtonOvertimeTime, &QPushButton::clicked, this, &tcpClient::onOvertimeTimeButtonClicked);
 
     // 连接按钮信号槽
     connect(ui->pushButtonConnect, &QPushButton::clicked, this, &tcpClient::onConnectClicked);
@@ -4164,10 +4182,10 @@ void tcpClient::loadVehicleModelsToAssemblyIndicator()
         assemblyIndicatorTable->setItem(planRow, 1, item1);
         assemblyIndicatorTable->setSpan(planRow, 1, 2, 1); // 合并2行1列
         
-        // 列2: 产量（初始为空）
+        // 列2: 产量（初始为空，可编辑）
         QTableWidgetItem* item2 = new QTableWidgetItem("");
         item2->setTextAlignment(Qt::AlignCenter | Qt::AlignVCenter);
-        item2->setFlags(item2->flags() & ~Qt::ItemIsEditable); // 设置为不可编辑
+        item2->setFlags(item2->flags() | Qt::ItemIsEditable); // 设置为可编辑
         assemblyIndicatorTable->setItem(planRow, 2, item2);
         assemblyIndicatorTable->setSpan(planRow, 2, 2, 1); // 合并2行1列
         
@@ -4197,7 +4215,8 @@ void tcpClient::loadVehicleModelsToAssemblyIndicator()
         
         // 列6-38: 33列时间（8个时间列每个细分为4列：15、30、45、60 + 1个休息列1列）
         // 第一行显示计划数据，第二行显示实际数据（初始为空）
-        for (int col = 6; col <= 38; ++col) {
+        int totalCols = assemblyIndicatorTable->columnCount();
+        for (int col = 6; col < totalCols; ++col) {
             // 休息列（列22）跳过，最后统一处理
             if (col == 22) {
                 continue;
@@ -4226,6 +4245,220 @@ void tcpClient::loadVehicleModelsToAssemblyIndicator()
     }
     
     qDebug() << "已加载" << assemblyIndicatorTable->rowCount() << "个车型到总成指示表";
+}
+
+/**
+ * @brief 加班时间选择按钮点击处理
+ */
+void tcpClient::onOvertimeTimeButtonClicked()
+{
+    // 创建选项列表：不加班 + 0.5小时到3小时，以0.5小时递增
+    QStringList options;
+    options << "不加班";
+    for (double h = 0.5; h <= 3.0; h += 0.5) {
+        options << QString("%1小时").arg(h);
+    }
+    
+    // 计算当前选择的索引（0=不加班，1=0.5小时，2=1小时，...）
+    int currentIndex = 0;
+    if (m_overtimeHours > 0) {
+        currentIndex = static_cast<int>((m_overtimeHours - 0.5) / 0.5) + 1;
+    }
+    
+    // 显示选择对话框
+    bool ok;
+    QString selected = QInputDialog::getItem(this, "选择加班时间", 
+                                             "请选择加班时间:", 
+                                             options, 
+                                             currentIndex, 
+                                             false, &ok);
+    
+    if (ok && !selected.isEmpty()) {
+        double hours = 0.0;
+        
+        if (selected == "不加班") {
+            hours = 0.0;
+        } else {
+            // 提取小时数
+            hours = selected.replace("小时", "").toDouble();
+        }
+        
+        // 如果选择的时间与当前不同，则更新
+        if (hours != m_overtimeHours) {
+            // 如果之前有加班时间列，先移除
+            if (m_overtimeHours > 0) {
+                // 计算需要移除的列数（每15分钟一列，所以每0.5小时=2列，1小时=4列）
+                int colsToRemove = static_cast<int>(m_overtimeHours * 4);
+                int currentColCount = assemblyIndicatorTable->columnCount();
+                assemblyIndicatorTable->setColumnCount(currentColCount - colsToRemove);
+            }
+            
+            // 添加新的加班时间列
+            if (hours > 0) {
+                addOvertimeColumns(hours);
+            }
+            
+            m_overtimeHours = hours;
+            
+            // 更新按钮文本
+            if (hours == 0.0) {
+                pushButtonOvertimeTime->setText("选择加班时间");
+            } else {
+                pushButtonOvertimeTime->setText(QString("加班时间: %1小时").arg(hours));
+            }
+            
+            if (hours == 0.0) {
+                appendToLog("已取消加班时间", false);
+            } else {
+                appendToLog(QString("已设置加班时间: %1小时").arg(hours), false);
+            }
+        }
+    }
+}
+
+/**
+ * @brief 添加加班时间列到总成指示表
+ * @param hours 加班时间（小时）
+ */
+void tcpClient::addOvertimeColumns(double hours)
+{
+    if (!assemblyIndicatorTable) {
+        return;
+    }
+    
+    // 使用dynamic_cast代替qobject_cast，因为TwoLevelHeaderView没有Q_OBJECT宏
+    TwoLevelHeaderView* header = dynamic_cast<TwoLevelHeaderView*>(assemblyIndicatorTable->horizontalHeader());
+    if (!header) {
+        return;
+    }
+    
+    // 计算完整的小时数和剩余时间
+    int fullHours = static_cast<int>(hours);  // 完整的小时数
+    double remainingHours = hours - fullHours;  // 剩余的小时数（0, 0.5）
+    
+    // 计算需要添加的列数（每15分钟一列，所以每0.5小时=2列，1小时=4列）
+    int colsToAdd = static_cast<int>(hours * 4);
+    
+    // 获取当前列数
+    int currentColCount = assemblyIndicatorTable->columnCount();
+    
+    // 添加新列
+    assemblyIndicatorTable->setColumnCount(currentColCount + colsToAdd);
+    
+    // 最后一个时间列的最后一个二级表头值是230（从代码逻辑可知）
+    // 加班时间从245开始（230 + 15）
+    int lastSecondLevelValue = 230;
+    
+    // 计算一级表头索引（当前有9个一级表头，索引0-8，加班时间从索引9开始）
+    int firstLevelIndex = 9;
+    
+    // 起始时间：最后一个时间段是"15:25-16:15\n01:15-02:05"
+    // 白班：从16:15开始，夜班：从02:05开始
+    QTime dayShiftCurrent(16, 15);  // 白班当前时间
+    QTime nightShiftCurrent(2, 5);  // 夜班当前时间
+    
+    int currentCol = currentColCount;
+    int secondLevelValue = lastSecondLevelValue + 15; // 从最后一个值+15开始
+    
+    // 先添加完整的小时时间段（每个1小时）
+    for (int h = 0; h < fullHours; ++h) {
+        // 计算这个时间段的结束时间（1小时后）
+        QTime dayShiftEnd = dayShiftCurrent.addSecs(3600);  // 加1小时
+        QTime nightShiftEnd = nightShiftCurrent.addSecs(3600);
+        
+        // 格式化时间范围字符串
+        QString timeRange = QString("%1-%2\n%3-%4")
+                            .arg(dayShiftCurrent.toString("hh:mm"))
+                            .arg(dayShiftEnd.toString("hh:mm"))
+                            .arg(nightShiftCurrent.toString("hh:mm"))
+                            .arg(nightShiftEnd.toString("hh:mm"));
+        
+        // 设置一级表头：第一行显示"加班"，第二行显示时间范围
+        QString firstLevelText = QString("加班\n%1").arg(timeRange);
+        header->setFirstLevelHeader(firstLevelIndex, firstLevelText);
+        
+        // 为这个时间段添加4列（1小时=4列）
+        for (int i = 0; i < 4; ++i) {
+            int colIndex = currentCol + i;
+            
+            // 设置二级表头
+            header->setSecondLevelHeader(colIndex, QString::number(secondLevelValue));
+            
+            // 建立映射：列索引 -> 一级表头索引
+            header->setSectionToFirstLevel(colIndex, firstLevelIndex);
+            
+            // 设置列宽模式为自适应
+            header->setSectionResizeMode(colIndex, QHeaderView::Stretch);
+            
+            // 为所有现有行添加单元格
+            int rowCount = assemblyIndicatorTable->rowCount();
+            for (int row = 0; row < rowCount; ++row) {
+                QTableWidgetItem* item = new QTableWidgetItem("");
+                item->setTextAlignment(Qt::AlignCenter | Qt::AlignVCenter);
+                item->setFlags(item->flags() & ~Qt::ItemIsEditable); // 设置为不可编辑
+                assemblyIndicatorTable->setItem(row, colIndex, item);
+            }
+            
+            // 下一个值+15
+            secondLevelValue += 15;
+        }
+        
+        // 更新当前时间，为下一个时间段做准备
+        dayShiftCurrent = dayShiftEnd;
+        nightShiftCurrent = nightShiftEnd;
+        currentCol += 4;
+        firstLevelIndex++;  // 下一个一级表头索引
+    }
+    
+    // 如果有剩余时间（0.5小时），添加最后一个时间段
+    if (remainingHours > 0) {
+        // 计算剩余时间的结束时间（0.5小时后）
+        QTime dayShiftEnd = dayShiftCurrent.addSecs(static_cast<int>(remainingHours * 3600));
+        QTime nightShiftEnd = nightShiftCurrent.addSecs(static_cast<int>(remainingHours * 3600));
+        
+        // 格式化时间范围字符串
+        QString timeRange = QString("%1-%2\n%3-%4")
+                            .arg(dayShiftCurrent.toString("hh:mm"))
+                            .arg(dayShiftEnd.toString("hh:mm"))
+                            .arg(nightShiftCurrent.toString("hh:mm"))
+                            .arg(nightShiftEnd.toString("hh:mm"));
+        
+        // 设置一级表头：第一行显示"加班"，第二行显示时间范围
+        QString firstLevelText = QString("加班\n%1").arg(timeRange);
+        header->setFirstLevelHeader(firstLevelIndex, firstLevelText);
+        
+        // 为这个时间段添加2列（0.5小时=2列）
+        int colsForRemaining = static_cast<int>(remainingHours * 4);
+        for (int i = 0; i < colsForRemaining; ++i) {
+            int colIndex = currentCol + i;
+            
+            // 设置二级表头
+            header->setSecondLevelHeader(colIndex, QString::number(secondLevelValue));
+            
+            // 建立映射：列索引 -> 一级表头索引
+            header->setSectionToFirstLevel(colIndex, firstLevelIndex);
+            
+            // 设置列宽模式为自适应
+            header->setSectionResizeMode(colIndex, QHeaderView::Stretch);
+            
+            // 为所有现有行添加单元格
+            int rowCount = assemblyIndicatorTable->rowCount();
+            for (int row = 0; row < rowCount; ++row) {
+                QTableWidgetItem* item = new QTableWidgetItem("");
+                item->setTextAlignment(Qt::AlignCenter | Qt::AlignVCenter);
+                item->setFlags(item->flags() & ~Qt::ItemIsEditable); // 设置为不可编辑
+                assemblyIndicatorTable->setItem(row, colIndex, item);
+            }
+            
+            // 下一个值+15
+            secondLevelValue += 15;
+        }
+    }
+    
+    // 刷新表头
+    header->update();
+    header->updateGeometry();
+    header->repaint();
 }
 
 void tcpClient::loadDataRecordsFromDb() {

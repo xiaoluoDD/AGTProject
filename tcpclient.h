@@ -96,6 +96,8 @@ private slots:
     void onVehicleBindingPageClicked(); ///< 切换到车型绑定界面
     void updateProjectGroupStatistics(); ///< 更新工程组统计表格
     void loadVehicleModelsToAssemblyIndicator(); ///< 加载绑定车型到总成指示表
+    void onOvertimeTimeButtonClicked(); ///< 加班时间选择按钮点击处理
+    void addOvertimeColumns(double hours); ///< 添加加班时间列到总成指示表
 
     // 连接管理槽函数
     void onConnectClicked();      ///< 连接按钮点击处理
@@ -314,6 +316,8 @@ private:
     QPushButton* pushButtonAssemblyIndicatorPage; ///< 总成指示表页面按钮
     QWidget* assemblyIndicatorPage; ///< 总成指示表页面
     QTableWidget* assemblyIndicatorTable; ///< 总成指示表表格
+    QPushButton* pushButtonOvertimeTime; ///< 加班时间选择按钮
+    double m_overtimeHours; ///< 当前选择的加班时间（小时）
     QVector<QLabel*> m_realTrayLabels; ///< 实滑槽标签（23个：入口1个 + 21个槽位 + 出口1个）
     QVector<QLabel*> m_emptyTrayLabels; ///< 空滑槽标签（23个：入口1个 + 21个槽位 + 出口1个）
     QVector<QString> m_realTraySlots; ///< 实滑槽每个位置显示的车型名称（21个槽位，位置0-20）
