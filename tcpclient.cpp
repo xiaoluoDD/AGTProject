@@ -96,6 +96,26 @@ QString TwoLevelHeaderView::getSecondLevelHeader(int section) const
 }
 
 /**
+ * @brief 获取一级表头文本
+ */
+QString TwoLevelHeaderView::getFirstLevelHeader(int section) const
+{
+    int firstLevelIndex = m_sectionToFirstLevel.value(section, -1);
+    if (firstLevelIndex >= 0) {
+        return m_firstLevelHeaders.value(firstLevelIndex, "");
+    }
+    return "";
+}
+
+/**
+ * @brief 获取列索引对应的一级表头索引
+ */
+int TwoLevelHeaderView::getFirstLevelIndex(int section) const
+{
+    return m_sectionToFirstLevel.value(section, -1);
+}
+
+/**
  * @brief 重写paintEvent以确保二级表头正确绘制
  */
 void TwoLevelHeaderView::paintEvent(QPaintEvent *e)
@@ -3075,6 +3095,9 @@ void tcpClient::processHexData(const QByteArray &data)
                     // tray.slotNo是1-3，对应第5-7个字节，转换为位置索引0-2
                     int slotIndex = tray.slotNo - 1;
                     updateVisualization(vehicleName, true, slotIndex);
+                    
+                    // 更新总成指示表的实际行
+                    updateAssemblyIndicatorActualRow(vehicleName);
                 }
                 // 如果是空托盘搬入，处理空托盘搬入逻辑
                 // 根据字节位置确定检查位置：第8个字节（slotNo=4）->2103，对应右边槽位（位置2），第9个字节（slotNo=5）->2102，对应中间槽位（位置1），第10个字节（slotNo=6）->2101，对应左边槽位（位置0）
@@ -6117,7 +6140,12 @@ void tcpClient::saveVisualizationRecords()
     // 尝试开始事务（如果失败，继续执行，不使用事务）
     bool useTransaction = db.transaction();
     if (!useTransaction) {
-        qDebug() << "开始事务失败，将不使用事务保存: " << db.lastError().text();
+        QSqlError error = db.lastError();
+        QString errorText = error.text();
+        if (errorText.isEmpty()) {
+            errorText = "未知错误（可能是数据库驱动不支持事务）";
+        }
+        qDebug() << "开始事务失败，将不使用事务保存: " << errorText << " (类型: " << error.type() << ")";
     }
     
     // 先清空旧记录
@@ -9214,8 +9242,9 @@ void tcpClient::onProjectGroupShiftAutoReset()
 
 /**
  * @brief 保存总装指示表到数据库
+ * @param showMessageBox 是否显示保存成功的弹窗，默认为true
  */
-void tcpClient::saveAssemblyIndicatorToDb()
+void tcpClient::saveAssemblyIndicatorToDb(bool showMessageBox)
 {
     if (!assemblyIndicatorTable) {
         appendToLog("总装指示表未初始化，无法保存", true);
@@ -9529,7 +9558,11 @@ void tcpClient::saveAssemblyIndicatorToDb()
 
     appendToLog(QString("总装指示表数据已保存（%1条记录，日期：%2，班次：%3，加班时间：%4小时）")
                 .arg(savedCount).arg(currentDate.toString("yyyy-MM-dd")).arg(shiftType).arg(overtimeHours), false);
-    QMessageBox::information(this, "保存成功", QString("总装指示表数据已成功保存！\n共保存 %1 条记录").arg(savedCount));
+    
+    // 只有在需要显示弹窗时才显示
+    if (showMessageBox) {
+        QMessageBox::information(this, "保存成功", QString("总装指示表数据已成功保存！\n共保存 %1 条记录").arg(savedCount));
+    }
 }
 
 /**
@@ -9735,7 +9768,8 @@ void tcpClient::loadAssemblyIndicatorFromDb(const QDate& date, const QString& sh
                     QTableWidgetItem* actualItem = assemblyIndicatorTable->item(actualRow, col);
                     if (actualItem) {
                         if (value > 0) {
-                            actualItem->setText(QString::number(value, 'f', 1));
+                            // 实际行使用整数格式（数量）
+                            actualItem->setText(QString::number(static_cast<int>(value)));
                         } else {
                             actualItem->setText("");
                         }
@@ -9775,6 +9809,242 @@ void tcpClient::onLoadAssemblyIndicatorClicked()
     loadAssemblyIndicatorFromDb(currentDate, currentShift);
 }
 
+/**
+ * @brief 更新总成指示表的实际行（实托盘搬出时调用）
+ * @param vehicleName 车型名称
+ */
+void tcpClient::updateAssemblyIndicatorActualRow(const QString& vehicleName)
+{
+    if (!assemblyIndicatorTable) {
+        return;
+    }
 
+    // 获取当前时间和班次
+    QDateTime currentDateTime = QDateTime::currentDateTime();
+    QTime currentTime = currentDateTime.time();
+    QString currentShift = getCurrentShift();
+    
+    // 获取表头
+    QHeaderView* headerView = assemblyIndicatorTable->horizontalHeader();
+    TwoLevelHeaderView* header = static_cast<TwoLevelHeaderView*>(headerView);
+    if (!header) {
+        return;
+    }
 
+    // 根据车型找到对应的实际行（每2行为一组，第二行是实际行）
+    int actualRow = -1;
+    for (int row = 0; row < assemblyIndicatorTable->rowCount(); row += 2) {
+        QTableWidgetItem* vehicleNameItem = assemblyIndicatorTable->item(row, 0);
+        if (vehicleNameItem && vehicleNameItem->text().trimmed() == vehicleName.trimmed()) {
+            actualRow = row + 1; // 实际行是下一行
+            break;
+        }
+    }
+
+    if (actualRow < 0) {
+        // 未找到对应的车型，记录日志但不报错
+        appendToLog(QString("总成指示表：未找到车型%1，跳过更新实际行").arg(vehicleName), false);
+        return;
+    }
+
+    // 根据当前时间找到对应的时间列
+    int targetCol = -1;
+    int totalCols = assemblyIndicatorTable->columnCount();
+    
+    // 遍历所有时间列，找到最接近当前时间的列
+    QTime bestTime;
+    int bestCol = -1;
+    int minDiff = INT_MAX;
+    int bestColInRange = -1; // 在范围内的最佳列
+    int minDiffInRange = INT_MAX; // 在范围内的最小时间差
+    
+    for (int col = 6; col < totalCols; ++col) {
+        if (col == 22) {
+            continue; // 跳过休息列
+        }
+
+        // 获取一级表头（时间范围）
+        QString firstLevelText = header->getFirstLevelHeader(col);
+        if (firstLevelText.isEmpty()) {
+            continue;
+        }
+
+        // 解析时间范围（格式：白班时间\n夜班时间）
+        QStringList timeRanges = firstLevelText.split("\n");
+        if (timeRanges.size() < 2) {
+            continue;
+        }
+
+        QString dayShiftRange = timeRanges[0]; // 白班时间范围
+        QString nightShiftRange = timeRanges[1]; // 夜班时间范围
+
+        // 根据当前班次选择对应的时间范围
+        QString timeRange = (currentShift == "白班") ? dayShiftRange : nightShiftRange;
+
+        // 解析时间范围（格式：H:MM-H:MM 或 HH:MM-HH:MM，支持一位或两位小时数）
+        QStringList times = timeRange.split("-");
+        if (times.size() < 2) {
+            continue;
+        }
+
+        // 使用 "H:mm" 格式支持一位或两位小时数（如 "7:30" 或 "07:30"）
+        QTime startTime = QTime::fromString(times[0].trimmed(), "H:mm");
+        QTime endTime = QTime::fromString(times[1].trimmed(), "H:mm");
+
+        if (!startTime.isValid() || !endTime.isValid()) {
+            qDebug() << QString("总成指示表：时间解析失败 - 列%1, 时间范围: %2, 开始时间: %3, 结束时间: %4")
+                        .arg(col).arg(timeRange).arg(times[0].trimmed()).arg(times[1].trimmed());
+            continue;
+        }
+
+        // 处理跨天的情况（夜班可能跨天）
+        bool crossesMidnight = false;
+        if (currentShift == "夜班" && startTime > endTime) {
+            crossesMidnight = true;
+        }
+
+        // 判断当前时间是否在这个时间范围内
+        bool inRange = false;
+        if (crossesMidnight) {
+            // 跨天情况：当前时间 >= 开始时间 或 当前时间 <= 结束时间
+            inRange = (currentTime >= startTime || currentTime <= endTime);
+        } else {
+            // 正常情况：开始时间 <= 当前时间 <= 结束时间
+            inRange = (currentTime >= startTime && currentTime <= endTime);
+        }
+
+        if (inRange) {
+            // 计算当前时间在该时间段内的分钟数
+            int currentMinutes = 0;
+            if (crossesMidnight && currentTime <= endTime) {
+                // 跨天且当前时间在结束时间之前（第二天）
+                QTime midnight(0, 0);
+                int minutesToMidnight = startTime.secsTo(QTime(23, 59, 59)) / 60 + 1;
+                int minutesFromMidnight = midnight.secsTo(currentTime) / 60;
+                currentMinutes = minutesToMidnight + minutesFromMidnight;
+            } else {
+                currentMinutes = startTime.secsTo(currentTime) / 60;
+            }
+
+            // 根据当前时间在该时间段内的相对位置，确定应该使用该时间段内的第几列
+            // 规则：0-15分钟用第1列，15-30分钟用第2列，30-45分钟用第3列，45-60分钟用第4列
+            int targetColumnIndex = 0; // 在该时间段内的列索引（0-3）
+            if (currentMinutes >= 45) {
+                targetColumnIndex = 3; // 第4列（45-60分钟）
+            } else if (currentMinutes >= 30) {
+                targetColumnIndex = 2; // 第3列（30-45分钟）
+            } else if (currentMinutes >= 15) {
+                targetColumnIndex = 1; // 第2列（15-30分钟）
+            } else {
+                targetColumnIndex = 0; // 第1列（0-15分钟）
+            }
+
+            // 在该时间段内查找匹配的列
+            // 找到该时间段的所有列（同一一级表头索引的所有列）
+            int firstLevelIndex = header->getFirstLevelIndex(col);
+            if (firstLevelIndex >= 0) {
+                // 收集该时间段内的所有列（排除休息列）
+                QList<int> timeSlotColumns;
+                for (int c = 6; c < totalCols; ++c) {
+                    if (c == 22) {
+                        continue; // 跳过休息列
+                    }
+                    int cFirstLevelIndex = header->getFirstLevelIndex(c);
+                    if (cFirstLevelIndex == firstLevelIndex) {
+                        timeSlotColumns.append(c);
+                    }
+                }
+                
+                // 每个时间段有4列，根据targetColumnIndex选择对应的列
+                if (targetColumnIndex >= 0 && targetColumnIndex < timeSlotColumns.size()) {
+                    bestCol = timeSlotColumns[targetColumnIndex];
+                    minDiff = 0; // 完全匹配
+                    break; // 找到后退出外层循环
+                }
+            }
+        } else {
+            // 不在范围内，但计算时间差，作为备选
+            int timeDiff = 0;
+            if (currentTime < startTime) {
+                timeDiff = currentTime.secsTo(startTime) / 60;
+            } else if (currentTime > endTime) {
+                timeDiff = endTime.secsTo(currentTime) / 60;
+            }
+            
+            if (timeDiff < minDiff) {
+                minDiff = timeDiff;
+                // 选择该时间段的第一列作为备选
+                int firstLevelIndex = header->getFirstLevelIndex(col);
+                if (firstLevelIndex >= 0) {
+                    for (int c = 6; c < totalCols; ++c) {
+                        if (c == 22) continue;
+                        if (header->getFirstLevelIndex(c) == firstLevelIndex) {
+                            bestTime = startTime;
+                            if (bestCol < 0) {
+                                bestCol = c; // 使用该时间段的第一列
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 如果没找到精确匹配，使用在范围内的最接近的列
+    if (bestCol < 0 && bestColInRange >= 0) {
+        bestCol = bestColInRange;
+        qDebug() << QString("总成指示表：未找到精确匹配的时间列，使用最接近的列 %1（时间差: %2分钟）")
+                    .arg(bestCol).arg(minDiffInRange);
+    }
+
+    if (bestCol < 0) {
+        // 未找到对应的时间列，记录日志但不报错
+        qDebug() << QString("总成指示表：未找到车型%1对应的时间列（当前时间：%2，班次：%3），跳过更新")
+                    .arg(vehicleName).arg(currentTime.toString("hh:mm")).arg(currentShift);
+        appendToLog(QString("总成指示表：未找到车型%1对应的时间列（当前时间：%2，班次：%3），跳过更新")
+                    .arg(vehicleName).arg(currentTime.toString("hh:mm")).arg(currentShift), false);
+        return;
+    }
+
+    // 更新实际行的值（+1）
+    QTableWidgetItem* actualItem = assemblyIndicatorTable->item(actualRow, bestCol);
+    int currentValue = 0;
+    
+    if (actualItem) {
+        // 如果单元格存在，读取当前值（支持整数和浮点数格式）
+        QString currentValueStr = actualItem->text().trimmed();
+        if (!currentValueStr.isEmpty()) {
+            // 先尝试转换为浮点数（兼容"1.0"格式），然后转换为整数
+            bool ok = false;
+            double doubleValue = currentValueStr.toDouble(&ok);
+            if (ok) {
+                currentValue = static_cast<int>(doubleValue);
+            } else {
+                // 如果浮点数转换失败，尝试整数转换
+                int intValue = currentValueStr.toInt(&ok);
+                if (ok) {
+                    currentValue = intValue;
+                }
+            }
+        }
+        // 累加1
+        currentValue += 1;
+        actualItem->setText(QString::number(currentValue));
+    } else {
+        // 如果单元格不存在，创建一个新的，初始值为1
+        currentValue = 1;
+        actualItem = new QTableWidgetItem(QString::number(currentValue));
+        actualItem->setTextAlignment(Qt::AlignCenter | Qt::AlignVCenter);
+        actualItem->setFlags(actualItem->flags() & ~Qt::ItemIsEditable); // 设置为不可编辑
+        assemblyIndicatorTable->setItem(actualRow, bestCol, actualItem);
+    }
+
+    // 保存到数据库（不显示弹窗）
+    QDate currentDate = QDate::currentDate();
+    saveAssemblyIndicatorToDb(false);
+
+    appendToLog(QString("总成指示表：车型%1的实际行已更新（时间列：%2，值：%3）")
+                .arg(vehicleName).arg(bestCol).arg(actualItem->text()), false);
+}
 

@@ -48,6 +48,10 @@ public:
     void setSectionToFirstLevel(int section, int firstLevelIndex);
     // 获取二级表头文本
     QString getSecondLevelHeader(int section) const;
+    // 获取一级表头文本
+    QString getFirstLevelHeader(int section) const;
+    // 获取列索引对应的一级表头索引
+    int getFirstLevelIndex(int section) const;
 
 protected:
     void paintEvent(QPaintEvent *e) override;
@@ -102,6 +106,7 @@ private slots:
     void addOvertimeColumns(double hours); ///< 添加加班时间列到总成指示表
     void updatePlanRowsForOvertimeColumns(int startCol); ///< 更新所有计划行在加班列中的值
     void onLoadAssemblyIndicatorClicked(); ///< 加载数据按钮点击处理
+    void updateAssemblyIndicatorActualRow(const QString& vehicleName); ///< 更新总成指示表的实际行（实托盘搬出时调用）
 
     // 连接管理槽函数
     void onConnectClicked();      ///< 连接按钮点击处理
@@ -226,7 +231,7 @@ private:
     void loadVisualizationRecords(); ///< 从数据库加载可视化记录
     void saveStatisticsInfo(); ///< 保存统计信息到数据库
     void loadStatisticsInfo(); ///< 从数据库加载统计信息
-    void saveAssemblyIndicatorToDb(); ///< 保存总装指示表到数据库
+    void saveAssemblyIndicatorToDb(bool showMessageBox = true); ///< 保存总装指示表到数据库
     void loadAssemblyIndicatorFromDb(const QDate& date, const QString& shiftType); ///< 从数据库加载总装指示表
     QString getCurrentShift(); ///< 获取当前班次（"白班"或"夜班"）
     void onShiftDisplayButtonClicked(); ///< 班次显示按钮点击处理
