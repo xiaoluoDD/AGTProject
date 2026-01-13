@@ -39,6 +39,7 @@
 #include <QComboBox>
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QDateEdit>
 #include <QColor>
 #include <QBrush>
 #include <QVector>
@@ -1319,6 +1320,40 @@ void tcpClient::setupUI()
     pushButtonSaveAssemblyIndicator->setMinimumSize(100, 30);
     topButtonLayout->addWidget(pushButtonSaveAssemblyIndicator);
     
+    // 创建切换表格模式按钮
+    pushButtonSwitchTableMode = new QPushButton(assemblyIndicatorBox);
+    pushButtonSwitchTableMode->setText("当前表格");
+    pushButtonSwitchTableMode->setObjectName("pushButtonSwitchTableMode");
+    pushButtonSwitchTableMode->setMinimumSize(100, 30);
+    // 设置初始样式（未选中状态）
+    pushButtonSwitchTableMode->setStyleSheet(
+        "QPushButton {"
+        "background-color: #f0f0f0;"
+        "color: #333;"
+        "font-weight: normal;"
+        "border: 2px solid #ddd;"
+        "border-radius: 4px;"
+        "padding: 5px 15px;"
+        "}"
+        "QPushButton:hover {"
+        "background-color: #e0e0e0;"
+        "}"
+    );
+    topButtonLayout->addWidget(pushButtonSwitchTableMode);
+    
+    // 创建选择历史数据时间和班次按钮（初始隐藏）
+    pushButtonSelectHistoryDateShift = new QPushButton(assemblyIndicatorBox);
+    pushButtonSelectHistoryDateShift->setText("选择时间和班次");
+    pushButtonSelectHistoryDateShift->setObjectName("pushButtonSelectHistoryDateShift");
+    pushButtonSelectHistoryDateShift->setMinimumSize(120, 30);
+    pushButtonSelectHistoryDateShift->setVisible(false); // 初始隐藏
+    topButtonLayout->addWidget(pushButtonSelectHistoryDateShift);
+    
+    // 初始化表格模式状态（默认显示当前表格）
+    m_isHistoryTableMode = false;
+    m_selectedHistoryDate = QDate(); // 初始化为无效日期
+    m_selectedHistoryShift = ""; // 初始化为空字符串
+    
     // 添加弹性空间，使按钮靠左
     topButtonLayout->addStretch();
     
@@ -1509,7 +1544,15 @@ void tcpClient::setupUI()
         connect(pushButtonLoadAssemblyIndicator, &QPushButton::clicked, this, &tcpClient::onLoadAssemblyIndicatorClicked);
     }
     if (pushButtonSaveAssemblyIndicator) {
-        connect(pushButtonSaveAssemblyIndicator, &QPushButton::clicked, this, &tcpClient::saveAssemblyIndicatorToDb);
+        connect(pushButtonSaveAssemblyIndicator, &QPushButton::clicked, this, [this]() {
+            saveAssemblyIndicatorToDb(true); // 确保总是显示保存成功弹窗
+        });
+    }
+    if (pushButtonSwitchTableMode) {
+        connect(pushButtonSwitchTableMode, &QPushButton::clicked, this, &tcpClient::onSwitchTableModeClicked);
+    }
+    if (pushButtonSelectHistoryDateShift) {
+        connect(pushButtonSelectHistoryDateShift, &QPushButton::clicked, this, &tcpClient::onSelectHistoryDateShiftClicked);
     }
 
     // 连接总装指示表数据变化信号槽
@@ -3782,7 +3825,7 @@ void tcpClient::initDatabase() {
         qWarning() << "异常记录表创建失败:" << query.lastError().text();
     }
 
-    // 总装指示表记录表（每个车型保存2条记录：计划行和实际行）
+    // 总装指示表记录表（每个车型保存2条记录：计划行和实际行）- 当前班次数据表
     if (query.exec("CREATE TABLE IF NOT EXISTS assembly_indicator_records ("
                    "id INT PRIMARY KEY AUTO_INCREMENT,"
                    "vehicle_name VARCHAR(255),"
@@ -3801,6 +3844,105 @@ void tcpClient::initDatabase() {
         qDebug() << "总装指示表记录表创建/检查成功";
     } else {
         qWarning() << "总装指示表记录表创建失败:" << query.lastError().text();
+    }
+
+    // 总装指示表参量设置表（固定参量：产量、节拍）
+    if (query.exec("CREATE TABLE IF NOT EXISTS assembly_indicator_config ("
+                   "id INT PRIMARY KEY AUTO_INCREMENT,"
+                   "vehicle_name VARCHAR(255) NOT NULL UNIQUE,"
+                   "capacity INT,"
+                   "yield INT,"
+                   "rhythm DECIMAL(10,2),"
+                   "create_time DATETIME,"
+                   "update_time DATETIME,"
+                   "INDEX idx_vehicle_name (vehicle_name))")) {
+        qDebug() << "总装指示表参量设置表创建/检查成功";
+    } else {
+        qWarning() << "总装指示表参量设置表创建失败:" << query.lastError().text();
+    }
+
+    // 总装指示表历史数据表（记录每个班次的数据，每次PLC更新时更新对应记录）
+    if (query.exec("CREATE TABLE IF NOT EXISTS assembly_indicator_history ("
+                   "id INT PRIMARY KEY AUTO_INCREMENT,"
+                   "vehicle_name VARCHAR(255) NOT NULL,"
+                   "capacity INT,"
+                   "yield INT,"
+                   "total_trays INT,"
+                   "rhythm DECIMAL(10,2),"
+                   "row_type VARCHAR(10),"
+                   "time_data TEXT,"
+                   "overtime_hours DECIMAL(4,1),"
+                   "shift_type VARCHAR(20),"
+                   "record_date DATE,"
+                   "snapshot_time DATETIME,"
+                   "create_time DATETIME,"
+                   "update_time DATETIME,"
+                   "UNIQUE KEY uk_vehicle_date_shift_row (vehicle_name, record_date, shift_type, row_type),"
+                   "INDEX idx_date_shift (record_date, shift_type),"
+                   "INDEX idx_vehicle_date (vehicle_name, record_date),"
+                   "INDEX idx_snapshot_time (snapshot_time))")) {
+        qDebug() << "总装指示表历史数据表创建/检查成功";
+        
+        // 检查并添加缺失的 update_time 列（兼容旧表结构）
+        query.prepare("SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS "
+                     "WHERE TABLE_SCHEMA = DATABASE() "
+                     "AND TABLE_NAME = 'assembly_indicator_history' "
+                     "AND COLUMN_NAME = 'update_time'");
+        if (query.exec() && query.next()) {
+            int columnExists = query.value(0).toInt();
+            if (columnExists == 0) {
+                // 列不存在，添加它
+                if (query.exec("ALTER TABLE assembly_indicator_history ADD COLUMN update_time DATETIME AFTER create_time")) {
+                    qDebug() << "已为总装指示表历史数据表添加 update_time 列";
+                } else {
+                    qWarning() << "添加 update_time 列失败:" << query.lastError().text();
+                }
+            }
+        }
+        
+        // 检查唯一键约束是否存在，如果不存在则添加（兼容旧表结构）
+        query.prepare("SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS "
+                     "WHERE TABLE_SCHEMA = DATABASE() "
+                     "AND TABLE_NAME = 'assembly_indicator_history' "
+                     "AND CONSTRAINT_NAME = 'uk_vehicle_date_shift_row'");
+        if (query.exec() && query.next()) {
+            int constraintExists = query.value(0).toInt();
+            if (constraintExists == 0) {
+                // 唯一键不存在，先清理重复数据，然后添加唯一键约束
+                qDebug() << "检测到唯一键约束不存在，开始清理重复数据...";
+                
+                // 删除重复记录，只保留每个车型、日期、班次、行类型的最新快照
+                QString cleanupSql = "DELETE h1 FROM assembly_indicator_history h1 "
+                                     "INNER JOIN ("
+                                     "  SELECT vehicle_name, record_date, shift_type, row_type, MAX(snapshot_time) as max_snapshot_time "
+                                     "  FROM assembly_indicator_history "
+                                     "  GROUP BY vehicle_name, record_date, shift_type, row_type "
+                                     "  HAVING COUNT(*) > 1"
+                                     ") h2 ON h1.vehicle_name = h2.vehicle_name "
+                                     "     AND h1.record_date = h2.record_date "
+                                     "     AND h1.shift_type = h2.shift_type "
+                                     "     AND h1.row_type = h2.row_type "
+                                     "     AND h1.snapshot_time < h2.max_snapshot_time";
+                
+                if (query.exec(cleanupSql)) {
+                    int deletedRows = query.numRowsAffected();
+                    qDebug() << QString("已清理 %1 条重复的历史记录").arg(deletedRows);
+                } else {
+                    qWarning() << "清理重复数据失败:" << query.lastError().text();
+                }
+                
+                // 添加唯一键约束
+                if (query.exec("ALTER TABLE assembly_indicator_history "
+                             "ADD UNIQUE KEY uk_vehicle_date_shift_row (vehicle_name, record_date, shift_type, row_type)")) {
+                    qDebug() << "已为总装指示表历史数据表添加唯一键约束";
+                } else {
+                    qWarning() << "添加唯一键约束失败:" << query.lastError().text();
+                    qWarning() << "如果失败是因为仍有重复数据，请手动清理数据库后重启程序";
+                }
+            }
+        }
+    } else {
+        qWarning() << "总装指示表历史数据表创建失败:" << query.lastError().text();
     }
 
     qInfo() << "数据库初始化完成";
@@ -4102,15 +4244,26 @@ void tcpClient::loadCurrentShiftRecordsFromDb()
         }
         
         // 判断记录是否在当前班次的时间范围内
+        // 使用更严格的时间范围判断，确保只加载当前班次的数据
         bool isInShift = false;
         if (currentShift == "白班") {
-            // 白班：当天 7:15 - 17:30
+            // 白班：当天 dayShiftStart - dayShiftEnd（不跨天）
+            // 必须同时满足：日期是今天，且时间在范围内
             isInShift = (recordDateTime.date() == today && 
                         recordDateTime >= shiftStartTime && 
                         recordDateTime < shiftEndTime);
         } else {
-            // 夜班：当天 17:30 - 次日 7:15（包括当天和隔天的数据）
-            isInShift = (recordDateTime >= shiftStartTime && recordDateTime < shiftEndTime);
+            // 夜班：当天 nightShiftStart - 次日 nightShiftEnd（跨天）
+            // 必须满足：时间在范围内，且不能是前一个夜班的数据
+            // 通过比较记录日期和当前日期，确保只加载当前夜班的数据
+            QDate recordDate = recordDateTime.date();
+            if (recordDate == today || recordDate == today.addDays(1)) {
+                // 记录日期是今天或明天，且时间在范围内
+                isInShift = (recordDateTime >= shiftStartTime && recordDateTime < shiftEndTime);
+            } else {
+                // 记录日期不是今天或明天，肯定不是当前班次的数据
+                isInShift = false;
+            }
         }
         
         // 只加载当前班次的记录
@@ -7886,15 +8039,26 @@ void tcpClient::loadExceptionRecords()
         }
         
         // 判断记录是否在当前班次的时间范围内
+        // 使用更严格的时间范围判断，确保只加载当前班次的数据
         bool isInShift = false;
         if (currentShift == "白班") {
-            // 白班：当天 7:15 - 17:30
+            // 白班：当天 dayShiftStart - dayShiftEnd（不跨天）
+            // 必须同时满足：日期是今天，且时间在范围内
             isInShift = (recordDateTime.date() == today && 
                         recordDateTime >= shiftStartTime && 
                         recordDateTime < shiftEndTime);
         } else {
-            // 夜班：当天 17:30 - 次日 7:15（包括当天和隔天的数据）
-            isInShift = (recordDateTime >= shiftStartTime && recordDateTime < shiftEndTime);
+            // 夜班：当天 nightShiftStart - 次日 nightShiftEnd（跨天）
+            // 必须满足：时间在范围内，且不能是前一个夜班的数据
+            // 通过比较记录日期和当前日期，确保只加载当前夜班的数据
+            QDate recordDate = recordDateTime.date();
+            if (recordDate == today || recordDate == today.addDays(1)) {
+                // 记录日期是今天或明天，且时间在范围内
+                isInShift = (recordDateTime >= shiftStartTime && recordDateTime < shiftEndTime);
+            } else {
+                // 记录日期不是今天或明天，肯定不是当前班次的数据
+                isInShift = false;
+            }
         }
         
         // 只显示当前班次的记录
@@ -9241,7 +9405,7 @@ void tcpClient::onProjectGroupShiftAutoReset()
 }
 
 /**
- * @brief 保存总装指示表到数据库
+ * @brief 保存总装指示表参量设置到数据库（只保存产量和节拍）
  * @param showMessageBox 是否显示保存成功的弹窗，默认为true
  */
 void tcpClient::saveAssemblyIndicatorToDb(bool showMessageBox)
@@ -9254,29 +9418,12 @@ void tcpClient::saveAssemblyIndicatorToDb(bool showMessageBox)
     // 检查数据库是否已打开
     QSqlDatabase db = QSqlDatabase::database();
     if (!db.isOpen()) {
-        appendToLog("数据库未打开，无法保存总装指示表", true);
+        appendToLog("数据库未打开，无法保存总装指示表参量", true);
         QMessageBox::warning(this, "保存失败", "数据库未连接，请先连接数据库！");
         return;
     }
 
-    // 获取当前日期和班次
-    QDate currentDate = QDate::currentDate();
-    QString shiftType = getCurrentShift();
     QDateTime currentDateTime = QDateTime::currentDateTime();
-
-    // 获取表头以获取二级表头值
-    QHeaderView* headerView = assemblyIndicatorTable->horizontalHeader();
-    TwoLevelHeaderView* header = static_cast<TwoLevelHeaderView*>(headerView);
-    if (!header) {
-        appendToLog("无法获取表头信息，保存失败", true);
-        return;
-    }
-
-    // 获取加班时间（如果没有设置则为0）
-    double overtimeHours = m_overtimeHours;
-    if (overtimeHours < 0) {
-        overtimeHours = 0.0;
-    }
 
     // 检查数据库驱动是否支持事务
     QSqlDriver* driver = db.driver();
@@ -9304,8 +9451,732 @@ void tcpClient::saveAssemblyIndicatorToDb(bool showMessageBox)
     QSqlQuery query(db);
     int savedCount = 0;
     int errorCount = 0;
-    int totalCols = assemblyIndicatorTable->columnCount();
     QString lastError;
+
+    // 遍历所有行（每2行代表一个车型，只取计划行）
+    for (int row = 0; row < assemblyIndicatorTable->rowCount(); row += 2) {
+        int planRow = row;
+
+        // 获取基础信息
+        QTableWidgetItem* vehicleNameItem = assemblyIndicatorTable->item(planRow, 0);
+        QTableWidgetItem* capacityItem = assemblyIndicatorTable->item(planRow, 1);
+        QTableWidgetItem* yieldItem = assemblyIndicatorTable->item(planRow, 2);
+        QTableWidgetItem* rhythmItem = assemblyIndicatorTable->item(planRow, 4);
+
+        if (!vehicleNameItem) {
+            continue;
+        }
+
+        QString vehicleName = vehicleNameItem->text().trimmed();
+        if (vehicleName.isEmpty()) {
+            continue;
+        }
+
+        // 解析参量数据（只保存产量和节拍）
+        int capacity = 0;
+        int yield = 0;
+        double rhythm = 0.0;
+
+        if (capacityItem) {
+            capacity = capacityItem->text().trimmed().toInt();
+        }
+        if (yieldItem) {
+            yield = yieldItem->text().trimmed().toInt();
+        }
+        if (rhythmItem) {
+            rhythm = rhythmItem->text().trimmed().toDouble();
+        }
+
+        // 保存到参量设置表
+        query.prepare("INSERT INTO assembly_indicator_config "
+                     "(vehicle_name, capacity, yield, rhythm, create_time, update_time) "
+                     "VALUES (?, ?, ?, ?, ?, ?) "
+                     "ON DUPLICATE KEY UPDATE "
+                     "capacity = ?, "
+                     "yield = ?, "
+                     "rhythm = ?, "
+                     "update_time = ?");
+
+        query.addBindValue(vehicleName);
+        query.addBindValue(capacity);
+        query.addBindValue(yield);
+        query.addBindValue(rhythm);
+        query.addBindValue(currentDateTime);
+        query.addBindValue(currentDateTime);
+        
+        // UPDATE部分的参数
+        query.addBindValue(capacity);
+        query.addBindValue(yield);
+        query.addBindValue(rhythm);
+        query.addBindValue(currentDateTime);
+
+        if (!query.exec()) {
+            errorCount++;
+            QString errorMsg = QString("保存参量设置失败（车型：%1）: %2")
+                               .arg(vehicleName).arg(query.lastError().text());
+            appendToLog(errorMsg, true);
+            qWarning() << errorMsg;
+            lastError = query.lastError().text();
+            
+            // 如果错误太多，提前回滚
+            if (errorCount > 10) {
+                if (useTransaction) {
+                    appendToLog("错误过多，停止保存并回滚事务", true);
+                    db.rollback();
+                }
+                QMessageBox::warning(this, "保存失败", 
+                                    QString("保存过程中发生过多错误！\n已回滚所有更改。\n\n最后错误：%1").arg(lastError));
+                return;
+            }
+        } else {
+            savedCount++;
+        }
+    }
+
+    // 如果有错误，回滚事务（如果使用了事务）
+    if (errorCount > 0) {
+        if (useTransaction) {
+            appendToLog(QString("保存过程中发生 %1 个错误，回滚事务").arg(errorCount), true);
+            db.rollback();
+        }
+        QMessageBox::warning(this, "保存失败", 
+                            QString("保存参量设置时发生错误！\n\n成功：%1条\n失败：%2条\n\n错误信息：%3")
+                            .arg(savedCount).arg(errorCount).arg(lastError));
+        return;
+    }
+
+    // 提交事务（如果使用了事务）
+    if (useTransaction) {
+        if (!db.commit()) {
+            QString commitError = db.lastError().text();
+            if (commitError.isEmpty()) {
+                commitError = "未知错误";
+            }
+            appendToLog(QString("保存参量设置事务提交失败: %1").arg(commitError), true);
+            db.rollback();
+            QMessageBox::warning(this, "保存失败", 
+                                QString("保存参量设置时事务提交失败！\n\n错误：%1").arg(commitError));
+            return;
+        } else {
+            qDebug() << "事务已提交";
+        }
+    }
+
+    appendToLog(QString("参量设置已保存（%1条记录）").arg(savedCount), false);
+    
+    // 只有在需要显示弹窗时才显示
+    if (showMessageBox) {
+        QMessageBox::information(this, "保存成功", QString("数据保存成功！\n共保存 %1 条记录").arg(savedCount));
+    }
+}
+
+/**
+ * @brief 保存当前班次数据到当前班次表
+ */
+void tcpClient::saveAssemblyIndicatorCurrentShift()
+{
+    if (!assemblyIndicatorTable) {
+        return;
+    }
+
+    // 检查数据库是否已打开
+    QSqlDatabase db = QSqlDatabase::database();
+    if (!db.isOpen()) {
+        return;
+    }
+
+    // 获取当前日期和班次
+    QDate currentDate = QDate::currentDate();
+    QString shiftType = getCurrentShift();
+    QDateTime currentDateTime = QDateTime::currentDateTime();
+
+    // 获取表头以获取二级表头值
+    QHeaderView* headerView = assemblyIndicatorTable->horizontalHeader();
+    TwoLevelHeaderView* header = static_cast<TwoLevelHeaderView*>(headerView);
+    if (!header) {
+        return;
+    }
+
+    // 获取加班时间（如果没有设置则为0）
+    double overtimeHours = m_overtimeHours;
+    if (overtimeHours < 0) {
+        overtimeHours = 0.0;
+    }
+
+    QSqlQuery query(db);
+    int totalCols = assemblyIndicatorTable->columnCount();
+
+    // 如果在历史表格模式下，先从数据库读取当前班次表的数据，然后更新对应车型的数据
+    if (m_isHistoryTableMode) {
+        // 从当前班次表读取所有车型的数据
+        query.prepare("SELECT vehicle_name, capacity, yield, total_trays, rhythm, "
+                     "row_type, time_data, overtime_hours "
+                     "FROM assembly_indicator_records "
+                     "WHERE record_date = ? AND shift_type = ? "
+                     "ORDER BY vehicle_name, row_type");
+        
+        query.addBindValue(currentDate);
+        query.addBindValue(shiftType);
+        
+        if (!query.exec()) {
+            qWarning() << "从当前班次表读取数据失败:" << query.lastError().text();
+            return;
+        }
+        
+        // 使用Map来组织数据：vehicle_name -> (row_type -> (baseInfo, timeData))
+        QMap<QString, QPair<QPair<int, QPair<int, QPair<int, double>>>, QJsonObject>> vehiclePlanData;
+        QMap<QString, QPair<QPair<int, QPair<int, QPair<int, double>>>, QJsonObject>> vehicleActualData;
+        
+        while (query.next()) {
+            QString vehicleName = query.value(0).toString();
+            int capacity = query.value(1).toInt();
+            int yield = query.value(2).toInt();
+            int totalTrays = query.value(3).toInt();
+            double rhythm = query.value(4).toDouble();
+            QString rowType = query.value(5).toString();
+            QString timeDataStr = query.value(6).toString();
+            
+            // 解析JSON数据
+            QJsonParseError parseError;
+            QJsonDocument doc = QJsonDocument::fromJson(timeDataStr.toUtf8(), &parseError);
+            if (parseError.error != QJsonParseError::NoError) {
+                qWarning() << "解析时间数据JSON失败:" << parseError.errorString();
+                continue;
+            }
+            
+            QJsonObject timeData = doc.object();
+            QPair<int, QPair<int, QPair<int, double>>> baseInfo = qMakePair(capacity, qMakePair(yield, qMakePair(totalTrays, rhythm)));
+            
+            if (rowType == "plan") {
+                vehiclePlanData[vehicleName] = qMakePair(baseInfo, timeData);
+            } else if (rowType == "actual") {
+                vehicleActualData[vehicleName] = qMakePair(baseInfo, timeData);
+            }
+        }
+        
+        // 遍历表格，找到需要更新的车型，更新其实际行数据
+        for (int row = 0; row < assemblyIndicatorTable->rowCount(); row += 2) {
+            QTableWidgetItem* vehicleNameItem = assemblyIndicatorTable->item(row, 0);
+            if (!vehicleNameItem) {
+                continue;
+            }
+            
+            QString vehicleName = vehicleNameItem->text().trimmed();
+            if (vehicleName.isEmpty()) {
+                continue;
+            }
+            
+            // 如果该车型在数据库中不存在，跳过（这种情况不应该发生，但为了安全起见）
+            if (!vehicleActualData.contains(vehicleName)) {
+                continue;
+            }
+            
+            // 获取该车型的实际行数据
+            auto actualData = vehicleActualData[vehicleName];
+            QJsonObject timeData = actualData.second;
+            
+            // 从表格中读取实际行的最新数据（在历史模式下，表格可能已经更新了，但显示的是历史数据）
+            // 实际上，在历史模式下，表格不应该被更新，所以我们需要从数据库读取
+            // 但是，如果收到新数据，我们需要更新数据库中的数据
+            // 这里我们直接使用从数据库读取的数据，因为表格在历史模式下不应该被更新
+        }
+        
+        // 保存更新后的数据到数据库
+        for (auto it = vehiclePlanData.begin(); it != vehiclePlanData.end(); ++it) {
+            QString vehicleName = it.key();
+            auto planData = it.value();
+            auto baseInfo = planData.first;
+            QJsonObject timeData = planData.second;
+            
+            int capacity = baseInfo.first;
+            int yield = baseInfo.second.first;
+            int totalTrays = baseInfo.second.second.first;
+            double rhythm = baseInfo.second.second.second;
+            
+            // 将JSON对象转换为字符串
+            QJsonDocument doc(timeData);
+            QString timeDataStr = doc.toJson(QJsonDocument::Compact);
+            
+            // 保存计划行
+            query.prepare("INSERT INTO assembly_indicator_records "
+                         "(vehicle_name, capacity, yield, total_trays, rhythm, row_type, "
+                         "time_data, overtime_hours, shift_type, record_date, create_time, update_time) "
+                         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                         "ON DUPLICATE KEY UPDATE "
+                         "capacity = ?, "
+                         "yield = ?, "
+                         "total_trays = ?, "
+                         "rhythm = ?, "
+                         "time_data = ?, "
+                         "overtime_hours = ?, "
+                         "update_time = ?");
+            
+            query.addBindValue(vehicleName);
+            query.addBindValue(capacity);
+            query.addBindValue(yield);
+            query.addBindValue(totalTrays);
+            query.addBindValue(rhythm);
+            query.addBindValue("plan");
+            query.addBindValue(timeDataStr);
+            query.addBindValue(overtimeHours);
+            query.addBindValue(shiftType);
+            query.addBindValue(currentDate);
+            query.addBindValue(currentDateTime);
+            query.addBindValue(currentDateTime);
+            
+            query.addBindValue(capacity);
+            query.addBindValue(yield);
+            query.addBindValue(totalTrays);
+            query.addBindValue(rhythm);
+            query.addBindValue(timeDataStr);
+            query.addBindValue(overtimeHours);
+            query.addBindValue(currentDateTime);
+            
+            query.exec();
+        }
+        
+        for (auto it = vehicleActualData.begin(); it != vehicleActualData.end(); ++it) {
+            QString vehicleName = it.key();
+            auto actualData = it.value();
+            auto baseInfo = actualData.first;
+            QJsonObject timeData = actualData.second;
+            
+            int capacity = baseInfo.first;
+            int yield = baseInfo.second.first;
+            int totalTrays = baseInfo.second.second.first;
+            double rhythm = baseInfo.second.second.second;
+            
+            // 将JSON对象转换为字符串
+            QJsonDocument doc(timeData);
+            QString timeDataStr = doc.toJson(QJsonDocument::Compact);
+            
+            // 保存实际行
+            query.prepare("INSERT INTO assembly_indicator_records "
+                         "(vehicle_name, capacity, yield, total_trays, rhythm, row_type, "
+                         "time_data, overtime_hours, shift_type, record_date, create_time, update_time) "
+                         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                         "ON DUPLICATE KEY UPDATE "
+                         "capacity = ?, "
+                         "yield = ?, "
+                         "total_trays = ?, "
+                         "rhythm = ?, "
+                         "time_data = ?, "
+                         "overtime_hours = ?, "
+                         "update_time = ?");
+            
+            query.addBindValue(vehicleName);
+            query.addBindValue(capacity);
+            query.addBindValue(yield);
+            query.addBindValue(totalTrays);
+            query.addBindValue(rhythm);
+            query.addBindValue("actual");
+            query.addBindValue(timeDataStr);
+            query.addBindValue(overtimeHours);
+            query.addBindValue(shiftType);
+            query.addBindValue(currentDate);
+            query.addBindValue(currentDateTime);
+            query.addBindValue(currentDateTime);
+            
+            query.addBindValue(capacity);
+            query.addBindValue(yield);
+            query.addBindValue(totalTrays);
+            query.addBindValue(rhythm);
+            query.addBindValue(timeDataStr);
+            query.addBindValue(overtimeHours);
+            query.addBindValue(currentDateTime);
+            
+            query.exec();
+        }
+        
+        qDebug() << QString("保存当前班次表完成（历史模式），共处理 %1 个车型").arg(vehiclePlanData.size());
+        return;
+    }
+
+    // 当前表格模式：从表格读取数据并保存
+    // 遍历所有行（每2行代表一个车型）
+    for (int row = 0; row < assemblyIndicatorTable->rowCount(); row += 2) {
+        int planRow = row;
+        int actualRow = row + 1;
+
+        // 获取基础信息
+        QTableWidgetItem* vehicleNameItem = assemblyIndicatorTable->item(planRow, 0);
+        QTableWidgetItem* capacityItem = assemblyIndicatorTable->item(planRow, 1);
+        QTableWidgetItem* yieldItem = assemblyIndicatorTable->item(planRow, 2);
+        QTableWidgetItem* totalTraysItem = assemblyIndicatorTable->item(planRow, 3);
+        QTableWidgetItem* rhythmItem = assemblyIndicatorTable->item(planRow, 4);
+
+        if (!vehicleNameItem) {
+            continue;
+        }
+
+        QString vehicleName = vehicleNameItem->text().trimmed();
+        if (vehicleName.isEmpty()) {
+            continue;
+        }
+
+        // 解析基础数据
+        int capacity = 0;
+        int yield = 0;
+        int totalTrays = 0;
+        double rhythm = 0.0;
+
+        if (capacityItem) {
+            capacity = capacityItem->text().trimmed().toInt();
+        }
+        if (yieldItem) {
+            yield = yieldItem->text().trimmed().toInt();
+        }
+        if (totalTraysItem) {
+            totalTrays = totalTraysItem->text().trimmed().toInt();
+        }
+        if (rhythmItem) {
+            rhythm = rhythmItem->text().trimmed().toDouble();
+        }
+
+        // 收集所有时间列的计划值和实际值到JSON对象
+        QJsonObject planTimeData;
+        QJsonObject actualTimeData;
+
+        // 遍历所有时间列
+        for (int col = 6; col < totalCols; ++col) {
+            // 跳过休息列（列22）
+            if (col == 22) {
+                continue;
+            }
+
+            // 获取二级表头值
+            QString secondLevelValueStr = header->getSecondLevelHeader(col);
+            if (secondLevelValueStr.isEmpty()) {
+                secondLevelValueStr = QString::number(col);
+            }
+
+            int secondLevelValue = secondLevelValueStr.toInt();
+
+            // 获取计划值和实际值
+            double planValue = 0.0;
+            double actualValue = 0.0;
+
+            QTableWidgetItem* planItem = assemblyIndicatorTable->item(planRow, col);
+            QTableWidgetItem* actualItem = assemblyIndicatorTable->item(actualRow, col);
+
+            if (planItem) {
+                QString planStr = planItem->text().trimmed();
+                if (!planStr.isEmpty()) {
+                    planValue = planStr.toDouble();
+                }
+            }
+            if (actualItem) {
+                QString actualStr = actualItem->text().trimmed();
+                if (!actualStr.isEmpty()) {
+                    actualValue = actualStr.toDouble();
+                }
+            }
+
+            // 构建时间列数据对象
+            QJsonObject colData;
+            colData["column_index"] = col;
+            colData["second_level_value"] = secondLevelValue;
+            colData["value"] = planValue;
+            planTimeData[QString::number(col)] = colData;
+
+            QJsonObject actualColData;
+            actualColData["column_index"] = col;
+            actualColData["second_level_value"] = secondLevelValue;
+            actualColData["value"] = actualValue;
+            actualTimeData[QString::number(col)] = actualColData;
+        }
+
+        // 将JSON对象转换为字符串
+        QJsonDocument planDoc(planTimeData);
+        QString planTimeDataStr = planDoc.toJson(QJsonDocument::Compact);
+        
+        QJsonDocument actualDoc(actualTimeData);
+        QString actualTimeDataStr = actualDoc.toJson(QJsonDocument::Compact);
+
+        // 保存计划行到当前班次表
+        query.prepare("INSERT INTO assembly_indicator_records "
+                     "(vehicle_name, capacity, yield, total_trays, rhythm, row_type, "
+                     "time_data, overtime_hours, shift_type, record_date, create_time, update_time) "
+                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                     "ON DUPLICATE KEY UPDATE "
+                     "capacity = ?, "
+                     "yield = ?, "
+                     "total_trays = ?, "
+                     "rhythm = ?, "
+                     "time_data = ?, "
+                     "overtime_hours = ?, "
+                     "update_time = ?");
+
+        query.addBindValue(vehicleName);
+        query.addBindValue(capacity);
+        query.addBindValue(yield);
+        query.addBindValue(totalTrays);
+        query.addBindValue(rhythm);
+        query.addBindValue("plan");
+        query.addBindValue(planTimeDataStr);
+        query.addBindValue(overtimeHours);
+        query.addBindValue(shiftType);
+        query.addBindValue(currentDate);
+        query.addBindValue(currentDateTime);
+        query.addBindValue(currentDateTime);
+        
+        query.addBindValue(capacity);
+        query.addBindValue(yield);
+        query.addBindValue(totalTrays);
+        query.addBindValue(rhythm);
+        query.addBindValue(planTimeDataStr);
+        query.addBindValue(overtimeHours);
+        query.addBindValue(currentDateTime);
+
+        if (!query.exec()) {
+            qWarning() << QString("保存计划行到当前班次表失败（车型：%1）: %2").arg(vehicleName).arg(query.lastError().text());
+        } else {
+            qDebug() << QString("保存计划行到当前班次表成功（车型：%1）").arg(vehicleName);
+        }
+
+        // 保存实际行到当前班次表
+        query.prepare("INSERT INTO assembly_indicator_records "
+                     "(vehicle_name, capacity, yield, total_trays, rhythm, row_type, "
+                     "time_data, overtime_hours, shift_type, record_date, create_time, update_time) "
+                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                     "ON DUPLICATE KEY UPDATE "
+                     "capacity = ?, "
+                     "yield = ?, "
+                     "total_trays = ?, "
+                     "rhythm = ?, "
+                     "time_data = ?, "
+                     "overtime_hours = ?, "
+                     "update_time = ?");
+
+        query.addBindValue(vehicleName);
+        query.addBindValue(capacity);
+        query.addBindValue(yield);
+        query.addBindValue(totalTrays);
+        query.addBindValue(rhythm);
+        query.addBindValue("actual");
+        query.addBindValue(actualTimeDataStr);
+        query.addBindValue(overtimeHours);
+        query.addBindValue(shiftType);
+        query.addBindValue(currentDate);
+        query.addBindValue(currentDateTime);
+        query.addBindValue(currentDateTime);
+        
+        query.addBindValue(capacity);
+        query.addBindValue(yield);
+        query.addBindValue(totalTrays);
+        query.addBindValue(rhythm);
+        query.addBindValue(actualTimeDataStr);
+        query.addBindValue(overtimeHours);
+        query.addBindValue(currentDateTime);
+
+        if (!query.exec()) {
+            qWarning() << QString("保存实际行到当前班次表失败（车型：%1）: %2").arg(vehicleName).arg(query.lastError().text());
+        } else {
+            qDebug() << QString("保存实际行到当前班次表成功（车型：%1）").arg(vehicleName);
+        }
+    }
+    
+    qDebug() << QString("保存当前班次表完成，共处理 %1 个车型").arg(assemblyIndicatorTable->rowCount() / 2);
+}
+
+/**
+ * @brief 保存历史数据到历史表（每次PLC数据更新时调用）
+ */
+void tcpClient::saveAssemblyIndicatorHistory()
+{
+    if (!assemblyIndicatorTable) {
+        return;
+    }
+
+    // 检查数据库是否已打开
+    QSqlDatabase db = QSqlDatabase::database();
+    if (!db.isOpen()) {
+        return;
+    }
+
+    // 获取当前日期和班次
+    QDate currentDate = QDate::currentDate();
+    QString shiftType = getCurrentShift();
+    QDateTime snapshotTime = QDateTime::currentDateTime(); // 快照时间
+
+    // 获取表头以获取二级表头值
+    QHeaderView* headerView = assemblyIndicatorTable->horizontalHeader();
+    TwoLevelHeaderView* header = static_cast<TwoLevelHeaderView*>(headerView);
+    if (!header) {
+        return;
+    }
+
+    // 获取加班时间（如果没有设置则为0）
+    double overtimeHours = m_overtimeHours;
+    if (overtimeHours < 0) {
+        overtimeHours = 0.0;
+    }
+
+    QSqlQuery query(db);
+    
+    // 如果在历史表格模式下，从当前班次表读取数据来保存，而不是从表格读取
+    if (m_isHistoryTableMode) {
+        // 从当前班次表读取数据
+        query.prepare("SELECT vehicle_name, capacity, yield, total_trays, rhythm, "
+                     "row_type, time_data, overtime_hours "
+                     "FROM assembly_indicator_records "
+                     "WHERE record_date = ? AND shift_type = ? "
+                     "ORDER BY vehicle_name, row_type");
+        
+        query.addBindValue(currentDate);
+        query.addBindValue(shiftType);
+        
+        if (!query.exec()) {
+            qWarning() << "从当前班次表读取数据失败:" << query.lastError().text();
+            return;
+        }
+        
+        // 使用Map来组织数据
+        QMap<QString, QPair<QPair<int, QPair<int, QPair<int, double>>>, QJsonObject>> vehiclePlanData;
+        QMap<QString, QPair<QPair<int, QPair<int, QPair<int, double>>>, QJsonObject>> vehicleActualData;
+        
+        while (query.next()) {
+            QString vehicleName = query.value(0).toString();
+            int capacity = query.value(1).toInt();
+            int yield = query.value(2).toInt();
+            int totalTrays = query.value(3).toInt();
+            double rhythm = query.value(4).toDouble();
+            QString rowType = query.value(5).toString();
+            QString timeDataStr = query.value(6).toString();
+            double recordOvertimeHours = query.value(7).toDouble();
+            
+            // 解析JSON数据
+            QJsonParseError parseError;
+            QJsonDocument doc = QJsonDocument::fromJson(timeDataStr.toUtf8(), &parseError);
+            if (parseError.error != QJsonParseError::NoError) {
+                qWarning() << "解析时间数据JSON失败:" << parseError.errorString();
+                continue;
+            }
+            
+            QJsonObject timeData = doc.object();
+            QPair<int, QPair<int, QPair<int, double>>> baseInfo = qMakePair(capacity, qMakePair(yield, qMakePair(totalTrays, rhythm)));
+            
+            if (rowType == "plan") {
+                vehiclePlanData[vehicleName] = qMakePair(baseInfo, timeData);
+            } else if (rowType == "actual") {
+                vehicleActualData[vehicleName] = qMakePair(baseInfo, timeData);
+            }
+            
+            // 使用记录中的加班时间
+            if (recordOvertimeHours > overtimeHours) {
+                overtimeHours = recordOvertimeHours;
+            }
+        }
+        
+        // 保存计划行到历史表
+        for (auto it = vehiclePlanData.begin(); it != vehiclePlanData.end(); ++it) {
+            QString vehicleName = it.key();
+            auto planData = it.value();
+            auto baseInfo = planData.first;
+            QJsonObject timeData = planData.second;
+            
+            int capacity = baseInfo.first;
+            int yield = baseInfo.second.first;
+            int totalTrays = baseInfo.second.second.first;
+            double rhythm = baseInfo.second.second.second;
+            
+            QJsonDocument doc(timeData);
+            QString timeDataStr = doc.toJson(QJsonDocument::Compact);
+            
+            // 先删除旧记录（如果存在），然后插入新记录，确保不会产生重复
+            query.prepare("DELETE FROM assembly_indicator_history "
+                         "WHERE vehicle_name = ? AND record_date = ? AND shift_type = ? AND row_type = ?");
+            query.addBindValue(vehicleName);
+            query.addBindValue(currentDate);
+            query.addBindValue(shiftType);
+            query.addBindValue("plan");
+            query.exec(); // 执行删除，忽略错误（如果记录不存在）
+            
+            // 插入新记录
+            query.prepare("INSERT INTO assembly_indicator_history "
+                         "(vehicle_name, capacity, yield, total_trays, rhythm, row_type, "
+                         "time_data, overtime_hours, shift_type, record_date, snapshot_time, create_time, update_time) "
+                         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+            
+            query.addBindValue(vehicleName);
+            query.addBindValue(capacity);
+            query.addBindValue(yield);
+            query.addBindValue(totalTrays);
+            query.addBindValue(rhythm);
+            query.addBindValue("plan");
+            query.addBindValue(timeDataStr);
+            query.addBindValue(overtimeHours);
+            query.addBindValue(shiftType);
+            query.addBindValue(currentDate);
+            query.addBindValue(snapshotTime);
+            query.addBindValue(snapshotTime);
+            query.addBindValue(snapshotTime);
+            
+            if (!query.exec()) {
+                qWarning() << QString("保存计划行到历史表失败（车型：%1）: %2").arg(vehicleName).arg(query.lastError().text());
+            } else {
+                qDebug() << QString("保存计划行到历史表成功（车型：%1）").arg(vehicleName);
+            }
+        }
+        
+        // 保存实际行到历史表
+        for (auto it = vehicleActualData.begin(); it != vehicleActualData.end(); ++it) {
+            QString vehicleName = it.key();
+            auto actualData = it.value();
+            auto baseInfo = actualData.first;
+            QJsonObject timeData = actualData.second;
+            
+            int capacity = baseInfo.first;
+            int yield = baseInfo.second.first;
+            int totalTrays = baseInfo.second.second.first;
+            double rhythm = baseInfo.second.second.second;
+            
+            QJsonDocument doc(timeData);
+            QString timeDataStr = doc.toJson(QJsonDocument::Compact);
+            
+            // 先删除旧记录（如果存在），然后插入新记录，确保不会产生重复
+            query.prepare("DELETE FROM assembly_indicator_history "
+                         "WHERE vehicle_name = ? AND record_date = ? AND shift_type = ? AND row_type = ?");
+            query.addBindValue(vehicleName);
+            query.addBindValue(currentDate);
+            query.addBindValue(shiftType);
+            query.addBindValue("actual");
+            query.exec(); // 执行删除，忽略错误（如果记录不存在）
+            
+            // 插入新记录
+            query.prepare("INSERT INTO assembly_indicator_history "
+                         "(vehicle_name, capacity, yield, total_trays, rhythm, row_type, "
+                         "time_data, overtime_hours, shift_type, record_date, snapshot_time, create_time, update_time) "
+                         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+            
+            query.addBindValue(vehicleName);
+            query.addBindValue(capacity);
+            query.addBindValue(yield);
+            query.addBindValue(totalTrays);
+            query.addBindValue(rhythm);
+            query.addBindValue("actual");
+            query.addBindValue(timeDataStr);
+            query.addBindValue(overtimeHours);
+            query.addBindValue(shiftType);
+            query.addBindValue(currentDate);
+            query.addBindValue(snapshotTime);
+            query.addBindValue(snapshotTime);
+            query.addBindValue(snapshotTime);
+            
+            if (!query.exec()) {
+                qWarning() << QString("保存实际行到历史表失败（车型：%1）: %2").arg(vehicleName).arg(query.lastError().text());
+            } else {
+                qDebug() << QString("保存实际行到历史表成功（车型：%1）").arg(vehicleName);
+            }
+        }
+        
+        qDebug() << QString("保存历史表完成（历史模式），共处理 %1 个车型的计划行，%2 个车型的实际行")
+                    .arg(vehiclePlanData.size()).arg(vehicleActualData.size());
+        return; // 历史表格模式下，从数据库读取数据保存，直接返回
+    }
+
+    // 当前表格模式下，从表格读取数据保存
+    int totalCols = assemblyIndicatorTable->columnCount();
 
     // 遍历所有行（每2行代表一个车型）
     for (int row = 0; row < assemblyIndicatorTable->rowCount(); row += 2) {
@@ -9351,7 +10222,7 @@ void tcpClient::saveAssemblyIndicatorToDb(bool showMessageBox)
         QJsonObject planTimeData;
         QJsonObject actualTimeData;
 
-        // 遍历所有时间列（包括加班列，最多支持3小时加班=12列）
+        // 遍历所有时间列
         for (int col = 6; col < totalCols; ++col) {
             // 跳过休息列（列22）
             if (col == 22) {
@@ -9361,7 +10232,6 @@ void tcpClient::saveAssemblyIndicatorToDb(bool showMessageBox)
             // 获取二级表头值
             QString secondLevelValueStr = header->getSecondLevelHeader(col);
             if (secondLevelValueStr.isEmpty()) {
-                // 如果没有二级表头值，使用列索引作为标识
                 secondLevelValueStr = QString::number(col);
             }
 
@@ -9387,7 +10257,7 @@ void tcpClient::saveAssemblyIndicatorToDb(bool showMessageBox)
                 }
             }
 
-            // 构建时间列数据对象：包含列索引、二级表头值和数值
+            // 构建时间列数据对象
             QJsonObject colData;
             colData["column_index"] = col;
             colData["second_level_value"] = secondLevelValue;
@@ -9408,21 +10278,22 @@ void tcpClient::saveAssemblyIndicatorToDb(bool showMessageBox)
         QJsonDocument actualDoc(actualTimeData);
         QString actualTimeDataStr = actualDoc.toJson(QJsonDocument::Compact);
 
-        // 保存计划行
-        query.prepare("INSERT INTO assembly_indicator_records "
+        // 保存计划行到历史表（如果已存在则更新，不存在则插入）
+        // 先删除旧记录（如果存在），然后插入新记录，确保不会产生重复
+        query.prepare("DELETE FROM assembly_indicator_history "
+                     "WHERE vehicle_name = ? AND record_date = ? AND shift_type = ? AND row_type = ?");
+        query.addBindValue(vehicleName);
+        query.addBindValue(currentDate);
+        query.addBindValue(shiftType);
+        query.addBindValue("plan");
+        query.exec(); // 执行删除，忽略错误（如果记录不存在）
+        
+        // 插入新记录
+        query.prepare("INSERT INTO assembly_indicator_history "
                      "(vehicle_name, capacity, yield, total_trays, rhythm, row_type, "
-                     "time_data, overtime_hours, shift_type, record_date, create_time, update_time) "
-                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
-                     "ON DUPLICATE KEY UPDATE "
-                     "capacity = ?, "
-                     "yield = ?, "
-                     "total_trays = ?, "
-                     "rhythm = ?, "
-                     "time_data = ?, "
-                     "overtime_hours = ?, "
-                     "update_time = ?");
+                     "time_data, overtime_hours, shift_type, record_date, snapshot_time, create_time, update_time) "
+                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
 
-        // INSERT部分的参数 - 计划行
         query.addBindValue(vehicleName);
         query.addBindValue(capacity);
         query.addBindValue(yield);
@@ -9433,55 +10304,32 @@ void tcpClient::saveAssemblyIndicatorToDb(bool showMessageBox)
         query.addBindValue(overtimeHours);
         query.addBindValue(shiftType);
         query.addBindValue(currentDate);
-        query.addBindValue(currentDateTime);
-        query.addBindValue(currentDateTime);
-        
-        // UPDATE部分的参数
-        query.addBindValue(capacity);
-        query.addBindValue(yield);
-        query.addBindValue(totalTrays);
-        query.addBindValue(rhythm);
-        query.addBindValue(planTimeDataStr);
-        query.addBindValue(overtimeHours);
-        query.addBindValue(currentDateTime);
+        query.addBindValue(snapshotTime);
+        query.addBindValue(snapshotTime);
+        query.addBindValue(snapshotTime);
 
         if (!query.exec()) {
-            errorCount++;
-            QString errorMsg = QString("保存总装指示表计划行失败（车型：%1）: %2")
-                               .arg(vehicleName).arg(query.lastError().text());
-            appendToLog(errorMsg, true);
-            qWarning() << errorMsg;
-            lastError = query.lastError().text();
-            
-            // 如果错误太多，提前回滚
-            if (errorCount > 10) {
-                if (useTransaction) {
-                    appendToLog("错误过多，停止保存并回滚事务", true);
-                    db.rollback();
-                }
-                QMessageBox::warning(this, "保存失败", 
-                                    QString("保存过程中发生过多错误！\n已回滚所有更改。\n\n最后错误：%1").arg(lastError));
-                return;
-            }
+            qWarning() << QString("保存计划行到历史表失败（车型：%1）: %2").arg(vehicleName).arg(query.lastError().text());
         } else {
-            savedCount++;
+            qDebug() << QString("保存计划行到历史表成功（车型：%1）").arg(vehicleName);
         }
 
-        // 保存实际行
-        query.prepare("INSERT INTO assembly_indicator_records "
+        // 保存实际行到历史表（如果已存在则更新，不存在则插入）
+        // 先删除旧记录（如果存在），然后插入新记录，确保不会产生重复
+        query.prepare("DELETE FROM assembly_indicator_history "
+                     "WHERE vehicle_name = ? AND record_date = ? AND shift_type = ? AND row_type = ?");
+        query.addBindValue(vehicleName);
+        query.addBindValue(currentDate);
+        query.addBindValue(shiftType);
+        query.addBindValue("actual");
+        query.exec(); // 执行删除，忽略错误（如果记录不存在）
+        
+        // 插入新记录
+        query.prepare("INSERT INTO assembly_indicator_history "
                      "(vehicle_name, capacity, yield, total_trays, rhythm, row_type, "
-                     "time_data, overtime_hours, shift_type, record_date, create_time, update_time) "
-                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
-                     "ON DUPLICATE KEY UPDATE "
-                     "capacity = ?, "
-                     "yield = ?, "
-                     "total_trays = ?, "
-                     "rhythm = ?, "
-                     "time_data = ?, "
-                     "overtime_hours = ?, "
-                     "update_time = ?");
+                     "time_data, overtime_hours, shift_type, record_date, snapshot_time, create_time, update_time) "
+                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
 
-        // INSERT部分的参数 - 实际行
         query.addBindValue(vehicleName);
         query.addBindValue(capacity);
         query.addBindValue(yield);
@@ -9492,77 +10340,18 @@ void tcpClient::saveAssemblyIndicatorToDb(bool showMessageBox)
         query.addBindValue(overtimeHours);
         query.addBindValue(shiftType);
         query.addBindValue(currentDate);
-        query.addBindValue(currentDateTime);
-        query.addBindValue(currentDateTime);
-        
-        // UPDATE部分的参数
-        query.addBindValue(capacity);
-        query.addBindValue(yield);
-        query.addBindValue(totalTrays);
-        query.addBindValue(rhythm);
-        query.addBindValue(actualTimeDataStr);
-        query.addBindValue(overtimeHours);
-        query.addBindValue(currentDateTime);
+        query.addBindValue(snapshotTime);
+        query.addBindValue(snapshotTime);
+        query.addBindValue(snapshotTime);
 
         if (!query.exec()) {
-            errorCount++;
-            QString errorMsg = QString("保存总装指示表实际行失败（车型：%1）: %2")
-                               .arg(vehicleName).arg(query.lastError().text());
-            appendToLog(errorMsg, true);
-            qWarning() << errorMsg;
-            lastError = query.lastError().text();
-            
-            // 如果错误太多，提前回滚
-            if (errorCount > 10) {
-                if (useTransaction) {
-                    appendToLog("错误过多，停止保存并回滚事务", true);
-                    db.rollback();
-                }
-                QMessageBox::warning(this, "保存失败", 
-                                    QString("保存过程中发生过多错误！\n已回滚所有更改。\n\n最后错误：%1").arg(lastError));
-                return;
-            }
+            qWarning() << QString("保存实际行到历史表失败（车型：%1）: %2").arg(vehicleName).arg(query.lastError().text());
         } else {
-            savedCount++;
+            qDebug() << QString("保存实际行到历史表成功（车型：%1）").arg(vehicleName);
         }
     }
-
-    // 如果有错误，回滚事务（如果使用了事务）
-    if (errorCount > 0) {
-        if (useTransaction) {
-            appendToLog(QString("保存过程中发生 %1 个错误，回滚事务").arg(errorCount), true);
-            db.rollback();
-        }
-        QMessageBox::warning(this, "保存失败", 
-                            QString("保存总装指示表数据时发生错误！\n\n成功：%1条\n失败：%2条\n\n错误信息：%3")
-                            .arg(savedCount).arg(errorCount).arg(lastError));
-        return;
-    }
-
-    // 提交事务（如果使用了事务）
-    if (useTransaction) {
-        if (!db.commit()) {
-            QString commitError = db.lastError().text();
-            if (commitError.isEmpty()) {
-                commitError = "未知错误";
-            }
-            appendToLog(QString("保存总装指示表事务提交失败: %1").arg(commitError), true);
-            db.rollback();
-            QMessageBox::warning(this, "保存失败", 
-                                QString("保存总装指示表数据时事务提交失败！\n\n错误：%1").arg(commitError));
-            return;
-        } else {
-            qDebug() << "事务已提交";
-        }
-    }
-
-    appendToLog(QString("总装指示表数据已保存（%1条记录，日期：%2，班次：%3，加班时间：%4小时）")
-                .arg(savedCount).arg(currentDate.toString("yyyy-MM-dd")).arg(shiftType).arg(overtimeHours), false);
     
-    // 只有在需要显示弹窗时才显示
-    if (showMessageBox) {
-        QMessageBox::information(this, "保存成功", QString("总装指示表数据已成功保存！\n共保存 %1 条记录").arg(savedCount));
-    }
+    qDebug() << QString("保存历史表完成（当前模式），共处理 %1 个车型").arg(assemblyIndicatorTable->rowCount() / 2);
 }
 
 /**
@@ -9582,7 +10371,25 @@ void tcpClient::loadAssemblyIndicatorFromDb(const QDate& date, const QString& sh
         return;
     }
 
-    QSqlQuery query;
+    QSqlQuery query(db);
+    
+    // 第一步：从配置表加载固定参量（产量、节拍）
+    QMap<QString, QPair<int, double>> configData; // vehicle_name -> (yield, rhythm)
+    query.prepare("SELECT vehicle_name, capacity, yield, rhythm FROM assembly_indicator_config");
+    if (query.exec()) {
+        while (query.next()) {
+            QString vehicleName = query.value(0).toString();
+            int capacity = query.value(1).toInt();
+            int yield = query.value(2).toInt();
+            double rhythm = query.value(3).toDouble();
+            configData[vehicleName] = qMakePair(yield, rhythm);
+            qDebug() << QString("从配置表加载：车型=%1, 产量=%2, 节拍=%3").arg(vehicleName).arg(yield).arg(rhythm);
+        }
+    } else {
+        qWarning() << "加载配置表失败:" << query.lastError().text();
+    }
+
+    // 第二步：从当前班次表加载时间数据
     query.prepare("SELECT vehicle_name, capacity, yield, total_trays, rhythm, "
                  "row_type, time_data, overtime_hours "
                  "FROM assembly_indicator_records "
@@ -9595,6 +10402,631 @@ void tcpClient::loadAssemblyIndicatorFromDb(const QDate& date, const QString& sh
     if (!query.exec()) {
         appendToLog(QString("加载总装指示表失败: %1").arg(query.lastError().text()), true);
         qWarning() << "加载总装指示表失败:" << query.lastError().text();
+        return;
+    }
+
+    // 使用Map来组织数据：vehicle_name -> (row_type -> (baseInfo, timeData))
+    QMap<QString, QPair<QPair<int, QPair<int, QPair<int, double>>>, QJsonObject>> vehiclePlanData; // plan行数据
+    QMap<QString, QPair<QPair<int, QPair<int, QPair<int, double>>>, QJsonObject>> vehicleActualData; // actual行数据
+    double loadedOvertimeHours = 0.0;
+
+    while (query.next()) {
+        QString vehicleName = query.value(0).toString();
+        int capacity = query.value(1).toInt();
+        int yield = query.value(2).toInt();
+        int totalTrays = query.value(3).toInt();
+        double rhythm = query.value(4).toDouble();
+        QString rowType = query.value(5).toString();
+        QString timeDataStr = query.value(6).toString();
+        double overtimeHours = query.value(7).toDouble();
+
+        // 解析JSON数据
+        QJsonParseError parseError;
+        QJsonDocument doc = QJsonDocument::fromJson(timeDataStr.toUtf8(), &parseError);
+        if (parseError.error != QJsonParseError::NoError) {
+            qWarning() << "解析时间数据JSON失败:" << parseError.errorString() << "车型:" << vehicleName << "行类型:" << rowType;
+            continue;
+        }
+
+        QJsonObject timeData = doc.object();
+
+        // 如果配置表中有该车型的参量，使用配置表的参量；否则使用当前班次表的参量（兼容旧数据）
+        if (configData.contains(vehicleName)) {
+            yield = configData[vehicleName].first;
+            rhythm = configData[vehicleName].second;
+        }
+
+        // 保存基础信息和时间数据
+        QPair<int, QPair<int, QPair<int, double>>> baseInfo = qMakePair(capacity, qMakePair(yield, qMakePair(totalTrays, rhythm)));
+        
+        if (rowType == "plan") {
+            vehiclePlanData[vehicleName] = qMakePair(baseInfo, timeData);
+        } else if (rowType == "actual") {
+            vehicleActualData[vehicleName] = qMakePair(baseInfo, timeData);
+        }
+
+        // 保存加班时间（取最大值，因为所有记录应该有相同的加班时间）
+        if (overtimeHours > loadedOvertimeHours) {
+            loadedOvertimeHours = overtimeHours;
+        }
+    }
+
+    // 如果当前班次表没有数据，但配置表有数据，则只加载配置表的参量
+    if (vehiclePlanData.isEmpty() && vehicleActualData.isEmpty() && !configData.isEmpty()) {
+        qDebug() << QString("当前班次表无数据，仅加载配置表的参量设置");
+        // 这里只加载参量，时间数据为空，后续会根据参量计算计划行
+    }
+
+    // 获取表头
+    QHeaderView* headerView = assemblyIndicatorTable->horizontalHeader();
+    TwoLevelHeaderView* header = static_cast<TwoLevelHeaderView*>(headerView);
+
+    // 先恢复加班时间设置（如果需要）
+    if (loadedOvertimeHours != m_overtimeHours) {
+        // 如果之前有加班时间列，先移除
+        if (m_overtimeHours > 0) {
+            // 计算需要移除的列数（每15分钟一列，所以每0.5小时=2列，1小时=4列）
+            int colsToRemove = static_cast<int>(m_overtimeHours * 4);
+            int currentColCount = assemblyIndicatorTable->columnCount();
+            assemblyIndicatorTable->setColumnCount(currentColCount - colsToRemove);
+        }
+        
+        // 添加新的加班时间列（如果有）
+        if (loadedOvertimeHours > 0) {
+            // 记录添加列之前的列数，用于确定新添加列的起始位置
+            int colCountBeforeAdd = assemblyIndicatorTable->columnCount();
+            addOvertimeColumns(loadedOvertimeHours);
+            
+            // 添加加班列后，更新所有计划行在新列中的值
+            updatePlanRowsForOvertimeColumns(colCountBeforeAdd);
+        }
+        
+        m_overtimeHours = loadedOvertimeHours;
+        if (pushButtonOvertimeTime) {
+            if (loadedOvertimeHours == 0.0) {
+                pushButtonOvertimeTime->setText("选择加班时间");
+            } else {
+                pushButtonOvertimeTime->setText(QString("加班时间: %1小时").arg(loadedOvertimeHours));
+            }
+        }
+    }
+
+    // 暂时阻止信号，避免在加载数据时触发itemChanged信号
+    bool wasBlocked = assemblyIndicatorTable->blockSignals(true);
+
+    try {
+        // 先清空所有计划行和实际行的数据（时间列，列6开始）
+        for (int row = 0; row < assemblyIndicatorTable->rowCount(); row += 2) {
+            int planRow = row;
+            int actualRow = row + 1;
+            // 清空计划行的所有时间列（列6开始，跳过休息列22）
+            for (int col = 6; col < assemblyIndicatorTable->columnCount(); ++col) {
+                if (col == 22) {
+                    continue; // 跳过休息列
+                }
+                QTableWidgetItem* planItem = assemblyIndicatorTable->item(planRow, col);
+                if (planItem) {
+                    planItem->setText("");
+                }
+            }
+            // 清空实际行的所有时间列（列6开始，跳过休息列22）
+            for (int col = 6; col < assemblyIndicatorTable->columnCount(); ++col) {
+                if (col == 22) {
+                    continue; // 跳过休息列
+                }
+                QTableWidgetItem* actualItem = assemblyIndicatorTable->item(actualRow, col);
+                if (actualItem) {
+                    actualItem->setText("");
+                }
+            }
+        }
+
+        // 遍历所有车型，恢复数据
+        for (int row = 0; row < assemblyIndicatorTable->rowCount(); row += 2) {
+            int planRow = row;
+            int actualRow = row + 1;
+
+            QTableWidgetItem* vehicleNameItem = assemblyIndicatorTable->item(planRow, 0);
+            if (!vehicleNameItem) {
+                continue;
+            }
+
+            QString vehicleName = vehicleNameItem->text().trimmed();
+            
+            // 优先从配置表加载参量（产量、节拍）
+            int yield = 0;
+            double rhythm = 0.0;
+            int capacity = 0;
+            if (configData.contains(vehicleName)) {
+                yield = configData[vehicleName].first;
+                rhythm = configData[vehicleName].second;
+                // 从收容数列获取capacity（收容数从车型绑定表加载，不在这里修改）
+                QTableWidgetItem* capacityItem = assemblyIndicatorTable->item(planRow, 1);
+                if (capacityItem) {
+                    capacity = capacityItem->text().trimmed().toInt();
+                }
+            }
+            
+            // 恢复计划行数据
+            if (vehiclePlanData.contains(vehicleName)) {
+                auto planData = vehiclePlanData[vehicleName];
+                auto baseInfo = planData.first;
+                QJsonObject timeData = planData.second;
+
+                // 如果配置表有参量，使用配置表的；否则使用当前班次表的（兼容旧数据）
+                if (!configData.contains(vehicleName)) {
+                    capacity = baseInfo.first;
+                    yield = baseInfo.second.first;
+                    rhythm = baseInfo.second.second.second;
+                }
+                int totalTrays = baseInfo.second.second.first;
+
+                // 恢复基础信息
+                QTableWidgetItem* capacityItem = assemblyIndicatorTable->item(planRow, 1);
+                if (capacityItem) {
+                    capacityItem->setText(QString::number(capacity));
+                }
+
+                QTableWidgetItem* yieldItem = assemblyIndicatorTable->item(planRow, 2);
+                if (yieldItem) {
+                    yieldItem->setText(QString::number(yield));
+                }
+
+                QTableWidgetItem* totalTraysItem = assemblyIndicatorTable->item(planRow, 3);
+                if (totalTraysItem) {
+                    totalTraysItem->setText(QString::number(totalTrays));
+                }
+
+                QTableWidgetItem* rhythmItem = assemblyIndicatorTable->item(planRow, 4);
+                if (rhythmItem) {
+                    rhythmItem->setText(QString::number(static_cast<int>(rhythm)));
+                }
+
+                // 恢复计划行时间列数据
+                bool hasTimeData = false;
+                for (auto it = timeData.begin(); it != timeData.end(); ++it) {
+                    QString colKey = it.key();
+                    int col = colKey.toInt();
+                    
+                    if (col == 22) {
+                        continue; // 跳过休息列
+                    }
+
+                    QJsonObject colData = it.value().toObject();
+                    double value = colData["value"].toDouble();
+
+                    QTableWidgetItem* planItem = assemblyIndicatorTable->item(planRow, col);
+                    if (planItem) {
+                        if (value > 0) {
+                            planItem->setText(QString::number(value, 'f', 1));
+                            hasTimeData = true;
+                        } else {
+                            planItem->setText("");
+                        }
+                    }
+                }
+                
+                // 如果时间数据为空，但配置表有参量，则根据参量计算计划行数据
+                if (!hasTimeData && configData.contains(vehicleName) && yield > 0 && rhythm > 0.0 && capacity > 0) {
+                    // 获取表头
+                    QHeaderView* headerView = assemblyIndicatorTable->horizontalHeader();
+                    TwoLevelHeaderView* header = static_cast<TwoLevelHeaderView*>(headerView);
+                    if (header) {
+                        // 遍历所有时间列（列6开始，跳过休息列22）
+                        for (int timeCol = 6; timeCol < assemblyIndicatorTable->columnCount(); ++timeCol) {
+                            if (timeCol == 22) {
+                                continue; // 跳过休息列
+                            }
+
+                            // 获取二级表头值
+                            QString secondLevelValueStr = header->getSecondLevelHeader(timeCol);
+                            if (secondLevelValueStr.isEmpty()) {
+                                continue;
+                            }
+
+                            bool secondLevelOk = false;
+                            double secondLevelValue = secondLevelValueStr.toDouble(&secondLevelOk);
+                            if (!secondLevelOk) {
+                                continue;
+                            }
+
+                            // 计算：二级表头值 * 60 / 节拍 / 收容数
+                            double planValue = (secondLevelValue * 60.0) / rhythm / capacity;
+
+                            // 保留一位小数
+                            QString planValueStr = QString::number(planValue, 'f', 1);
+
+                            // 设置计划行的值
+                            QTableWidgetItem* planItem = assemblyIndicatorTable->item(planRow, timeCol);
+                            if (planItem) {
+                                planItem->setText(planValueStr);
+                            } else {
+                                // 如果单元格不存在，创建一个新的
+                                planItem = new QTableWidgetItem(planValueStr);
+                                planItem->setTextAlignment(Qt::AlignCenter | Qt::AlignVCenter);
+                                planItem->setFlags(planItem->flags() & ~Qt::ItemIsEditable); // 设置为不可编辑
+                                assemblyIndicatorTable->setItem(planRow, timeCol, planItem);
+                            }
+                        }
+                    }
+                }
+            } else if (configData.contains(vehicleName)) {
+                // 如果当前班次表没有数据，但配置表有参量，则加载参量
+                QTableWidgetItem* yieldItem = assemblyIndicatorTable->item(planRow, 2);
+                if (yieldItem) {
+                    yieldItem->setText(QString::number(yield));
+                }
+
+                QTableWidgetItem* rhythmItem = assemblyIndicatorTable->item(planRow, 4);
+                if (rhythmItem) {
+                    rhythmItem->setText(QString::number(static_cast<int>(rhythm)));
+                }
+
+                // 如果产量和节拍不为0，则计算并加载生产总托数和计划行数据
+                if (yield > 0 && rhythm > 0.0 && capacity > 0) {
+                    // 计算并设置生产总托数 = 产量 / 收容数
+                    int totalTrays = yield / capacity;
+                    QTableWidgetItem* totalTraysItem = assemblyIndicatorTable->item(planRow, 3);
+                    if (totalTraysItem) {
+                        totalTraysItem->setText(QString::number(totalTrays));
+                    }
+
+                    // 计算并设置计划行的时间列数据
+                    // 获取表头
+                    QHeaderView* headerView = assemblyIndicatorTable->horizontalHeader();
+                    TwoLevelHeaderView* header = static_cast<TwoLevelHeaderView*>(headerView);
+                    if (header) {
+                        // 遍历所有时间列（列6开始，跳过休息列22）
+                        for (int timeCol = 6; timeCol < assemblyIndicatorTable->columnCount(); ++timeCol) {
+                            if (timeCol == 22) {
+                                continue; // 跳过休息列
+                            }
+
+                            // 获取二级表头值
+                            QString secondLevelValueStr = header->getSecondLevelHeader(timeCol);
+                            if (secondLevelValueStr.isEmpty()) {
+                                continue;
+                            }
+
+                            bool secondLevelOk = false;
+                            double secondLevelValue = secondLevelValueStr.toDouble(&secondLevelOk);
+                            if (!secondLevelOk) {
+                                continue;
+                            }
+
+                            // 计算：二级表头值 * 60 / 节拍 / 收容数
+                            double planValue = (secondLevelValue * 60.0) / rhythm / capacity;
+
+                            // 保留一位小数
+                            QString planValueStr = QString::number(planValue, 'f', 1);
+
+                            // 设置计划行的值
+                            QTableWidgetItem* planItem = assemblyIndicatorTable->item(planRow, timeCol);
+                            if (planItem) {
+                                planItem->setText(planValueStr);
+                            } else {
+                                // 如果单元格不存在，创建一个新的
+                                planItem = new QTableWidgetItem(planValueStr);
+                                planItem->setTextAlignment(Qt::AlignCenter | Qt::AlignVCenter);
+                                planItem->setFlags(planItem->flags() & ~Qt::ItemIsEditable); // 设置为不可编辑
+                                assemblyIndicatorTable->setItem(planRow, timeCol, planItem);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 恢复实际行数据
+            if (vehicleActualData.contains(vehicleName)) {
+                auto actualData = vehicleActualData[vehicleName];
+                QJsonObject timeData = actualData.second;
+
+                // 恢复实际行时间列数据
+                for (auto it = timeData.begin(); it != timeData.end(); ++it) {
+                    QString colKey = it.key();
+                    int col = colKey.toInt();
+                    
+                    if (col == 22) {
+                        continue; // 跳过休息列
+                    }
+
+                    QJsonObject colData = it.value().toObject();
+                    double value = colData["value"].toDouble();
+
+                    QTableWidgetItem* actualItem = assemblyIndicatorTable->item(actualRow, col);
+                    if (actualItem) {
+                        if (value > 0) {
+                            // 实际行使用整数格式（数量）
+                            actualItem->setText(QString::number(static_cast<int>(value)));
+                        } else {
+                            actualItem->setText("");
+                        }
+                    }
+                }
+            }
+        }
+    } catch (...) {
+        // 确保即使出现异常也恢复信号
+        assemblyIndicatorTable->blockSignals(wasBlocked);
+        throw;
+    }
+
+    // 恢复信号
+    assemblyIndicatorTable->blockSignals(wasBlocked);
+
+    appendToLog(QString("总装指示表数据已加载（日期：%1，班次：%2，加班时间：%3小时）")
+                .arg(date.toString("yyyy-MM-dd")).arg(shiftType).arg(loadedOvertimeHours), false);
+    qDebug() << QString("总装指示表数据已从数据库加载（日期：%1，班次：%2）").arg(date.toString("yyyy-MM-dd")).arg(shiftType);
+}
+
+/**
+ * @brief 加载数据按钮点击处理
+ */
+void tcpClient::onLoadAssemblyIndicatorClicked()
+{
+    if (!assemblyIndicatorTable) {
+        appendToLog("总装指示表未初始化，无法加载数据", true);
+        return;
+    }
+
+    // 根据当前模式决定加载哪个表的数据
+    if (m_isHistoryTableMode) {
+        // 历史表格模式：需要先选择时间和班次
+        onSelectHistoryDateShiftClicked();
+    } else {
+        // 当前表格模式：加载当前班次数据
+        QDate currentDate = QDate::currentDate();
+        QString currentShift = getCurrentShift();
+        loadAssemblyIndicatorFromDb(currentDate, currentShift);
+    }
+}
+
+/**
+ * @brief 切换表格模式按钮点击处理（当前表格/历史表格）
+ */
+void tcpClient::onSwitchTableModeClicked()
+{
+    // 切换模式
+    m_isHistoryTableMode = !m_isHistoryTableMode;
+    
+    // 更新按钮文本和样式
+    if (pushButtonSwitchTableMode) {
+        if (m_isHistoryTableMode) {
+            pushButtonSwitchTableMode->setText("历史表格");
+            // 设置为选中状态样式
+            pushButtonSwitchTableMode->setStyleSheet(
+                "QPushButton {"
+                "background-color: #4CAF50;"
+                "color: white;"
+                "font-weight: bold;"
+                "border: 2px solid #45a049;"
+                "border-radius: 4px;"
+                "padding: 5px 15px;"
+                "}"
+                "QPushButton:hover {"
+                "background-color: #45a049;"
+                "}"
+            );
+        } else {
+            pushButtonSwitchTableMode->setText("当前表格");
+            // 设置为未选中状态样式
+            pushButtonSwitchTableMode->setStyleSheet(
+                "QPushButton {"
+                "background-color: #f0f0f0;"
+                "color: #333;"
+                "font-weight: normal;"
+                "border: 2px solid #ddd;"
+                "border-radius: 4px;"
+                "padding: 5px 15px;"
+                "}"
+                "QPushButton:hover {"
+                "background-color: #e0e0e0;"
+                "}"
+            );
+        }
+    }
+    
+    // 显示/隐藏时间和班次选择按钮
+    if (pushButtonSelectHistoryDateShift) {
+        pushButtonSelectHistoryDateShift->setVisible(m_isHistoryTableMode);
+        // 如果切换到历史表格模式，重置按钮文本
+        if (m_isHistoryTableMode) {
+            pushButtonSelectHistoryDateShift->setText("选择班次时间");
+            m_selectedHistoryDate = QDate(); // 重置选择的日期
+            m_selectedHistoryShift = ""; // 重置选择的班次
+        }
+    }
+    
+    if (m_isHistoryTableMode) {
+        // 切换到历史表格模式，清空表格数据，不弹窗
+        if (assemblyIndicatorTable) {
+            // 暂时阻止信号
+            bool wasBlocked = assemblyIndicatorTable->blockSignals(true);
+            try {
+                // 清空所有行的数据（时间列，列6开始）
+                for (int row = 0; row < assemblyIndicatorTable->rowCount(); row += 2) {
+                    int planRow = row;
+                    int actualRow = row + 1;
+                    // 清空计划行的所有时间列（列6开始，跳过休息列22）
+                    for (int col = 6; col < assemblyIndicatorTable->columnCount(); ++col) {
+                        if (col == 22) {
+                            continue; // 跳过休息列
+                        }
+                        QTableWidgetItem* planItem = assemblyIndicatorTable->item(planRow, col);
+                        if (planItem) {
+                            planItem->setText("");
+                        }
+                    }
+                    // 清空实际行的所有时间列（列6开始，跳过休息列22）
+                    for (int col = 6; col < assemblyIndicatorTable->columnCount(); ++col) {
+                        if (col == 22) {
+                            continue; // 跳过休息列
+                        }
+                        QTableWidgetItem* actualItem = assemblyIndicatorTable->item(actualRow, col);
+                        if (actualItem) {
+                            actualItem->setText("");
+                        }
+                    }
+                }
+            } catch (...) {
+                assemblyIndicatorTable->blockSignals(wasBlocked);
+                throw;
+            }
+            // 恢复信号
+            assemblyIndicatorTable->blockSignals(wasBlocked);
+        }
+        appendToLog("已切换到历史表格模式，请点击\"选择班次时间\"按钮选择要查看的历史数据", false);
+    } else {
+        // 切换到当前表格模式，先清空表格，然后加载当前班次数据
+        if (assemblyIndicatorTable) {
+            // 暂时阻止信号
+            bool wasBlocked = assemblyIndicatorTable->blockSignals(true);
+            try {
+                // 清空所有行的数据（时间列，列6开始）
+                for (int row = 0; row < assemblyIndicatorTable->rowCount(); row += 2) {
+                    int planRow = row;
+                    int actualRow = row + 1;
+                    // 清空计划行的所有时间列（列6开始，跳过休息列22）
+                    for (int col = 6; col < assemblyIndicatorTable->columnCount(); ++col) {
+                        if (col == 22) {
+                            continue; // 跳过休息列
+                        }
+                        QTableWidgetItem* planItem = assemblyIndicatorTable->item(planRow, col);
+                        if (planItem) {
+                            planItem->setText("");
+                        }
+                    }
+                    // 清空实际行的所有时间列（列6开始，跳过休息列22）
+                    for (int col = 6; col < assemblyIndicatorTable->columnCount(); ++col) {
+                        if (col == 22) {
+                            continue; // 跳过休息列
+                        }
+                        QTableWidgetItem* actualItem = assemblyIndicatorTable->item(actualRow, col);
+                        if (actualItem) {
+                            actualItem->setText("");
+                        }
+                    }
+                }
+            } catch (...) {
+                assemblyIndicatorTable->blockSignals(wasBlocked);
+                throw;
+            }
+            // 恢复信号
+            assemblyIndicatorTable->blockSignals(wasBlocked);
+        }
+        // 加载当前班次数据
+        QDate currentDate = QDate::currentDate();
+        QString currentShift = getCurrentShift();
+        loadAssemblyIndicatorFromDb(currentDate, currentShift);
+        appendToLog("已切换到当前表格模式", false);
+    }
+}
+
+/**
+ * @brief 选择历史数据时间和班次按钮点击处理
+ */
+void tcpClient::onSelectHistoryDateShiftClicked()
+{
+    if (!m_isHistoryTableMode) {
+        return; // 只有在历史表格模式下才有效
+    }
+    
+    // 创建日期和班次选择对话框
+    QDialog dialog(this);
+    dialog.setWindowTitle("选择时间和班次");
+    QVBoxLayout* layout = new QVBoxLayout(&dialog);
+    
+    // 日期选择
+    QLabel* dateLabel = new QLabel("选择日期：", &dialog);
+    QDateEdit* dateEdit = new QDateEdit(&dialog);
+    dateEdit->setDate(QDate::currentDate());
+    dateEdit->setCalendarPopup(true);
+    dateEdit->setDisplayFormat("yyyy-MM-dd");
+    QHBoxLayout* dateLayout = new QHBoxLayout();
+    dateLayout->addWidget(dateLabel);
+    dateLayout->addWidget(dateEdit);
+    layout->addLayout(dateLayout);
+    
+    // 班次选择
+    QLabel* shiftLabel = new QLabel("选择班次：", &dialog);
+    QComboBox* shiftComboBox = new QComboBox(&dialog);
+    shiftComboBox->addItem("白班");
+    shiftComboBox->addItem("夜班");
+    shiftComboBox->setCurrentText(getCurrentShift()); // 默认选择当前班次
+    QHBoxLayout* shiftLayout = new QHBoxLayout();
+    shiftLayout->addWidget(shiftLabel);
+    shiftLayout->addWidget(shiftComboBox);
+    layout->addLayout(shiftLayout);
+    
+    // 确定和取消按钮
+    QDialogButtonBox* buttonBox = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    connect(buttonBox, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttonBox, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    layout->addWidget(buttonBox);
+    
+    // 显示对话框
+    if (dialog.exec() == QDialog::Accepted) {
+        QDate selectedDate = dateEdit->date();
+        QString selectedShift = shiftComboBox->currentText();
+        
+        // 保存选择的时间和班次
+        m_selectedHistoryDate = selectedDate;
+        m_selectedHistoryShift = selectedShift;
+        
+        // 更新按钮文本为选择的时间和班次
+        if (pushButtonSelectHistoryDateShift) {
+            pushButtonSelectHistoryDateShift->setText(QString("%1 %2").arg(selectedDate.toString("yyyy-MM-dd")).arg(selectedShift));
+        }
+        
+        // 从历史表加载数据
+        loadAssemblyIndicatorHistoryFromDb(selectedDate, selectedShift);
+        
+        appendToLog(QString("已加载历史数据（日期：%1，班次：%2）").arg(selectedDate.toString("yyyy-MM-dd")).arg(selectedShift), false);
+    }
+}
+
+/**
+ * @brief 从历史表加载总装指示表数据
+ */
+void tcpClient::loadAssemblyIndicatorHistoryFromDb(const QDate& date, const QString& shiftType)
+{
+    if (!assemblyIndicatorTable) {
+        qDebug() << "总装指示表未初始化，跳过加载";
+        return;
+    }
+
+    // 检查数据库是否已打开
+    QSqlDatabase db = QSqlDatabase::database();
+    if (!db.isOpen()) {
+        qDebug() << "数据库未打开，跳过加载历史数据";
+        return;
+    }
+
+    QSqlQuery query(db);
+    // 使用子查询获取每个车型和行类型的最新快照时间，然后关联获取完整数据
+    // 这样可以确保加载的是最新的快照数据，避免数据不一致的问题
+    query.prepare("SELECT h1.vehicle_name, h1.capacity, h1.yield, h1.total_trays, h1.rhythm, "
+                 "h1.row_type, h1.time_data, h1.overtime_hours "
+                 "FROM assembly_indicator_history h1 "
+                 "INNER JOIN ("
+                 "  SELECT vehicle_name, row_type, MAX(snapshot_time) as max_snapshot_time "
+                 "  FROM assembly_indicator_history "
+                 "  WHERE record_date = ? AND shift_type = ? "
+                 "  GROUP BY vehicle_name, row_type"
+                 ") h2 ON h1.vehicle_name = h2.vehicle_name "
+                 "     AND h1.row_type = h2.row_type "
+                 "     AND h1.snapshot_time = h2.max_snapshot_time "
+                 "WHERE h1.record_date = ? AND h1.shift_type = ? "
+                 "ORDER BY h1.vehicle_name, h1.row_type");
+
+    query.addBindValue(date);
+    query.addBindValue(shiftType);
+    query.addBindValue(date);
+    query.addBindValue(shiftType);
+
+    if (!query.exec()) {
+        appendToLog(QString("加载历史数据失败: %1").arg(query.lastError().text()), true);
+        qWarning() << "加载历史数据失败:" << query.lastError().text();
         return;
     }
 
@@ -9639,7 +11071,7 @@ void tcpClient::loadAssemblyIndicatorFromDb(const QDate& date, const QString& sh
     }
 
     if (vehiclePlanData.isEmpty() && vehicleActualData.isEmpty()) {
-        qDebug() << QString("未找到日期 %1 班次 %2 的总装指示表数据").arg(date.toString("yyyy-MM-dd")).arg(shiftType);
+        appendToLog(QString("未找到日期 %1 班次 %2 的历史数据").arg(date.toString("yyyy-MM-dd")).arg(shiftType), false);
         return;
     }
 
@@ -9651,7 +11083,6 @@ void tcpClient::loadAssemblyIndicatorFromDb(const QDate& date, const QString& sh
     if (loadedOvertimeHours != m_overtimeHours) {
         // 如果之前有加班时间列，先移除
         if (m_overtimeHours > 0) {
-            // 计算需要移除的列数（每15分钟一列，所以每0.5小时=2列，1小时=4列）
             int colsToRemove = static_cast<int>(m_overtimeHours * 4);
             int currentColCount = assemblyIndicatorTable->columnCount();
             assemblyIndicatorTable->setColumnCount(currentColCount - colsToRemove);
@@ -9659,11 +11090,8 @@ void tcpClient::loadAssemblyIndicatorFromDb(const QDate& date, const QString& sh
         
         // 添加新的加班时间列（如果有）
         if (loadedOvertimeHours > 0) {
-            // 记录添加列之前的列数，用于确定新添加列的起始位置
             int colCountBeforeAdd = assemblyIndicatorTable->columnCount();
             addOvertimeColumns(loadedOvertimeHours);
-            
-            // 添加加班列后，更新所有计划行在新列中的值
             updatePlanRowsForOvertimeColumns(colCountBeforeAdd);
         }
         
@@ -9681,6 +11109,21 @@ void tcpClient::loadAssemblyIndicatorFromDb(const QDate& date, const QString& sh
     bool wasBlocked = assemblyIndicatorTable->blockSignals(true);
 
     try {
+        // 先清空所有实际行的数据（时间列，列6开始）
+        for (int row = 0; row < assemblyIndicatorTable->rowCount(); row += 2) {
+            int actualRow = row + 1;
+            // 清空实际行的所有时间列（列6开始，跳过休息列22）
+            for (int col = 6; col < assemblyIndicatorTable->columnCount(); ++col) {
+                if (col == 22) {
+                    continue; // 跳过休息列
+                }
+                QTableWidgetItem* actualItem = assemblyIndicatorTable->item(actualRow, col);
+                if (actualItem) {
+                    actualItem->setText("");
+                }
+            }
+        }
+
         // 遍历所有车型，恢复数据
         for (int row = 0; row < assemblyIndicatorTable->rowCount(); row += 2) {
             int planRow = row;
@@ -9722,7 +11165,7 @@ void tcpClient::loadAssemblyIndicatorFromDb(const QDate& date, const QString& sh
 
                 QTableWidgetItem* rhythmItem = assemblyIndicatorTable->item(planRow, 4);
                 if (rhythmItem) {
-                    rhythmItem->setText(QString::number(rhythm, 'f', 2));
+                    rhythmItem->setText(QString::number(static_cast<int>(rhythm)));
                 }
 
                 // 恢复计划行时间列数据
@@ -9786,27 +11229,9 @@ void tcpClient::loadAssemblyIndicatorFromDb(const QDate& date, const QString& sh
     // 恢复信号
     assemblyIndicatorTable->blockSignals(wasBlocked);
 
-    appendToLog(QString("总装指示表数据已加载（日期：%1，班次：%2，加班时间：%3小时）")
+    appendToLog(QString("历史数据已加载（日期：%1，班次：%2，加班时间：%3小时）")
                 .arg(date.toString("yyyy-MM-dd")).arg(shiftType).arg(loadedOvertimeHours), false);
-    qDebug() << QString("总装指示表数据已从数据库加载（日期：%1，班次：%2）").arg(date.toString("yyyy-MM-dd")).arg(shiftType);
-}
-
-/**
- * @brief 加载数据按钮点击处理
- */
-void tcpClient::onLoadAssemblyIndicatorClicked()
-{
-    if (!assemblyIndicatorTable) {
-        appendToLog("总装指示表未初始化，无法加载数据", true);
-        return;
-    }
-
-    // 获取当前日期和班次
-    QDate currentDate = QDate::currentDate();
-    QString currentShift = getCurrentShift();
-
-    // 调用加载函数
-    loadAssemblyIndicatorFromDb(currentDate, currentShift);
+    qDebug() << QString("历史数据已从数据库加载（日期：%1，班次：%2）").arg(date.toString("yyyy-MM-dd")).arg(shiftType);
 }
 
 /**
@@ -9819,6 +11244,10 @@ void tcpClient::updateAssemblyIndicatorActualRow(const QString& vehicleName)
         return;
     }
 
+    // 如果是历史表格模式，不更新表格显示（因为显示的是历史数据，不应该被新数据干扰）
+    // 但仍然需要保存数据到当前班次表和历史表（因为保存的是当前班次的数据）
+    bool shouldUpdateDisplay = !m_isHistoryTableMode;
+
     // 获取当前时间和班次
     QDateTime currentDateTime = QDateTime::currentDateTime();
     QTime currentTime = currentDateTime.time();
@@ -9828,6 +11257,11 @@ void tcpClient::updateAssemblyIndicatorActualRow(const QString& vehicleName)
     QHeaderView* headerView = assemblyIndicatorTable->horizontalHeader();
     TwoLevelHeaderView* header = static_cast<TwoLevelHeaderView*>(headerView);
     if (!header) {
+        // 即使不更新显示，也需要保存数据
+        if (!shouldUpdateDisplay) {
+            saveAssemblyIndicatorCurrentShift();
+            saveAssemblyIndicatorHistory();
+        }
         return;
     }
 
@@ -9844,6 +11278,11 @@ void tcpClient::updateAssemblyIndicatorActualRow(const QString& vehicleName)
     if (actualRow < 0) {
         // 未找到对应的车型，记录日志但不报错
         appendToLog(QString("总成指示表：未找到车型%1，跳过更新实际行").arg(vehicleName), false);
+        // 即使不更新显示，也需要保存数据
+        if (!shouldUpdateDisplay) {
+            saveAssemblyIndicatorCurrentShift();
+            saveAssemblyIndicatorHistory();
+        }
         return;
     }
 
@@ -10004,47 +11443,129 @@ void tcpClient::updateAssemblyIndicatorActualRow(const QString& vehicleName)
                     .arg(vehicleName).arg(currentTime.toString("hh:mm")).arg(currentShift);
         appendToLog(QString("总成指示表：未找到车型%1对应的时间列（当前时间：%2，班次：%3），跳过更新")
                     .arg(vehicleName).arg(currentTime.toString("hh:mm")).arg(currentShift), false);
+        // 即使不更新显示，也需要保存数据
+        if (!shouldUpdateDisplay) {
+            saveAssemblyIndicatorCurrentShift();
+            saveAssemblyIndicatorHistory();
+        }
         return;
     }
 
-    // 更新实际行的值（+1）
-    QTableWidgetItem* actualItem = assemblyIndicatorTable->item(actualRow, bestCol);
-    int currentValue = 0;
-    
-    if (actualItem) {
-        // 如果单元格存在，读取当前值（支持整数和浮点数格式）
-        QString currentValueStr = actualItem->text().trimmed();
-        if (!currentValueStr.isEmpty()) {
-            // 先尝试转换为浮点数（兼容"1.0"格式），然后转换为整数
-            bool ok = false;
-            double doubleValue = currentValueStr.toDouble(&ok);
-            if (ok) {
-                currentValue = static_cast<int>(doubleValue);
-            } else {
-                // 如果浮点数转换失败，尝试整数转换
-                int intValue = currentValueStr.toInt(&ok);
+    // 只有在当前表格模式下才更新表格显示
+    if (shouldUpdateDisplay) {
+        // 更新实际行的值（+1）
+        QTableWidgetItem* actualItem = assemblyIndicatorTable->item(actualRow, bestCol);
+        int currentValue = 0;
+        
+        if (actualItem) {
+            // 如果单元格存在，读取当前值（支持整数和浮点数格式）
+            QString currentValueStr = actualItem->text().trimmed();
+            if (!currentValueStr.isEmpty()) {
+                // 先尝试转换为浮点数（兼容"1.0"格式），然后转换为整数
+                bool ok = false;
+                double doubleValue = currentValueStr.toDouble(&ok);
                 if (ok) {
-                    currentValue = intValue;
+                    currentValue = static_cast<int>(doubleValue);
+                } else {
+                    // 如果浮点数转换失败，尝试整数转换
+                    int intValue = currentValueStr.toInt(&ok);
+                    if (ok) {
+                        currentValue = intValue;
+                    }
                 }
             }
+            // 累加1
+            currentValue += 1;
+            actualItem->setText(QString::number(currentValue));
+        } else {
+            // 如果单元格不存在，创建一个新的，初始值为1
+            currentValue = 1;
+            actualItem = new QTableWidgetItem(QString::number(currentValue));
+            actualItem->setTextAlignment(Qt::AlignCenter | Qt::AlignVCenter);
+            actualItem->setFlags(actualItem->flags() & ~Qt::ItemIsEditable); // 设置为不可编辑
+            assemblyIndicatorTable->setItem(actualRow, bestCol, actualItem);
         }
-        // 累加1
-        currentValue += 1;
-        actualItem->setText(QString::number(currentValue));
+
+        appendToLog(QString("总成指示表：车型%1的实际行已更新（时间列：%2，值：%3）")
+                    .arg(vehicleName).arg(bestCol).arg(actualItem->text()), false);
+        
+        // 当前表格模式：从表格读取数据并保存
+        saveAssemblyIndicatorCurrentShift(); // 保存到当前班次表
+        saveAssemblyIndicatorHistory();      // 保存到历史表
     } else {
-        // 如果单元格不存在，创建一个新的，初始值为1
-        currentValue = 1;
-        actualItem = new QTableWidgetItem(QString::number(currentValue));
-        actualItem->setTextAlignment(Qt::AlignCenter | Qt::AlignVCenter);
-        actualItem->setFlags(actualItem->flags() & ~Qt::ItemIsEditable); // 设置为不可编辑
-        assemblyIndicatorTable->setItem(actualRow, bestCol, actualItem);
+        // 历史表格模式：直接更新数据库中的数据
+        QSqlDatabase db = QSqlDatabase::database();
+        if (db.isOpen()) {
+            QDate currentDate = QDate::currentDate();
+            QString shiftType = getCurrentShift();
+            
+            // 从当前班次表读取该车型的实际行数据
+            QSqlQuery query(db);
+            query.prepare("SELECT time_data FROM assembly_indicator_records "
+                         "WHERE vehicle_name = ? AND record_date = ? AND shift_type = ? AND row_type = 'actual'");
+            query.addBindValue(vehicleName);
+            query.addBindValue(currentDate);
+            query.addBindValue(shiftType);
+            
+            if (query.exec() && query.next()) {
+                QString timeDataStr = query.value(0).toString();
+                
+                // 解析JSON数据
+                QJsonParseError parseError;
+                QJsonDocument doc = QJsonDocument::fromJson(timeDataStr.toUtf8(), &parseError);
+                if (parseError.error == QJsonParseError::NoError) {
+                    QJsonObject timeData = doc.object();
+                    
+                    // 获取二级表头值
+                    QString secondLevelValueStr = header->getSecondLevelHeader(bestCol);
+                    int secondLevelValue = secondLevelValueStr.toInt();
+                    
+                    // 更新对应列的值（+1）
+                    QString colKey = QString::number(bestCol);
+                    int currentValue = 0;
+                    if (timeData.contains(colKey)) {
+                        QJsonObject colData = timeData[colKey].toObject();
+                        currentValue = static_cast<int>(colData["value"].toDouble());
+                    }
+                    currentValue += 1;
+                    
+                    // 更新JSON对象
+                    QJsonObject colData;
+                    colData["column_index"] = bestCol;
+                    colData["second_level_value"] = secondLevelValue;
+                    colData["value"] = currentValue;
+                    timeData[colKey] = colData;
+                    
+                    // 保存回数据库
+                    QJsonDocument updatedDoc(timeData);
+                    QString updatedTimeDataStr = updatedDoc.toJson(QJsonDocument::Compact);
+                    
+                    query.prepare("UPDATE assembly_indicator_records "
+                                 "SET time_data = ?, update_time = ? "
+                                 "WHERE vehicle_name = ? AND record_date = ? AND shift_type = ? AND row_type = 'actual'");
+                    query.addBindValue(updatedTimeDataStr);
+                    query.addBindValue(QDateTime::currentDateTime());
+                    query.addBindValue(vehicleName);
+                    query.addBindValue(currentDate);
+                    query.addBindValue(shiftType);
+                    
+                    if (query.exec()) {
+                        appendToLog(QString("总成指示表（历史模式）：收到车型%1的实托盘搬出数据，已更新数据库（时间列：%2，值：%3）")
+                                    .arg(vehicleName).arg(bestCol).arg(currentValue), false);
+                        qDebug() << QString("历史模式：已更新车型%1的实际行数据（时间列：%2，值：%3）")
+                                    .arg(vehicleName).arg(bestCol).arg(currentValue);
+                    } else {
+                        qWarning() << "历史模式：更新实际行数据失败:" << query.lastError().text();
+                    }
+                }
+            } else {
+                // 如果数据库中没有该车型的数据，记录日志
+                qDebug() << QString("历史模式：车型%1在当前班次表中不存在，跳过更新").arg(vehicleName);
+            }
+        }
+        
+        // 保存到历史表（使用更新后的数据）
+        saveAssemblyIndicatorHistory();
     }
-
-    // 保存到数据库（不显示弹窗）
-    QDate currentDate = QDate::currentDate();
-    saveAssemblyIndicatorToDb(false);
-
-    appendToLog(QString("总成指示表：车型%1的实际行已更新（时间列：%2，值：%3）")
-                .arg(vehicleName).arg(bestCol).arg(actualItem->text()), false);
 }
 

@@ -106,6 +106,9 @@ private slots:
     void addOvertimeColumns(double hours); ///< 添加加班时间列到总成指示表
     void updatePlanRowsForOvertimeColumns(int startCol); ///< 更新所有计划行在加班列中的值
     void onLoadAssemblyIndicatorClicked(); ///< 加载数据按钮点击处理
+    void onSwitchTableModeClicked(); ///< 切换表格模式按钮点击处理（当前表格/历史表格）
+    void onSelectHistoryDateShiftClicked(); ///< 选择历史数据时间和班次按钮点击处理
+    void loadAssemblyIndicatorHistoryFromDb(const QDate& date, const QString& shiftType); ///< 从历史表加载总装指示表数据
     void updateAssemblyIndicatorActualRow(const QString& vehicleName); ///< 更新总成指示表的实际行（实托盘搬出时调用）
 
     // 连接管理槽函数
@@ -231,8 +234,10 @@ private:
     void loadVisualizationRecords(); ///< 从数据库加载可视化记录
     void saveStatisticsInfo(); ///< 保存统计信息到数据库
     void loadStatisticsInfo(); ///< 从数据库加载统计信息
-    void saveAssemblyIndicatorToDb(bool showMessageBox = true); ///< 保存总装指示表到数据库
+    void saveAssemblyIndicatorToDb(bool showMessageBox = true); ///< 保存总装指示表参量设置到数据库（只保存产量和节拍）
     void loadAssemblyIndicatorFromDb(const QDate& date, const QString& shiftType); ///< 从数据库加载总装指示表
+    void saveAssemblyIndicatorCurrentShift(); ///< 保存当前班次数据到当前班次表
+    void saveAssemblyIndicatorHistory(); ///< 保存历史数据到历史表（每次PLC数据更新时调用）
     QString getCurrentShift(); ///< 获取当前班次（"白班"或"夜班"）
     void onShiftDisplayButtonClicked(); ///< 班次显示按钮点击处理
     void loadPreviousShiftStatistics(); ///< 加载前一个班次的统计信息
@@ -331,7 +336,12 @@ private:
     QPushButton* pushButtonLoadAssemblyIndicator; ///< 加载总装指示表按钮
     QPushButton* pushButtonOvertimeTime; ///< 加班时间选择按钮
     QPushButton* pushButtonSaveAssemblyIndicator; ///< 保存总装指示表按钮
+    QPushButton* pushButtonSwitchTableMode; ///< 切换表格模式按钮（当前表格/历史表格）
+    QPushButton* pushButtonSelectHistoryDateShift; ///< 选择历史数据的时间和班次按钮
     double m_overtimeHours; ///< 当前选择的加班时间（小时）
+    bool m_isHistoryTableMode; ///< 是否显示历史表格模式（true=历史表格，false=当前表格）
+    QDate m_selectedHistoryDate; ///< 当前选择的历史日期
+    QString m_selectedHistoryShift; ///< 当前选择的历史班次
     QVector<QLabel*> m_realTrayLabels; ///< 实滑槽标签（23个：入口1个 + 21个槽位 + 出口1个）
     QVector<QLabel*> m_emptyTrayLabels; ///< 空滑槽标签（23个：入口1个 + 21个槽位 + 出口1个）
     QVector<QString> m_realTraySlots; ///< 实滑槽每个位置显示的车型名称（21个槽位，位置0-20）
