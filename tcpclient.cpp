@@ -1299,13 +1299,6 @@ void tcpClient::setupUI()
     QHBoxLayout* topButtonLayout = new QHBoxLayout();
     topButtonLayout->setContentsMargins(0, 0, 0, 0);
     
-    // 创建加载数据按钮
-    pushButtonLoadAssemblyIndicator = new QPushButton(assemblyIndicatorBox);
-    pushButtonLoadAssemblyIndicator->setText("加载数据");
-    pushButtonLoadAssemblyIndicator->setObjectName("pushButtonLoadAssemblyIndicator");
-    pushButtonLoadAssemblyIndicator->setMinimumSize(100, 30);
-    topButtonLayout->addWidget(pushButtonLoadAssemblyIndicator);
-    
     // 创建加班时间选择按钮
     pushButtonOvertimeTime = new QPushButton(assemblyIndicatorBox);
     pushButtonOvertimeTime->setText("选择加班时间");
@@ -1320,13 +1313,36 @@ void tcpClient::setupUI()
     pushButtonSaveAssemblyIndicator->setMinimumSize(100, 30);
     topButtonLayout->addWidget(pushButtonSaveAssemblyIndicator);
     
-    // 创建切换表格模式按钮
-    pushButtonSwitchTableMode = new QPushButton(assemblyIndicatorBox);
-    pushButtonSwitchTableMode->setText("当前表格");
-    pushButtonSwitchTableMode->setObjectName("pushButtonSwitchTableMode");
-    pushButtonSwitchTableMode->setMinimumSize(100, 30);
+    // 创建当前表格按钮
+    pushButtonCurrentTable = new QPushButton(assemblyIndicatorBox);
+    pushButtonCurrentTable->setText("当前表格");
+    pushButtonCurrentTable->setObjectName("pushButtonCurrentTable");
+    pushButtonCurrentTable->setMinimumSize(100, 30);
+    // 设置初始样式（选中状态，因为默认是当前表格模式）
+    pushButtonCurrentTable->setStyleSheet(
+        "QPushButton {"
+        "background-color: #4CAF50;"
+        "color: white;"
+        "font-weight: bold;"
+        "border: 2px solid #45a049;"
+        "border-radius: 4px;"
+        "padding: 5px 15px;"
+        "}"
+        "QPushButton:hover {"
+        "background-color: #45a049;"
+        "}"
+    );
+    pushButtonCurrentTable->setCheckable(true);
+    pushButtonCurrentTable->setChecked(true); // 默认选中
+    topButtonLayout->addWidget(pushButtonCurrentTable);
+    
+    // 创建历史表格按钮
+    pushButtonHistoryTable = new QPushButton(assemblyIndicatorBox);
+    pushButtonHistoryTable->setText("历史表格");
+    pushButtonHistoryTable->setObjectName("pushButtonHistoryTable");
+    pushButtonHistoryTable->setMinimumSize(100, 30);
     // 设置初始样式（未选中状态）
-    pushButtonSwitchTableMode->setStyleSheet(
+    pushButtonHistoryTable->setStyleSheet(
         "QPushButton {"
         "background-color: #f0f0f0;"
         "color: #333;"
@@ -1339,7 +1355,9 @@ void tcpClient::setupUI()
         "background-color: #e0e0e0;"
         "}"
     );
-    topButtonLayout->addWidget(pushButtonSwitchTableMode);
+    pushButtonHistoryTable->setCheckable(true);
+    pushButtonHistoryTable->setChecked(false); // 默认未选中
+    topButtonLayout->addWidget(pushButtonHistoryTable);
     
     // 创建选择历史数据时间和班次按钮（初始隐藏）
     pushButtonSelectHistoryDateShift = new QPushButton(assemblyIndicatorBox);
@@ -1540,16 +1558,16 @@ void tcpClient::setupUI()
     connect(pushButtonAssemblyIndicatorPage, &QPushButton::clicked, this, &tcpClient::onAssemblyIndicatorPageClicked);
     connect(ui->pushButtonVehicleBindingPage, &QPushButton::clicked, this, &tcpClient::onVehicleBindingPageClicked);
     connect(pushButtonOvertimeTime, &QPushButton::clicked, this, &tcpClient::onOvertimeTimeButtonClicked);
-    if (pushButtonLoadAssemblyIndicator) {
-        connect(pushButtonLoadAssemblyIndicator, &QPushButton::clicked, this, &tcpClient::onLoadAssemblyIndicatorClicked);
-    }
     if (pushButtonSaveAssemblyIndicator) {
         connect(pushButtonSaveAssemblyIndicator, &QPushButton::clicked, this, [this]() {
             saveAssemblyIndicatorToDb(true); // 确保总是显示保存成功弹窗
         });
     }
-    if (pushButtonSwitchTableMode) {
-        connect(pushButtonSwitchTableMode, &QPushButton::clicked, this, &tcpClient::onSwitchTableModeClicked);
+    if (pushButtonCurrentTable) {
+        connect(pushButtonCurrentTable, &QPushButton::clicked, this, &tcpClient::onCurrentTableButtonClicked);
+    }
+    if (pushButtonHistoryTable) {
+        connect(pushButtonHistoryTable, &QPushButton::clicked, this, &tcpClient::onHistoryTableButtonClicked);
     }
     if (pushButtonSelectHistoryDateShift) {
         connect(pushButtonSelectHistoryDateShift, &QPushButton::clicked, this, &tcpClient::onSelectHistoryDateShiftClicked);
@@ -2301,6 +2319,13 @@ void tcpClient::onAssemblyIndicatorPageClicked()
     pushButtonProjectGroupPage->setChecked(false);
     pushButtonAssemblyIndicatorPage->setChecked(true);
     ui->pushButtonVehicleBindingPage->setChecked(false);
+    
+    // 如果当前选中的是当前表格按钮，自动加载当前表格数据
+    if (!m_isHistoryTableMode && assemblyIndicatorTable) {
+        QDate currentDate = QDate::currentDate();
+        QString currentShift = getCurrentShift();
+        loadAssemblyIndicatorFromDb(currentDate, currentShift);
+    }
 }
 
 /**
@@ -8148,10 +8173,15 @@ void tcpClient::checkShiftChange()
     
     // 检查是否是白班开始时间
     if (currentTime.hour() == dayShiftStart.hour() && currentTime.minute() == dayShiftStart.minute()) {
-        // 保存当前实际便次到数据库（夜班记录）
-        saveShiftRecord("夜班");
+        // 获取当前班次（使用保存的班次设置）
+        QString currentShift = getCurrentShift();
+        // 获取前一个班次（夜班）
+        QString previousShift = (currentShift == "白班") ? "夜班" : "白班";
         
-        // 清零实际便次，开始记录白班数据
+        // 保存当前实际便次到数据库（前一个班次记录）
+        saveShiftRecord(previousShift);
+        
+        // 清零实际便次，开始记录新班次数据
         m_actualCount = 0;
         if (m_currentDisplayShift == "current" && actualCountLabel) {
             actualCountLabel->setText(QString("实际便次：%1便").arg(m_actualCount));
@@ -8161,13 +8191,56 @@ void tcpClient::checkShiftChange()
         
         // 重新加载当前班次表格（从数据表格加载当前班次数据）
         loadCurrentShiftRecordsFromDb();
-        appendToLog(QString("班次切换：已重新加载当前班次表格（白班数据）"), false);
+        appendToLog(QString("班次切换：已重新加载当前班次表格（%1数据）").arg(currentShift), false);
         
-        appendToLog(QString("班次切换：夜班结束，实际便次已保存。白班开始，实际便次已清零"), false);
+        // 清空总成指示表当前班次的数据（数据库）
+        clearAssemblyIndicatorCurrentShift(currentDate, currentShift);
+        
+        // 如果当前正在显示总成指示表页面且是当前表格模式，清空UI并重新加载
+        if (ui->stackedWidget->currentIndex() == 5 && !m_isHistoryTableMode && assemblyIndicatorTable) {
+            // 清空UI表格的时间列数据（列6开始）
+            bool wasBlocked = assemblyIndicatorTable->blockSignals(true);
+            try {
+                for (int row = 0; row < assemblyIndicatorTable->rowCount(); row += 2) {
+                    int planRow = row;
+                    int actualRow = row + 1;
+                    // 清空计划行的所有时间列（列6开始，跳过休息列22）
+                    for (int col = 6; col < assemblyIndicatorTable->columnCount(); ++col) {
+                        if (col == 22) {
+                            continue; // 跳过休息列
+                        }
+                        QTableWidgetItem* planItem = assemblyIndicatorTable->item(planRow, col);
+                        if (planItem) {
+                            planItem->setText("");
+                        }
+                    }
+                    // 清空实际行的所有时间列（列6开始，跳过休息列22）
+                    for (int col = 6; col < assemblyIndicatorTable->columnCount(); ++col) {
+                        if (col == 22) {
+                            continue; // 跳过休息列
+                        }
+                        QTableWidgetItem* actualItem = assemblyIndicatorTable->item(actualRow, col);
+                        if (actualItem) {
+                            actualItem->setText("");
+                        }
+                    }
+                }
+            } catch (...) {
+                assemblyIndicatorTable->blockSignals(wasBlocked);
+                throw;
+            }
+            assemblyIndicatorTable->blockSignals(wasBlocked);
+            
+            // 重新加载当前班次数据
+            loadAssemblyIndicatorFromDb(currentDate, currentShift);
+            appendToLog(QString("班次切换：已清空并重新加载总成指示表当前表格（%1数据）").arg(currentShift), false);
+        }
+        
+        appendToLog(QString("班次切换：%1结束，实际便次已保存。%2开始，实际便次已清零").arg(previousShift).arg(currentShift), false);
         
         // 更新工程组统计的班次按钮
         if (projectGroupShiftButton) {
-            projectGroupShiftButton->setText("白班");
+            projectGroupShiftButton->setText(currentShift);
         }
         // 如果当前正在显示工程组记录页面，更新统计表格
         if (ui->stackedWidget->currentIndex() == 3) {
@@ -8179,10 +8252,15 @@ void tcpClient::checkShiftChange()
     }
     // 检查是否是夜班开始时间
     else if (currentTime.hour() == nightShiftStart.hour() && currentTime.minute() == nightShiftStart.minute()) {
-        // 保存当前实际便次到数据库（白班记录）
-        saveShiftRecord("白班");
+        // 获取当前班次（使用保存的班次设置）
+        QString currentShift = getCurrentShift();
+        // 获取前一个班次（白班）
+        QString previousShift = (currentShift == "白班") ? "夜班" : "白班";
         
-        // 清零实际便次，开始记录夜班数据
+        // 保存当前实际便次到数据库（前一个班次记录）
+        saveShiftRecord(previousShift);
+        
+        // 清零实际便次，开始记录新班次数据
         m_actualCount = 0;
         if (m_currentDisplayShift == "current" && actualCountLabel) {
             actualCountLabel->setText(QString("实际便次：%1便").arg(m_actualCount));
@@ -8192,13 +8270,65 @@ void tcpClient::checkShiftChange()
         
         // 重新加载当前班次表格（从数据表格加载当前班次数据）
         loadCurrentShiftRecordsFromDb();
-        appendToLog(QString("班次切换：已重新加载当前班次表格（夜班数据）"), false);
+        appendToLog(QString("班次切换：已重新加载当前班次表格（%1数据）").arg(currentShift), false);
         
-        appendToLog(QString("班次切换：白班结束，实际便次已保存。夜班开始，实际便次已清零"), false);
+        // 清空总成指示表当前班次的数据（数据库）
+        // 夜班可能跨天，需要判断日期
+        QDate shiftDate = currentDate;
+        // 如果当前时间是夜班开始时间，夜班数据属于今天
+        // 但如果是在凌晨（白班开始之前），夜班数据应该属于昨天
+        if (currentTime.hour() < dayShiftStart.hour() || 
+            (currentTime.hour() == dayShiftStart.hour() && currentTime.minute() < dayShiftStart.minute())) {
+            // 凌晨时段，夜班数据属于昨天
+            shiftDate = currentDate.addDays(-1);
+        }
+        clearAssemblyIndicatorCurrentShift(shiftDate, currentShift);
+        
+        // 如果当前正在显示总成指示表页面且是当前表格模式，清空UI并重新加载
+        if (ui->stackedWidget->currentIndex() == 5 && !m_isHistoryTableMode && assemblyIndicatorTable) {
+            // 清空UI表格的时间列数据（列6开始）
+            bool wasBlocked = assemblyIndicatorTable->blockSignals(true);
+            try {
+                for (int row = 0; row < assemblyIndicatorTable->rowCount(); row += 2) {
+                    int planRow = row;
+                    int actualRow = row + 1;
+                    // 清空计划行的所有时间列（列6开始，跳过休息列22）
+                    for (int col = 6; col < assemblyIndicatorTable->columnCount(); ++col) {
+                        if (col == 22) {
+                            continue; // 跳过休息列
+                        }
+                        QTableWidgetItem* planItem = assemblyIndicatorTable->item(planRow, col);
+                        if (planItem) {
+                            planItem->setText("");
+                        }
+                    }
+                    // 清空实际行的所有时间列（列6开始，跳过休息列22）
+                    for (int col = 6; col < assemblyIndicatorTable->columnCount(); ++col) {
+                        if (col == 22) {
+                            continue; // 跳过休息列
+                        }
+                        QTableWidgetItem* actualItem = assemblyIndicatorTable->item(actualRow, col);
+                        if (actualItem) {
+                            actualItem->setText("");
+                        }
+                    }
+                }
+            } catch (...) {
+                assemblyIndicatorTable->blockSignals(wasBlocked);
+                throw;
+            }
+            assemblyIndicatorTable->blockSignals(wasBlocked);
+            
+            // 重新加载当前班次数据
+            loadAssemblyIndicatorFromDb(shiftDate, currentShift);
+            appendToLog(QString("班次切换：已清空并重新加载总成指示表当前表格（%1数据）").arg(currentShift), false);
+        }
+        
+        appendToLog(QString("班次切换：%1结束，实际便次已保存。%2开始，实际便次已清零").arg(previousShift).arg(currentShift), false);
         
         // 更新工程组统计的班次按钮
         if (projectGroupShiftButton) {
-            projectGroupShiftButton->setText("夜班");
+            projectGroupShiftButton->setText(currentShift);
         }
         // 如果当前正在显示工程组记录页面，更新统计表格
         if (ui->stackedWidget->currentIndex() == 3) {
@@ -9980,6 +10110,40 @@ void tcpClient::saveAssemblyIndicatorCurrentShift()
 }
 
 /**
+ * @brief 清空总成指示表当前班次的数据（数据库）
+ * @param date 日期
+ * @param shiftType 班次类型（"白班"或"夜班"）
+ */
+void tcpClient::clearAssemblyIndicatorCurrentShift(const QDate& date, const QString& shiftType)
+{
+    // 检查数据库是否已打开
+    QSqlDatabase db = QSqlDatabase::database();
+    if (!db.isOpen()) {
+        qDebug() << "数据库未打开，跳过清空总成指示表当前班次数据";
+        return;
+    }
+
+    QSqlQuery query(db);
+    
+    // 删除指定日期和班次的所有记录
+    query.prepare("DELETE FROM assembly_indicator_records WHERE record_date = ? AND shift_type = ?");
+    query.addBindValue(date);
+    query.addBindValue(shiftType);
+    
+    if (!query.exec()) {
+        qWarning() << QString("清空总成指示表当前班次数据失败（日期：%1，班次：%2）: %3")
+                      .arg(date.toString("yyyy-MM-dd")).arg(shiftType).arg(query.lastError().text());
+        appendToLog(QString("清空总成指示表当前班次数据失败: %1").arg(query.lastError().text()), true);
+    } else {
+        int deletedCount = query.numRowsAffected();
+        qDebug() << QString("清空总成指示表当前班次数据成功（日期：%1，班次：%2），删除了 %3 条记录")
+                    .arg(date.toString("yyyy-MM-dd")).arg(shiftType).arg(deletedCount);
+        appendToLog(QString("已清空总成指示表当前班次数据（日期：%1，班次：%2，共 %3 条记录）")
+                    .arg(date.toString("yyyy-MM-dd")).arg(shiftType).arg(deletedCount), false);
+    }
+}
+
+/**
  * @brief 保存历史数据到历史表（每次PLC数据更新时调用）
  */
 void tcpClient::saveAssemblyIndicatorHistory()
@@ -10760,41 +10924,17 @@ void tcpClient::loadAssemblyIndicatorFromDb(const QDate& date, const QString& sh
 }
 
 /**
- * @brief 加载数据按钮点击处理
+ * @brief 更新按钮选中状态和显示/隐藏班次时间按钮
+ * @param isHistoryMode 是否为历史表格模式
  */
-void tcpClient::onLoadAssemblyIndicatorClicked()
+void tcpClient::updateTableModeButtons(bool isHistoryMode)
 {
-    if (!assemblyIndicatorTable) {
-        appendToLog("总装指示表未初始化，无法加载数据", true);
-        return;
-    }
-
-    // 根据当前模式决定加载哪个表的数据
-    if (m_isHistoryTableMode) {
-        // 历史表格模式：需要先选择时间和班次
-        onSelectHistoryDateShiftClicked();
-    } else {
-        // 当前表格模式：加载当前班次数据
-        QDate currentDate = QDate::currentDate();
-        QString currentShift = getCurrentShift();
-        loadAssemblyIndicatorFromDb(currentDate, currentShift);
-    }
-}
-
-/**
- * @brief 切换表格模式按钮点击处理（当前表格/历史表格）
- */
-void tcpClient::onSwitchTableModeClicked()
-{
-    // 切换模式
-    m_isHistoryTableMode = !m_isHistoryTableMode;
-    
-    // 更新按钮文本和样式
-    if (pushButtonSwitchTableMode) {
-        if (m_isHistoryTableMode) {
-            pushButtonSwitchTableMode->setText("历史表格");
-            // 设置为选中状态样式
-            pushButtonSwitchTableMode->setStyleSheet(
+    // 更新当前表格按钮状态
+    if (pushButtonCurrentTable) {
+        pushButtonCurrentTable->setChecked(!isHistoryMode);
+        if (!isHistoryMode) {
+            // 选中状态样式
+            pushButtonCurrentTable->setStyleSheet(
                 "QPushButton {"
                 "background-color: #4CAF50;"
                 "color: white;"
@@ -10808,9 +10948,44 @@ void tcpClient::onSwitchTableModeClicked()
                 "}"
             );
         } else {
-            pushButtonSwitchTableMode->setText("当前表格");
-            // 设置为未选中状态样式
-            pushButtonSwitchTableMode->setStyleSheet(
+            // 未选中状态样式
+            pushButtonCurrentTable->setStyleSheet(
+                "QPushButton {"
+                "background-color: #f0f0f0;"
+                "color: #333;"
+                "font-weight: normal;"
+                "border: 2px solid #ddd;"
+                "border-radius: 4px;"
+                "padding: 5px 15px;"
+                "}"
+                "QPushButton:hover {"
+                "background-color: #e0e0e0;"
+                "}"
+            );
+        }
+    }
+    
+    // 更新历史表格按钮状态
+    if (pushButtonHistoryTable) {
+        pushButtonHistoryTable->setChecked(isHistoryMode);
+        if (isHistoryMode) {
+            // 选中状态样式
+            pushButtonHistoryTable->setStyleSheet(
+                "QPushButton {"
+                "background-color: #4CAF50;"
+                "color: white;"
+                "font-weight: bold;"
+                "border: 2px solid #45a049;"
+                "border-radius: 4px;"
+                "padding: 5px 15px;"
+                "}"
+                "QPushButton:hover {"
+                "background-color: #45a049;"
+                "}"
+            );
+        } else {
+            // 未选中状态样式
+            pushButtonHistoryTable->setStyleSheet(
                 "QPushButton {"
                 "background-color: #f0f0f0;"
                 "color: #333;"
@@ -10828,98 +11003,126 @@ void tcpClient::onSwitchTableModeClicked()
     
     // 显示/隐藏时间和班次选择按钮
     if (pushButtonSelectHistoryDateShift) {
-        pushButtonSelectHistoryDateShift->setVisible(m_isHistoryTableMode);
+        pushButtonSelectHistoryDateShift->setVisible(isHistoryMode);
         // 如果切换到历史表格模式，重置按钮文本
-        if (m_isHistoryTableMode) {
+        if (isHistoryMode) {
             pushButtonSelectHistoryDateShift->setText("选择班次时间");
             m_selectedHistoryDate = QDate(); // 重置选择的日期
             m_selectedHistoryShift = ""; // 重置选择的班次
         }
     }
-    
-    if (m_isHistoryTableMode) {
-        // 切换到历史表格模式，清空表格数据，不弹窗
-        if (assemblyIndicatorTable) {
-            // 暂时阻止信号
-            bool wasBlocked = assemblyIndicatorTable->blockSignals(true);
-            try {
-                // 清空所有行的数据（时间列，列6开始）
-                for (int row = 0; row < assemblyIndicatorTable->rowCount(); row += 2) {
-                    int planRow = row;
-                    int actualRow = row + 1;
-                    // 清空计划行的所有时间列（列6开始，跳过休息列22）
-                    for (int col = 6; col < assemblyIndicatorTable->columnCount(); ++col) {
-                        if (col == 22) {
-                            continue; // 跳过休息列
-                        }
-                        QTableWidgetItem* planItem = assemblyIndicatorTable->item(planRow, col);
-                        if (planItem) {
-                            planItem->setText("");
-                        }
-                    }
-                    // 清空实际行的所有时间列（列6开始，跳过休息列22）
-                    for (int col = 6; col < assemblyIndicatorTable->columnCount(); ++col) {
-                        if (col == 22) {
-                            continue; // 跳过休息列
-                        }
-                        QTableWidgetItem* actualItem = assemblyIndicatorTable->item(actualRow, col);
-                        if (actualItem) {
-                            actualItem->setText("");
-                        }
-                    }
-                }
-            } catch (...) {
-                assemblyIndicatorTable->blockSignals(wasBlocked);
-                throw;
-            }
-            // 恢复信号
-            assemblyIndicatorTable->blockSignals(wasBlocked);
-        }
-        appendToLog("已切换到历史表格模式，请点击\"选择班次时间\"按钮选择要查看的历史数据", false);
-    } else {
-        // 切换到当前表格模式，先清空表格，然后加载当前班次数据
-        if (assemblyIndicatorTable) {
-            // 暂时阻止信号
-            bool wasBlocked = assemblyIndicatorTable->blockSignals(true);
-            try {
-                // 清空所有行的数据（时间列，列6开始）
-                for (int row = 0; row < assemblyIndicatorTable->rowCount(); row += 2) {
-                    int planRow = row;
-                    int actualRow = row + 1;
-                    // 清空计划行的所有时间列（列6开始，跳过休息列22）
-                    for (int col = 6; col < assemblyIndicatorTable->columnCount(); ++col) {
-                        if (col == 22) {
-                            continue; // 跳过休息列
-                        }
-                        QTableWidgetItem* planItem = assemblyIndicatorTable->item(planRow, col);
-                        if (planItem) {
-                            planItem->setText("");
-                        }
-                    }
-                    // 清空实际行的所有时间列（列6开始，跳过休息列22）
-                    for (int col = 6; col < assemblyIndicatorTable->columnCount(); ++col) {
-                        if (col == 22) {
-                            continue; // 跳过休息列
-                        }
-                        QTableWidgetItem* actualItem = assemblyIndicatorTable->item(actualRow, col);
-                        if (actualItem) {
-                            actualItem->setText("");
-                        }
-                    }
-                }
-            } catch (...) {
-                assemblyIndicatorTable->blockSignals(wasBlocked);
-                throw;
-            }
-            // 恢复信号
-            assemblyIndicatorTable->blockSignals(wasBlocked);
-        }
-        // 加载当前班次数据
-        QDate currentDate = QDate::currentDate();
-        QString currentShift = getCurrentShift();
-        loadAssemblyIndicatorFromDb(currentDate, currentShift);
-        appendToLog("已切换到当前表格模式", false);
+}
+
+/**
+ * @brief 当前表格按钮点击处理
+ */
+void tcpClient::onCurrentTableButtonClicked()
+{
+    // 如果已经是当前表格模式，不做任何操作
+    if (!m_isHistoryTableMode) {
+        return;
     }
+    
+    // 切换到当前表格模式
+    m_isHistoryTableMode = false;
+    updateTableModeButtons(false);
+    
+    // 先清空表格，然后加载当前班次数据
+    if (assemblyIndicatorTable) {
+        // 暂时阻止信号
+        bool wasBlocked = assemblyIndicatorTable->blockSignals(true);
+        try {
+            // 清空所有行的数据（时间列，列6开始）
+            for (int row = 0; row < assemblyIndicatorTable->rowCount(); row += 2) {
+                int planRow = row;
+                int actualRow = row + 1;
+                // 清空计划行的所有时间列（列6开始，跳过休息列22）
+                for (int col = 6; col < assemblyIndicatorTable->columnCount(); ++col) {
+                    if (col == 22) {
+                        continue; // 跳过休息列
+                    }
+                    QTableWidgetItem* planItem = assemblyIndicatorTable->item(planRow, col);
+                    if (planItem) {
+                        planItem->setText("");
+                    }
+                }
+                // 清空实际行的所有时间列（列6开始，跳过休息列22）
+                for (int col = 6; col < assemblyIndicatorTable->columnCount(); ++col) {
+                    if (col == 22) {
+                        continue; // 跳过休息列
+                    }
+                    QTableWidgetItem* actualItem = assemblyIndicatorTable->item(actualRow, col);
+                    if (actualItem) {
+                        actualItem->setText("");
+                    }
+                }
+            }
+        } catch (...) {
+            assemblyIndicatorTable->blockSignals(wasBlocked);
+            throw;
+        }
+        // 恢复信号
+        assemblyIndicatorTable->blockSignals(wasBlocked);
+    }
+    // 加载当前班次数据
+    QDate currentDate = QDate::currentDate();
+    QString currentShift = getCurrentShift();
+    loadAssemblyIndicatorFromDb(currentDate, currentShift);
+    appendToLog("已切换到当前表格模式", false);
+}
+
+/**
+ * @brief 历史表格按钮点击处理
+ */
+void tcpClient::onHistoryTableButtonClicked()
+{
+    // 如果已经是历史表格模式，不做任何操作
+    if (m_isHistoryTableMode) {
+        return;
+    }
+    
+    // 切换到历史表格模式
+    m_isHistoryTableMode = true;
+    updateTableModeButtons(true);
+    
+    // 切换到历史表格模式，清空表格数据，不弹窗
+    if (assemblyIndicatorTable) {
+        // 暂时阻止信号
+        bool wasBlocked = assemblyIndicatorTable->blockSignals(true);
+        try {
+            // 清空所有行的数据（时间列，列6开始）
+            for (int row = 0; row < assemblyIndicatorTable->rowCount(); row += 2) {
+                int planRow = row;
+                int actualRow = row + 1;
+                // 清空计划行的所有时间列（列6开始，跳过休息列22）
+                for (int col = 6; col < assemblyIndicatorTable->columnCount(); ++col) {
+                    if (col == 22) {
+                        continue; // 跳过休息列
+                    }
+                    QTableWidgetItem* planItem = assemblyIndicatorTable->item(planRow, col);
+                    if (planItem) {
+                        planItem->setText("");
+                    }
+                }
+                // 清空实际行的所有时间列（列6开始，跳过休息列22）
+                for (int col = 6; col < assemblyIndicatorTable->columnCount(); ++col) {
+                    if (col == 22) {
+                        continue; // 跳过休息列
+                    }
+                    QTableWidgetItem* actualItem = assemblyIndicatorTable->item(actualRow, col);
+                    if (actualItem) {
+                        actualItem->setText("");
+                    }
+                }
+            }
+        } catch (...) {
+            assemblyIndicatorTable->blockSignals(wasBlocked);
+            throw;
+        }
+        // 恢复信号
+        assemblyIndicatorTable->blockSignals(wasBlocked);
+    }
+    appendToLog("已切换到历史表格模式，请点击\"选择班次时间\"按钮选择要查看的历史数据", false);
 }
 
 /**

@@ -105,8 +105,9 @@ private slots:
     void onOvertimeTimeButtonClicked(); ///< 加班时间选择按钮点击处理
     void addOvertimeColumns(double hours); ///< 添加加班时间列到总成指示表
     void updatePlanRowsForOvertimeColumns(int startCol); ///< 更新所有计划行在加班列中的值
-    void onLoadAssemblyIndicatorClicked(); ///< 加载数据按钮点击处理
-    void onSwitchTableModeClicked(); ///< 切换表格模式按钮点击处理（当前表格/历史表格）
+    void onCurrentTableButtonClicked(); ///< 当前表格按钮点击处理
+    void onHistoryTableButtonClicked(); ///< 历史表格按钮点击处理
+    void updateTableModeButtons(bool isHistoryMode); ///< 更新按钮选中状态和显示/隐藏班次时间按钮
     void onSelectHistoryDateShiftClicked(); ///< 选择历史数据时间和班次按钮点击处理
     void loadAssemblyIndicatorHistoryFromDb(const QDate& date, const QString& shiftType); ///< 从历史表加载总装指示表数据
     void updateAssemblyIndicatorActualRow(const QString& vehicleName); ///< 更新总成指示表的实际行（实托盘搬出时调用）
@@ -237,6 +238,7 @@ private:
     void saveAssemblyIndicatorToDb(bool showMessageBox = true); ///< 保存总装指示表参量设置到数据库（只保存产量和节拍）
     void loadAssemblyIndicatorFromDb(const QDate& date, const QString& shiftType); ///< 从数据库加载总装指示表
     void saveAssemblyIndicatorCurrentShift(); ///< 保存当前班次数据到当前班次表
+    void clearAssemblyIndicatorCurrentShift(const QDate& date, const QString& shiftType); ///< 清空总成指示表当前班次的数据（数据库）
     void saveAssemblyIndicatorHistory(); ///< 保存历史数据到历史表（每次PLC数据更新时调用）
     QString getCurrentShift(); ///< 获取当前班次（"白班"或"夜班"）
     void onShiftDisplayButtonClicked(); ///< 班次显示按钮点击处理
@@ -333,10 +335,10 @@ private:
     QPushButton* pushButtonAssemblyIndicatorPage; ///< 总成指示表页面按钮
     QWidget* assemblyIndicatorPage; ///< 总成指示表页面
     QTableWidget* assemblyIndicatorTable; ///< 总成指示表表格
-    QPushButton* pushButtonLoadAssemblyIndicator; ///< 加载总装指示表按钮
     QPushButton* pushButtonOvertimeTime; ///< 加班时间选择按钮
     QPushButton* pushButtonSaveAssemblyIndicator; ///< 保存总装指示表按钮
-    QPushButton* pushButtonSwitchTableMode; ///< 切换表格模式按钮（当前表格/历史表格）
+    QPushButton* pushButtonCurrentTable; ///< 当前表格按钮
+    QPushButton* pushButtonHistoryTable; ///< 历史表格按钮
     QPushButton* pushButtonSelectHistoryDateShift; ///< 选择历史数据的时间和班次按钮
     double m_overtimeHours; ///< 当前选择的加班时间（小时）
     bool m_isHistoryTableMode; ///< 是否显示历史表格模式（true=历史表格，false=当前表格）
