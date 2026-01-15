@@ -6806,6 +6806,17 @@ bool tcpClient::processSingleJsonObject(const QString &jsonString, bool saveToTa
     }
     
     QJsonObject obj = doc.object();
+    
+    // 检查是否是生产数据上报（production_data类型）
+    QString action = obj.value("action").toString();
+    QString table = obj.value("table").toString();
+    QString type = obj.value("type").toString();
+    
+    if (action == "insert" && table == "production_data" && type == "productionplan") {
+        // 处理生产数据上报
+        return processProductionDataJson(obj, saveToTable);
+    }
+    
     QString instructionType = obj.value("instructionType").toString();
     
     // 只处理"AGT滑槽指令"
@@ -6907,6 +6918,158 @@ bool tcpClient::processSingleJsonObject(const QString &jsonString, bool saveToTa
     }
     
     return true;
+}
+
+/**
+ * @brief 处理生产数据上报JSON
+ * @param obj JSON对象
+ * @param saveToTable 是否保存到表格和数据库（默认true）
+ * @return 处理是否成功
+ */
+bool tcpClient::processProductionDataJson(const QJsonObject &obj, bool saveToTable)
+{
+    if (!assemblyIndicatorTable) {
+        appendToLog("总成指示表未初始化，无法处理生产数据", true);
+        return false;
+    }
+    
+    // 获取databody数组
+    QJsonArray databody = obj.value("databody").toArray();
+    if (databody.isEmpty()) {
+        appendToLog("生产数据databody为空", false);
+        return false;
+    }
+    
+    appendToLog(QString("收到生产数据上报，共%1条记录").arg(databody.size()), false);
+    
+    bool hasUpdate = false;
+    
+    // 遍历databody数组
+    for (int i = 0; i < databody.size(); ++i) {
+        QJsonObject item = databody[i].toObject();
+        
+        // 提取参数
+        QString partName = item.value("partName").toString().trimmed();
+        int productionQty = item.value("productionQty").toInt();
+        double slotOutActual = item.value("slotOutActual").toDouble();
+        
+        if (partName.isEmpty()) {
+            appendToLog(QString("第%1条记录：车型名称为空，跳过").arg(i + 1), false);
+            continue;
+        }
+        
+        // 根据车型名称查找对应的表格行（每2行为一组，第一行是计划行）
+        int planRow = -1;
+        for (int row = 0; row < assemblyIndicatorTable->rowCount(); row += 2) {
+            QTableWidgetItem* vehicleNameItem = assemblyIndicatorTable->item(row, 0);
+            if (vehicleNameItem && vehicleNameItem->text().trimmed() == partName) {
+                planRow = row;
+                break;
+            }
+        }
+        
+        if (planRow < 0) {
+            appendToLog(QString("未找到车型%1对应的表格行，跳过").arg(partName), false);
+            continue;
+        }
+        
+        // 获取收容数（列1）
+        QTableWidgetItem* capacityItem = assemblyIndicatorTable->item(planRow, 1);
+        if (!capacityItem) {
+            appendToLog(QString("车型%1的收容数不存在，跳过").arg(partName), false);
+            continue;
+        }
+        
+        double capacity = capacityItem->text().trimmed().toDouble();
+        if (capacity <= 0) {
+            appendToLog(QString("车型%1的收容数无效，跳过").arg(partName), false);
+            continue;
+        }
+        
+        // 更新产量（列2）
+        QTableWidgetItem* yieldItem = assemblyIndicatorTable->item(planRow, 2);
+        if (yieldItem) {
+            yieldItem->setText(QString::number(productionQty));
+            hasUpdate = true;
+        }
+        
+        // 更新节拍（列4）- 保存为整数
+        QTableWidgetItem* rhythmItem = assemblyIndicatorTable->item(planRow, 4);
+        int rhythmInt = 0;
+        if (rhythmItem) {
+            // 将节拍转换为整数（四舍五入）
+            rhythmInt = static_cast<int>(std::round(slotOutActual));
+            rhythmItem->setText(QString::number(rhythmInt));
+            hasUpdate = true;
+        }
+        
+        // 计算并更新生产总托数（列3）= 产量 / 收容数，向上取整
+        if (productionQty > 0 && capacity > 0) {
+            int totalTrays = static_cast<int>(std::ceil(productionQty / capacity));
+            QTableWidgetItem* totalTraysItem = assemblyIndicatorTable->item(planRow, 3);
+            if (totalTraysItem) {
+                totalTraysItem->setText(QString::number(totalTrays));
+                hasUpdate = true;
+            }
+        }
+        
+        // 计算并更新计划列数据（列6开始的时间列）
+        // 公式：二级表头值 * 60 / 节拍 / 收容数，保留一位小数
+        // 使用整数节拍进行计算
+        if (rhythmInt > 0 && capacity > 0) {
+            QHeaderView* headerView = assemblyIndicatorTable->horizontalHeader();
+            TwoLevelHeaderView* header = static_cast<TwoLevelHeaderView*>(headerView);
+            if (header) {
+                // 遍历时间列（列6开始，跳过休息列22）
+                for (int timeCol = 6; timeCol < assemblyIndicatorTable->columnCount(); ++timeCol) {
+                    if (timeCol == 22) {
+                        continue; // 跳过休息列
+                    }
+                    
+                    // 获取二级表头值
+                    QString secondLevelValueStr = header->getSecondLevelHeader(timeCol);
+                    if (secondLevelValueStr.isEmpty()) {
+                        continue;
+                    }
+                    
+                    bool secondLevelOk = false;
+                    double secondLevelValue = secondLevelValueStr.toDouble(&secondLevelOk);
+                    if (!secondLevelOk) {
+                        continue;
+                    }
+                    
+                    // 计算：二级表头值 * 60 / 节拍 / 收容数（使用整数节拍）
+                    double planValue = (secondLevelValue * 60.0) / rhythmInt / capacity;
+                    
+                    // 保留一位小数
+                    QString planValueStr = QString::number(planValue, 'f', 1);
+                    
+                    // 设置计划行的值
+                    QTableWidgetItem* planItem = assemblyIndicatorTable->item(planRow, timeCol);
+                    if (planItem) {
+                        planItem->setText(planValueStr);
+                        hasUpdate = true;
+                    }
+                }
+            }
+        }
+        
+        appendToLog(QString("已更新车型%1：产量=%2，节拍=%3").arg(partName).arg(productionQty).arg(rhythmInt), false);
+    }
+    
+    // 如果有更新，保存到数据库
+    // 注意：即使处于历史表格模式，也应该保存实时接收的生产数据
+    if (hasUpdate && saveToTable) {
+        // 保存产量和节拍到配置表（assembly_indicator_config）
+        saveAssemblyIndicatorToDb(false); // false表示不显示弹窗
+        
+        // 保存当前班次数据和历史数据
+        saveAssemblyIndicatorCurrentShift();
+        saveAssemblyIndicatorHistory();
+        appendToLog("生产数据已保存到数据库（包括产量和节拍）", false);
+    }
+    
+    return hasUpdate;
 }
 
 /**
