@@ -1306,11 +1306,12 @@ void tcpClient::setupUI()
     pushButtonOvertimeTime->setMinimumSize(120, 30);
     topButtonLayout->addWidget(pushButtonOvertimeTime);
     
-    // 创建保存按钮
+    // 创建保存按钮（已隐藏，改为选择加班时间后自动保存）
     pushButtonSaveAssemblyIndicator = new QPushButton(assemblyIndicatorBox);
     pushButtonSaveAssemblyIndicator->setText("保存数据");
     pushButtonSaveAssemblyIndicator->setObjectName("pushButtonSaveAssemblyIndicator");
     pushButtonSaveAssemblyIndicator->setMinimumSize(100, 30);
+    pushButtonSaveAssemblyIndicator->setVisible(false); // 隐藏按钮，改为自动保存
     topButtonLayout->addWidget(pushButtonSaveAssemblyIndicator);
     
     // 创建当前表格按钮
@@ -1560,7 +1561,13 @@ void tcpClient::setupUI()
     connect(pushButtonOvertimeTime, &QPushButton::clicked, this, &tcpClient::onOvertimeTimeButtonClicked);
     if (pushButtonSaveAssemblyIndicator) {
         connect(pushButtonSaveAssemblyIndicator, &QPushButton::clicked, this, [this]() {
-            saveAssemblyIndicatorToDb(true); // 确保总是显示保存成功弹窗
+            // 保存参量设置（收容数、产量、节拍）到配置表
+            saveAssemblyIndicatorToDb(false); // 先不显示弹窗
+            // 保存时间列数据和加班时间到当前班次表和历史表
+            saveAssemblyIndicatorCurrentShift();
+            saveAssemblyIndicatorHistory();
+            // 显示保存成功提示
+            QMessageBox::information(this, "提示", "数据已保存成功（包括加班时间和时间列数据）");
         });
     }
     if (pushButtonCurrentTable) {
@@ -3163,14 +3170,15 @@ void tcpClient::processHexData(const QByteArray &data)
                     // tray.slotNo是1-3，对应第5-7个字节，转换为位置索引0-2
                     int slotIndex = tray.slotNo - 1;
                     updateVisualization(vehicleName, true, slotIndex);
-                    
-                    // 更新总成指示表的实际行
-                    updateAssemblyIndicatorActualRow(vehicleName);
                 }
                 // 如果是空托盘搬入，处理空托盘搬入逻辑
                 // 根据字节位置确定检查位置：第8个字节（slotNo=4）->2103，对应右边槽位（位置2），第9个字节（slotNo=5）->2102，对应中间槽位（位置1），第10个字节（slotNo=6）->2101，对应左边槽位（位置0）
                 if (!tray.isRealTray && tray.statusStr == "空托盘搬入" && !vehicleName.isEmpty()) {
                     handleEmptyTrayIn(vehicleName, tray.slotNo);
+                }
+                // 如果是空托盘搬出，更新总成指示表的实际行
+                if (!tray.isRealTray && tray.statusStr == "空托盘搬出" && !vehicleName.isEmpty()) {
+                    updateAssemblyIndicatorActualRow(vehicleName);
                 }
             } else if (tray.modelCode != 0) {
                 appendToLog(QString("托盘%1的车型代码 %2 未在绑定表中找到").arg(tray.slotNo).arg(modelCodeStr), true);
@@ -4569,7 +4577,7 @@ void tcpClient::onAssemblyIndicatorItemChanged(QTableWidgetItem *item)
         }
     }
 
-    // 计算计划行的值 = 二级表头值 * 60 / 节拍 / 收容数，保留一位小数
+    // 计算计划行的值 = 二级表头值 * 60 / 节拍 / 收容数，取整数部分（向下取整）
     if (rhythmOk && capacityOk && rhythm > 0 && capacity > 0) {
         // 获取表头（我们知道表头一定是TwoLevelHeaderView类型）
         QHeaderView* headerView = assemblyIndicatorTable->horizontalHeader();
@@ -4596,8 +4604,8 @@ void tcpClient::onAssemblyIndicatorItemChanged(QTableWidgetItem *item)
                 // 计算：二级表头值 * 60 / 节拍 / 收容数
                 double planValue = (secondLevelValue * 60.0) / rhythm / capacity;
                 
-                // 保留一位小数
-                QString planValueStr = QString::number(planValue, 'f', 1);
+                // 直接取整数部分（向下取整，不四舍五入）
+                QString planValueStr = QString::number(static_cast<int>(planValue));
 
                 // 设置计划行的值
                 QTableWidgetItem* planItem = assemblyIndicatorTable->item(planRow, timeCol);
@@ -4625,17 +4633,18 @@ void tcpClient::onAssemblyIndicatorItemChanged(QTableWidgetItem *item)
  */
 void tcpClient::onOvertimeTimeButtonClicked()
 {
-    // 创建选项列表：不加班 + 0.5小时到3小时，以0.5小时递增
+    // 创建选项列表：不加班 + 0.25小时（15分钟）到3小时，以0.25小时（15分钟）递增
     QStringList options;
     options << "不加班";
-    for (double h = 0.5; h <= 3.0; h += 0.5) {
+    for (double h = 0.25; h <= 3.0; h += 0.25) {
+        // 显示格式：15分钟显示为"0.25小时"，30分钟显示为"0.5小时"，等等
         options << QString("%1小时").arg(h);
     }
     
-    // 计算当前选择的索引（0=不加班，1=0.5小时，2=1小时，...）
+    // 计算当前选择的索引（0=不加班，1=0.25小时，2=0.5小时，...）
     int currentIndex = 0;
     if (m_overtimeHours > 0) {
-        currentIndex = static_cast<int>((m_overtimeHours - 0.5) / 0.5) + 1;
+        currentIndex = static_cast<int>((m_overtimeHours - 0.25) / 0.25) + 1;
     }
     
     // 显示选择对话框
@@ -4660,7 +4669,7 @@ void tcpClient::onOvertimeTimeButtonClicked()
         if (hours != m_overtimeHours) {
             // 如果之前有加班时间列，先移除
             if (m_overtimeHours > 0) {
-                // 计算需要移除的列数（每15分钟一列，所以每0.5小时=2列，1小时=4列）
+                // 计算需要移除的列数（每15分钟一列，所以0.25小时=1列，0.5小时=2列，1小时=4列）
                 int colsToRemove = static_cast<int>(m_overtimeHours * 4);
                 int currentColCount = assemblyIndicatorTable->columnCount();
                 assemblyIndicatorTable->setColumnCount(currentColCount - colsToRemove);
@@ -4690,6 +4699,12 @@ void tcpClient::onOvertimeTimeButtonClicked()
             } else {
                 appendToLog(QString("已设置加班时间: %1小时").arg(hours), false);
             }
+            
+            // 自动保存加班时间和时间列数据到数据库
+            saveAssemblyIndicatorToDb(false); // 保存参量设置
+            saveAssemblyIndicatorCurrentShift(); // 保存到当前班次表（含加班时间）
+            saveAssemblyIndicatorHistory(); // 保存到历史表
+            appendToLog("加班时间已自动保存到数据库", false);
         }
     }
 }
@@ -4712,9 +4727,9 @@ void tcpClient::addOvertimeColumns(double hours)
     
     // 计算完整的小时数和剩余时间
     int fullHours = static_cast<int>(hours);  // 完整的小时数
-    double remainingHours = hours - fullHours;  // 剩余的小时数（0, 0.5）
+    double remainingHours = hours - fullHours;  // 剩余的小时数（0, 0.25, 0.5, 0.75）
     
-    // 计算需要添加的列数（每15分钟一列，所以每0.5小时=2列，1小时=4列）
+    // 计算需要添加的列数（每15分钟一列，所以0.25小时=1列，0.5小时=2列，1小时=4列）
     int colsToAdd = static_cast<int>(hours * 4);
     
     // 获取当前列数
@@ -4825,9 +4840,9 @@ void tcpClient::addOvertimeColumns(double hours)
         firstLevelIndex++;  // 下一个一级表头索引
     }
     
-    // 如果有剩余时间（0.5小时），添加最后一个时间段
+    // 如果有剩余时间（不满1小时的部分：0.25小时、0.5小时或0.75小时），添加最后一个时间段
     if (remainingHours > 0) {
-        // 计算剩余时间的结束时间（0.5小时后）
+        // 计算剩余时间的结束时间
         QTime dayShiftEnd = dayShiftCurrent.addSecs(static_cast<int>(remainingHours * 3600));
         QTime nightShiftEnd = nightShiftCurrent.addSecs(static_cast<int>(remainingHours * 3600));
         
@@ -4842,7 +4857,7 @@ void tcpClient::addOvertimeColumns(double hours)
         QString firstLevelText = QString("加班\n%1").arg(timeRange);
         header->setFirstLevelHeader(firstLevelIndex, firstLevelText);
         
-        // 为这个时间段添加2列（0.5小时=2列）
+        // 为这个时间段添加相应列数（0.25小时=1列，0.5小时=2列，0.75小时=3列）
         int colsForRemaining = static_cast<int>(remainingHours * 4);
         for (int i = 0; i < colsForRemaining; ++i) {
             int colIndex = currentCol + i;
@@ -4936,8 +4951,8 @@ void tcpClient::updatePlanRowsForOvertimeColumns(int startCol)
                 // 计算：二级表头值 * 60 / 节拍 / 收容数
                 double planValue = (secondLevelValue * 60.0) / rhythm / capacity;
 
-                // 保留一位小数
-                QString planValueStr = QString::number(planValue, 'f', 1);
+                // 直接取整数部分（向下取整，不四舍五入）
+                QString planValueStr = QString::number(static_cast<int>(planValue));
 
                 // 设置计划行的值
                 QTableWidgetItem* planItem = assemblyIndicatorTable->item(planRow, timeCol);
@@ -7014,7 +7029,7 @@ bool tcpClient::processProductionDataJson(const QJsonObject &obj, bool saveToTab
         }
         
         // 计算并更新计划列数据（列6开始的时间列）
-        // 公式：二级表头值 * 60 / 节拍 / 收容数，保留一位小数
+        // 公式：二级表头值 * 60 / 节拍 / 收容数，取整数部分（向下取整）
         // 使用整数节拍进行计算
         if (rhythmInt > 0 && capacity > 0) {
             QHeaderView* headerView = assemblyIndicatorTable->horizontalHeader();
@@ -7041,8 +7056,8 @@ bool tcpClient::processProductionDataJson(const QJsonObject &obj, bool saveToTab
                     // 计算：二级表头值 * 60 / 节拍 / 收容数（使用整数节拍）
                     double planValue = (secondLevelValue * 60.0) / rhythmInt / capacity;
                     
-                    // 保留一位小数
-                    QString planValueStr = QString::number(planValue, 'f', 1);
+                    // 直接取整数部分（向下取整，不四舍五入）
+                    QString planValueStr = QString::number(static_cast<int>(planValue));
                     
                     // 设置计划行的值
                     QTableWidgetItem* planItem = assemblyIndicatorTable->item(planRow, timeCol);
@@ -10792,7 +10807,7 @@ void tcpClient::loadAssemblyIndicatorFromDb(const QDate& date, const QString& sh
     if (loadedOvertimeHours != m_overtimeHours) {
         // 如果之前有加班时间列，先移除
         if (m_overtimeHours > 0) {
-            // 计算需要移除的列数（每15分钟一列，所以每0.5小时=2列，1小时=4列）
+            // 计算需要移除的列数（每15分钟一列，所以0.25小时=1列，0.5小时=2列，1小时=4列）
             int colsToRemove = static_cast<int>(m_overtimeHours * 4);
             int currentColCount = assemblyIndicatorTable->columnCount();
             assemblyIndicatorTable->setColumnCount(currentColCount - colsToRemove);
@@ -10924,11 +10939,11 @@ void tcpClient::loadAssemblyIndicatorFromDb(const QDate& date, const QString& sh
 
                     QTableWidgetItem* planItem = assemblyIndicatorTable->item(planRow, col);
                     if (planItem) {
-                        if (value > 0) {
-                            planItem->setText(QString::number(value, 'f', 1));
+                        // 计划行使用整数格式（向下取整）
+                        int intValue = static_cast<int>(value);
+                        planItem->setText(QString::number(intValue));
+                        if (intValue > 0) {
                             hasTimeData = true;
-                        } else {
-                            planItem->setText("");
                         }
                     }
                 }
@@ -10960,8 +10975,8 @@ void tcpClient::loadAssemblyIndicatorFromDb(const QDate& date, const QString& sh
                             // 计算：二级表头值 * 60 / 节拍 / 收容数
                             double planValue = (secondLevelValue * 60.0) / rhythm / capacity;
 
-                            // 保留一位小数
-                            QString planValueStr = QString::number(planValue, 'f', 1);
+                            // 直接取整数部分（向下取整，不四舍五入）
+                            QString planValueStr = QString::number(static_cast<int>(planValue));
 
                             // 设置计划行的值
                             QTableWidgetItem* planItem = assemblyIndicatorTable->item(planRow, timeCol);
@@ -11024,8 +11039,8 @@ void tcpClient::loadAssemblyIndicatorFromDb(const QDate& date, const QString& sh
                             // 计算：二级表头值 * 60 / 节拍 / 收容数
                             double planValue = (secondLevelValue * 60.0) / rhythm / capacity;
 
-                            // 保留一位小数
-                            QString planValueStr = QString::number(planValue, 'f', 1);
+                            // 直接取整数部分（向下取整，不四舍五入）
+                            QString planValueStr = QString::number(static_cast<int>(planValue));
 
                             // 设置计划行的值
                             QTableWidgetItem* planItem = assemblyIndicatorTable->item(planRow, timeCol);
@@ -11064,9 +11079,37 @@ void tcpClient::loadAssemblyIndicatorFromDb(const QDate& date, const QString& sh
                     if (actualItem) {
                         if (value > 0) {
                             // 实际行使用整数格式（数量）
-                            actualItem->setText(QString::number(static_cast<int>(value)));
+                            int actualValue = static_cast<int>(value);
+                            actualItem->setText(QString::number(actualValue));
+                            
+                            // 对比计划值，如果差值超过±1则标红
+                            QTableWidgetItem* planItem = assemblyIndicatorTable->item(planRow, col);
+                            if (planItem) {
+                                QString planValueStr = planItem->text().trimmed();
+                                if (!planValueStr.isEmpty()) {
+                                    bool ok = false;
+                                    int planValue = planValueStr.toInt(&ok);
+                                    if (ok) {
+                                        // 计算差值
+                                        int diff = actualValue - planValue;
+                                        
+                                        // 如果差值超过±1，标红；否则恢复默认颜色
+                                        if (diff > 1 || diff < -1) {
+                                            actualItem->setBackground(QBrush(QColor(255, 0, 0))); // 红色背景
+                                            actualItem->setForeground(QBrush(QColor(255, 255, 255))); // 白色文字
+                                        } else {
+                                            // 恢复默认颜色
+                                            actualItem->setBackground(QBrush());
+                                            actualItem->setForeground(QBrush());
+                                        }
+                                    }
+                                }
+                            }
                         } else {
                             actualItem->setText("");
+                            // 清空时恢复默认颜色
+                            actualItem->setBackground(QBrush());
+                            actualItem->setForeground(QBrush());
                         }
                     }
                 }
@@ -11207,6 +11250,9 @@ void tcpClient::onCurrentTableButtonClicked()
                     QTableWidgetItem* planItem = assemblyIndicatorTable->item(planRow, col);
                     if (planItem) {
                         planItem->setText("");
+                        // 重置背景色为默认（白色）
+                        planItem->setBackground(QBrush(QColor(255, 255, 255)));
+                        planItem->setForeground(QBrush(QColor(0, 0, 0)));
                     }
                 }
                 // 清空实际行的所有时间列（列6开始，跳过休息列22）
@@ -11217,6 +11263,9 @@ void tcpClient::onCurrentTableButtonClicked()
                     QTableWidgetItem* actualItem = assemblyIndicatorTable->item(actualRow, col);
                     if (actualItem) {
                         actualItem->setText("");
+                        // 重置背景色为默认（白色）
+                        actualItem->setBackground(QBrush(QColor(255, 255, 255)));
+                        actualItem->setForeground(QBrush(QColor(0, 0, 0)));
                     }
                 }
             }
@@ -11265,6 +11314,9 @@ void tcpClient::onHistoryTableButtonClicked()
                     QTableWidgetItem* planItem = assemblyIndicatorTable->item(planRow, col);
                     if (planItem) {
                         planItem->setText("");
+                        // 重置背景色为默认（白色）
+                        planItem->setBackground(QBrush(QColor(255, 255, 255)));
+                        planItem->setForeground(QBrush(QColor(0, 0, 0)));
                     }
                 }
                 // 清空实际行的所有时间列（列6开始，跳过休息列22）
@@ -11275,6 +11327,9 @@ void tcpClient::onHistoryTableButtonClicked()
                     QTableWidgetItem* actualItem = assemblyIndicatorTable->item(actualRow, col);
                     if (actualItem) {
                         actualItem->setText("");
+                        // 重置背景色为默认（白色）
+                        actualItem->setBackground(QBrush(QColor(255, 255, 255)));
+                        actualItem->setForeground(QBrush(QColor(0, 0, 0)));
                     }
                 }
             }
@@ -11548,11 +11603,9 @@ void tcpClient::loadAssemblyIndicatorHistoryFromDb(const QDate& date, const QStr
 
                     QTableWidgetItem* planItem = assemblyIndicatorTable->item(planRow, col);
                     if (planItem) {
-                        if (value > 0) {
-                            planItem->setText(QString::number(value, 'f', 1));
-                        } else {
-                            planItem->setText("");
-                        }
+                        // 计划行使用整数格式（向下取整）
+                        int intValue = static_cast<int>(value);
+                        planItem->setText(QString::number(intValue));
                     }
                 }
             }
@@ -11578,9 +11631,37 @@ void tcpClient::loadAssemblyIndicatorHistoryFromDb(const QDate& date, const QStr
                     if (actualItem) {
                         if (value > 0) {
                             // 实际行使用整数格式（数量）
-                            actualItem->setText(QString::number(static_cast<int>(value)));
+                            int actualValue = static_cast<int>(value);
+                            actualItem->setText(QString::number(actualValue));
+                            
+                            // 对比计划值，如果差值超过±1则标红
+                            QTableWidgetItem* planItem = assemblyIndicatorTable->item(planRow, col);
+                            if (planItem) {
+                                QString planValueStr = planItem->text().trimmed();
+                                if (!planValueStr.isEmpty()) {
+                                    bool ok = false;
+                                    int planValue = planValueStr.toInt(&ok);
+                                    if (ok) {
+                                        // 计算差值
+                                        int diff = actualValue - planValue;
+                                        
+                                        // 如果差值超过±1，标红；否则恢复默认颜色
+                                        if (diff > 1 || diff < -1) {
+                                            actualItem->setBackground(QBrush(QColor(255, 0, 0))); // 红色背景
+                                            actualItem->setForeground(QBrush(QColor(255, 255, 255))); // 白色文字
+                                        } else {
+                                            // 恢复默认颜色
+                                            actualItem->setBackground(QBrush());
+                                            actualItem->setForeground(QBrush());
+                                        }
+                                    }
+                                }
+                            }
                         } else {
                             actualItem->setText("");
+                            // 清空时恢复默认颜色
+                            actualItem->setBackground(QBrush());
+                            actualItem->setForeground(QBrush());
                         }
                     }
                 }
@@ -11601,7 +11682,7 @@ void tcpClient::loadAssemblyIndicatorHistoryFromDb(const QDate& date, const QStr
 }
 
 /**
- * @brief 更新总成指示表的实际行（实托盘搬出时调用）
+ * @brief 更新总成指示表的实际行（空托盘搬出时调用）
  * @param vehicleName 车型名称
  */
 void tcpClient::updateAssemblyIndicatorActualRow(const QString& vehicleName)
@@ -11653,15 +11734,10 @@ void tcpClient::updateAssemblyIndicatorActualRow(const QString& vehicleName)
     }
 
     // 根据当前时间找到对应的时间列
-    int targetCol = -1;
     int totalCols = assemblyIndicatorTable->columnCount();
     
-    // 遍历所有时间列，找到最接近当前时间的列
-    QTime bestTime;
+    // 遍历所有时间列，找到在当前时间范围内的列
     int bestCol = -1;
-    int minDiff = INT_MAX;
-    int bestColInRange = -1; // 在范围内的最佳列
-    int minDiffInRange = INT_MAX; // 在范围内的最小时间差
     
     for (int col = 6; col < totalCols; ++col) {
         if (col == 22) {
@@ -11763,57 +11839,20 @@ void tcpClient::updateAssemblyIndicatorActualRow(const QString& vehicleName)
                 // 每个时间段有4列，根据targetColumnIndex选择对应的列
                 if (targetColumnIndex >= 0 && targetColumnIndex < timeSlotColumns.size()) {
                     bestCol = timeSlotColumns[targetColumnIndex];
-                    minDiff = 0; // 完全匹配
                     break; // 找到后退出外层循环
                 }
             }
-        } else {
-            // 不在范围内，但计算时间差，作为备选
-            int timeDiff = 0;
-            if (currentTime < startTime) {
-                timeDiff = currentTime.secsTo(startTime) / 60;
-            } else if (currentTime > endTime) {
-                timeDiff = endTime.secsTo(currentTime) / 60;
-            }
-            
-            if (timeDiff < minDiff) {
-                minDiff = timeDiff;
-                // 选择该时间段的第一列作为备选
-                int firstLevelIndex = header->getFirstLevelIndex(col);
-                if (firstLevelIndex >= 0) {
-                    for (int c = 6; c < totalCols; ++c) {
-                        if (c == 22) continue;
-                        if (header->getFirstLevelIndex(c) == firstLevelIndex) {
-                            bestTime = startTime;
-                            if (bestCol < 0) {
-                                bestCol = c; // 使用该时间段的第一列
-                            }
-                            break;
-                        }
-                    }
-                }
-            }
         }
-    }
-
-    // 如果没找到精确匹配，使用在范围内的最接近的列
-    if (bestCol < 0 && bestColInRange >= 0) {
-        bestCol = bestColInRange;
-        qDebug() << QString("总成指示表：未找到精确匹配的时间列，使用最接近的列 %1（时间差: %2分钟）")
-                    .arg(bestCol).arg(minDiffInRange);
+        // 移除了不在范围内时寻找备选列的逻辑
+        // 如果时间不在任何时间段内，bestCol将保持为-1，不会更新表格
     }
 
     if (bestCol < 0) {
-        // 未找到对应的时间列，记录日志但不报错
-        qDebug() << QString("总成指示表：未找到车型%1对应的时间列（当前时间：%2，班次：%3），跳过更新")
+        // 未找到对应的时间列，不更新表格也不保存数据
+        qDebug() << QString("总成指示表：车型%1的时间（%2）不在任何时间段内（班次：%3），跳过更新")
                     .arg(vehicleName).arg(currentTime.toString("hh:mm")).arg(currentShift);
-        appendToLog(QString("总成指示表：未找到车型%1对应的时间列（当前时间：%2，班次：%3），跳过更新")
+        appendToLog(QString("总成指示表：车型%1的时间（%2）不在任何时间段内（班次：%3），数据未记录到表格")
                     .arg(vehicleName).arg(currentTime.toString("hh:mm")).arg(currentShift), false);
-        // 即使不更新显示，也需要保存数据
-        if (!shouldUpdateDisplay) {
-            saveAssemblyIndicatorCurrentShift();
-            saveAssemblyIndicatorHistory();
-        }
         return;
     }
 
@@ -11850,6 +11889,33 @@ void tcpClient::updateAssemblyIndicatorActualRow(const QString& vehicleName)
             actualItem->setTextAlignment(Qt::AlignCenter | Qt::AlignVCenter);
             actualItem->setFlags(actualItem->flags() & ~Qt::ItemIsEditable); // 设置为不可编辑
             assemblyIndicatorTable->setItem(actualRow, bestCol, actualItem);
+        }
+
+        // 对比计划值，如果差值超过±1则标红
+        int planRow = actualRow - 1; // 计划行是实际行的上一行
+        QTableWidgetItem* planItem = assemblyIndicatorTable->item(planRow, bestCol);
+        if (planItem) {
+            QString planValueStr = planItem->text().trimmed();
+            if (!planValueStr.isEmpty()) {
+                bool ok = false;
+                int planValue = planValueStr.toInt(&ok);
+                if (ok) {
+                    // 计算差值
+                    int diff = currentValue - planValue;
+                    
+                    // 如果差值超过±1，标红；否则恢复默认颜色
+                    if (diff > 1 || diff < -1) {
+                        actualItem->setBackground(QBrush(QColor(255, 0, 0))); // 红色背景
+                        actualItem->setForeground(QBrush(QColor(255, 255, 255))); // 白色文字
+                        appendToLog(QString("总成指示表：车型%1的实际值(%2)与计划值(%3)差值超过±1，已标红")
+                                    .arg(vehicleName).arg(currentValue).arg(planValue), false);
+                    } else {
+                        // 恢复默认颜色
+                        actualItem->setBackground(QBrush());
+                        actualItem->setForeground(QBrush());
+                    }
+                }
+            }
         }
 
         appendToLog(QString("总成指示表：车型%1的实际行已更新（时间列：%2，值：%3）")
