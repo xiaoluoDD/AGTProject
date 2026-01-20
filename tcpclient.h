@@ -258,6 +258,7 @@ private:
     void processServerJsonData(const QByteArray &data, bool saveToTable = true); ///< 处理服务端JSON数据（支持多个连续的JSON对象）
     bool processSingleJsonObject(const QString &jsonString, bool saveToTable = true); ///< 处理单个JSON对象
     bool processProductionDataJson(const QJsonObject &obj, bool saveToTable = true); ///< 处理生产数据上报JSON
+    bool processAssemblyInstructionJson(const QJsonObject &obj, bool saveToTable = true); ///< 处理总装指令JSON
     void sendVisualizationDataToServer(); ///< 发送可视化数据到服务端
     QJsonObject buildVisualizationData(); ///< 构建可视化数据JSON对象
     void sendProjectGroupDataToServer(); ///< 发送工程组数据到服务端
