@@ -7331,6 +7331,7 @@ bool tcpClient::processAssemblyInstructionJson(const QJsonObject &obj, bool save
     
     // 更新总装引取行的数据
     if (shouldUpdateDisplay) {
+        // 当前表格模式：更新UI并保存
         QTableWidgetItem* assemblyItem = assemblyIndicatorTable->item(assemblyRow, bestCol);
         if (assemblyItem) {
             // 获取当前值
@@ -7343,16 +7344,98 @@ bool tcpClient::processAssemblyInstructionJson(const QJsonObject &obj, bool save
             appendToLog(QString("总装指令：已更新车型%1在时间列%2的引取次数：当前=%3, 新值=%4, 最终=%5")
                         .arg(modelName).arg(bestCol).arg(currentValue).arg(exchangeCount).arg(newValue), false);
         }
-    }
-    
-    // 保存到数据库
-    if (saveToTable) {
-        qDebug() << "总装指令：准备保存到数据库";
-        saveAssemblyIndicatorCurrentShift();
-        saveAssemblyIndicatorHistory();
-        appendToLog("总装指令数据已保存到数据库", false);
+        
+        // 保存到数据库
+        if (saveToTable) {
+            qDebug() << "总装指令：准备保存到数据库";
+            saveAssemblyIndicatorCurrentShift();
+            saveAssemblyIndicatorHistory();
+            appendToLog("总装指令数据已保存到数据库", false);
+        } else {
+            qDebug() << "总装指令：saveToTable=false，不保存到数据库";
+        }
     } else {
-        qDebug() << "总装指令：saveToTable=false，不保存到数据库";
+        // 历史表格模式：直接更新数据库中的数据
+        if (saveToTable) {
+            QSqlDatabase db = QSqlDatabase::database();
+            if (db.isOpen()) {
+                QDate currentDate = QDate::currentDate();
+                QString shiftType = getCurrentShift();
+                
+                // 从当前班次表读取该车型的总装引取行数据
+                QSqlQuery query(db);
+                query.prepare("SELECT time_data FROM assembly_indicator_records "
+                             "WHERE vehicle_name = ? AND record_date = ? AND shift_type = ? AND row_type = 'assembly'");
+                query.addBindValue(modelName);
+                query.addBindValue(currentDate);
+                query.addBindValue(shiftType);
+                
+                if (query.exec() && query.next()) {
+                    QString timeDataStr = query.value(0).toString();
+                    
+                    // 解析JSON数据
+                    QJsonParseError parseError;
+                    QJsonDocument doc = QJsonDocument::fromJson(timeDataStr.toUtf8(), &parseError);
+                    if (parseError.error == QJsonParseError::NoError) {
+                        QJsonObject timeData = doc.object();
+                        
+                        // 获取二级表头值
+                        QString secondLevelValueStr = header->getSecondLevelHeader(bestCol);
+                        int secondLevelValue = secondLevelValueStr.toInt();
+                        
+                        // 更新对应列的值（取最大值）
+                        QString colKey = QString::number(bestCol);
+                        int currentValue = 0;
+                        if (timeData.contains(colKey)) {
+                            QJsonObject colData = timeData[colKey].toObject();
+                            currentValue = static_cast<int>(colData["value"].toDouble());
+                        }
+                        int newValue = qMax(currentValue, exchangeCount);
+                        
+                        // 更新JSON对象
+                        QJsonObject colData;
+                        colData["column_index"] = bestCol;
+                        colData["second_level_value"] = secondLevelValue;
+                        colData["value"] = newValue;
+                        timeData[colKey] = colData;
+                        
+                        // 保存回数据库
+                        QJsonDocument updatedDoc(timeData);
+                        QString updatedTimeDataStr = updatedDoc.toJson(QJsonDocument::Compact);
+                        
+                        query.prepare("UPDATE assembly_indicator_records "
+                                     "SET time_data = ?, update_time = ? "
+                                     "WHERE vehicle_name = ? AND record_date = ? AND shift_type = ? AND row_type = 'assembly'");
+                        query.addBindValue(updatedTimeDataStr);
+                        query.addBindValue(QDateTime::currentDateTime());
+                        query.addBindValue(modelName);
+                        query.addBindValue(currentDate);
+                        query.addBindValue(shiftType);
+                        
+                        if (query.exec()) {
+                            appendToLog(QString("总装指令（历史模式）：收到车型%1的总装指令，已更新数据库（时间列：%2，当前=%3，新值=%4，最终=%5）")
+                                        .arg(modelName).arg(bestCol).arg(currentValue).arg(exchangeCount).arg(newValue), false);
+                            qDebug() << QString("历史模式：已更新车型%1的总装引取行数据（时间列：%2，当前=%3，新值=%4，最终=%5）")
+                                        .arg(modelName).arg(bestCol).arg(currentValue).arg(exchangeCount).arg(newValue);
+                        } else {
+                            qWarning() << "历史模式：更新总装引取行数据失败:" << query.lastError().text();
+                        }
+                    } else {
+                        qWarning() << "历史模式：解析总装引取行JSON数据失败:" << parseError.errorString();
+                    }
+                } else {
+                    // 如果数据库中没有该车型的数据，记录日志
+                    qDebug() << QString("历史模式：车型%1在当前班次表中不存在，跳过更新").arg(modelName);
+                    appendToLog(QString("总装指令（历史模式）：车型%1在当前班次表中不存在，跳过更新").arg(modelName), false);
+                }
+            }
+            
+            // 保存到历史表（使用更新后的数据）
+            saveAssemblyIndicatorHistory();
+            appendToLog("总装指令数据已保存到历史表", false);
+        } else {
+            qDebug() << "总装指令：saveToTable=false，不保存到数据库";
+        }
     }
     
     return true;
