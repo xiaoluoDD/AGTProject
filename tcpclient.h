@@ -109,6 +109,9 @@ private slots:
     void onHistoryTableButtonClicked(); ///< 历史表格按钮点击处理
     void updateTableModeButtons(bool isHistoryMode); ///< 更新按钮选中状态和显示/隐藏班次时间按钮
     void onSelectHistoryDateShiftClicked(); ///< 选择历史数据时间和班次按钮点击处理
+    void onExportHistoryTableClicked(); ///< 导出历史表格按钮点击处理
+    void exportAssemblyIndicatorTableToCSV(); ///< 导出总装指示表数据为CSV文件
+    void exportAssemblyIndicatorTableToHTML(); ///< 导出总装指示表数据为Excel文件（.xls格式，支持单元格合并）
     void loadAssemblyIndicatorHistoryFromDb(const QDate& date, const QString& shiftType); ///< 从历史表加载总装指示表数据
     void updateAssemblyIndicatorActualRow(const QString& vehicleName); ///< 更新总成指示表的实际行（实托盘搬出时调用）
 
@@ -263,6 +266,7 @@ private:
     QJsonObject buildVisualizationData(); ///< 构建可视化数据JSON对象
     void sendProjectGroupDataToServer(); ///< 发送工程组数据到服务端
     QJsonObject buildProjectGroupData(); ///< 构建工程组数据JSON对象
+    void sendOvertimeInfoToServer(); ///< 发送加班时间信息到服务端
     void sendExceptionDataToServer(); ///< 发送异常记录数据到服务端
     QJsonObject buildExceptionData(); ///< 构建异常记录数据JSON对象（当前班次）
     void handleRealTrayIn(const QString &modelName, int slotNumber = -1); ///< 处理实托盘搬入，slotNumber为-1时使用原逻辑，否则根据slotNumber确定位置
@@ -342,6 +346,7 @@ private:
     QPushButton* pushButtonCurrentTable; ///< 当前表格按钮
     QPushButton* pushButtonHistoryTable; ///< 历史表格按钮
     QPushButton* pushButtonSelectHistoryDateShift; ///< 选择历史数据的时间和班次按钮
+    QPushButton* pushButtonExportHistoryTable; ///< 导出历史表格按钮
     double m_overtimeHours; ///< 当前选择的加班时间（小时）
     bool m_isHistoryTableMode; ///< 是否显示历史表格模式（true=历史表格，false=当前表格）
     QDate m_selectedHistoryDate; ///< 当前选择的历史日期

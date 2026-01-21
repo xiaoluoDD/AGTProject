@@ -6,6 +6,7 @@
 #include <QHeaderView>
 #include <QFileDialog>
 #include <QTextStream>
+#include <QStringConverter>
 #include <QTableWidgetItem>
 #include <QSet>
 #include <algorithm>
@@ -1368,6 +1369,27 @@ void tcpClient::setupUI()
     pushButtonSelectHistoryDateShift->setVisible(false); // 初始隐藏
     topButtonLayout->addWidget(pushButtonSelectHistoryDateShift);
     
+    // 创建导出历史表格按钮（初始隐藏）
+    pushButtonExportHistoryTable = new QPushButton(assemblyIndicatorBox);
+    pushButtonExportHistoryTable->setText("导出表格");
+    pushButtonExportHistoryTable->setObjectName("pushButtonExportHistoryTable");
+    pushButtonExportHistoryTable->setMinimumSize(100, 30);
+    pushButtonExportHistoryTable->setStyleSheet(
+        "QPushButton {"
+        "background-color: #2196F3;"
+        "color: white;"
+        "font-weight: bold;"
+        "border: 2px solid #1976D2;"
+        "border-radius: 4px;"
+        "padding: 5px 15px;"
+        "}"
+        "QPushButton:hover {"
+        "background-color: #1976D2;"
+        "}"
+    );
+    pushButtonExportHistoryTable->setVisible(false); // 初始隐藏
+    topButtonLayout->addWidget(pushButtonExportHistoryTable);
+    
     // 初始化表格模式状态（默认显示当前表格）
     m_isHistoryTableMode = false;
     m_selectedHistoryDate = QDate(); // 初始化为无效日期
@@ -1578,6 +1600,9 @@ void tcpClient::setupUI()
     }
     if (pushButtonSelectHistoryDateShift) {
         connect(pushButtonSelectHistoryDateShift, &QPushButton::clicked, this, &tcpClient::onSelectHistoryDateShiftClicked);
+    }
+    if (pushButtonExportHistoryTable) {
+        connect(pushButtonExportHistoryTable, &QPushButton::clicked, this, &tcpClient::onExportHistoryTableClicked);
     }
 
     // 连接总装指示表数据变化信号槽
@@ -4644,17 +4669,23 @@ void tcpClient::onAssemblyIndicatorItemChanged(QTableWidgetItem *item)
 void tcpClient::onOvertimeTimeButtonClicked()
 {
     // 创建选项列表：不加班 + 0.25小时（15分钟）到3小时，以0.25小时（15分钟）递增
+    // 使用整数循环避免浮点数累加误差
     QStringList options;
     options << "不加班";
-    for (double h = 0.25; h <= 3.0; h += 0.25) {
+    for (int i = 1; i <= 12; ++i) { // 1到12对应0.25到3.0小时
+        double h = i * 0.25;
         // 显示格式：15分钟显示为"0.25小时"，30分钟显示为"0.5小时"，等等
-        options << QString("%1小时").arg(h);
+        // 使用 %.2f 格式保证精度
+        options << QString::number(h, 'f', 2) + "小时";
     }
     
     // 计算当前选择的索引（0=不加班，1=0.25小时，2=0.5小时，...）
     int currentIndex = 0;
     if (m_overtimeHours > 0) {
-        currentIndex = static_cast<int>((m_overtimeHours - 0.25) / 0.25) + 1;
+        // 使用四舍五入避免精度问题
+        currentIndex = qRound(m_overtimeHours / 0.25);
+        if (currentIndex < 0) currentIndex = 0;
+        if (currentIndex > 12) currentIndex = 12;
     }
     
     // 显示选择对话框
@@ -4671,8 +4702,14 @@ void tcpClient::onOvertimeTimeButtonClicked()
         if (selected == "不加班") {
             hours = 0.0;
         } else {
-            // 提取小时数
-            hours = selected.replace("小时", "").toDouble();
+            // 提取小时数（移除"小时"后缀）
+            QString hoursStr = selected;
+            hoursStr.replace("小时", "");
+            hours = hoursStr.toDouble();
+            
+            // 四舍五入到0.25的倍数，避免精度问题
+            hours = qRound(hours / 0.25) * 0.25;
+            
             qDebug() << QString("选择的加班时间：原始字符串='%1'，解析后hours=%2").arg(selected).arg(hours);
         }
         
@@ -4719,6 +4756,9 @@ void tcpClient::onOvertimeTimeButtonClicked()
             saveAssemblyIndicatorCurrentShift(); // 保存到当前班次表（含加班时间）
             saveAssemblyIndicatorHistory(); // 保存到历史表
             appendToLog("加班时间已自动保存到数据库", false);
+            
+            // 发送加班时间信息到服务端
+            sendOvertimeInfoToServer();
         }
     }
 }
@@ -4739,9 +4779,15 @@ void tcpClient::addOvertimeColumns(double hours)
         return;
     }
     
+    // 四舍五入到0.25的倍数，避免浮点数精度问题
+    hours = qRound(hours / 0.25) * 0.25;
+    
     // 计算完整的小时数和剩余时间
     int fullHours = static_cast<int>(hours);  // 完整的小时数
     double remainingHours = hours - fullHours;  // 剩余的小时数（0, 0.25, 0.5, 0.75）
+    
+    // 再次四舍五入 remainingHours 到0.25的倍数，确保精度
+    remainingHours = qRound(remainingHours / 0.25) * 0.25;
     
     // 计算需要添加的列数（每15分钟一列，所以0.25小时=1列，0.5小时=2列，1小时=4列）
     int colsToAdd = static_cast<int>(hours * 4);
@@ -4931,8 +4977,9 @@ void tcpClient::updatePlanRowsForOvertimeColumns(int startCol)
         int planRow = row + 1;
 
         // 获取节拍（列4）和收容数（列1）
-        QTableWidgetItem* rhythmItem = assemblyIndicatorTable->item(planRow, 4);
-        QTableWidgetItem* capacityItem = assemblyIndicatorTable->item(planRow, 1);
+        // 注意：列0-4是合并的3行，item在assemblyRow上
+        QTableWidgetItem* rhythmItem = assemblyIndicatorTable->item(assemblyRow, 4);
+        QTableWidgetItem* capacityItem = assemblyIndicatorTable->item(assemblyRow, 1);
 
         if (!rhythmItem || !capacityItem) {
             continue;
@@ -7290,7 +7337,8 @@ bool tcpClient::processAssemblyInstructionJson(const QJsonObject &obj, bool save
             int currentValue = assemblyItem->text().trimmed().toInt();
             // 取最大值（不累加）
             int newValue = qMax(currentValue, exchangeCount);
-            assemblyItem->setText(QString::number(newValue));
+            // 如果值为0则显示空字符串，否则显示数值
+            assemblyItem->setText(newValue > 0 ? QString::number(newValue) : "");
             
             appendToLog(QString("总装指令：已更新车型%1在时间列%2的引取次数：当前=%3, 新值=%4, 最终=%5")
                         .arg(modelName).arg(bestCol).arg(currentValue).arg(exchangeCount).arg(newValue), false);
@@ -9552,6 +9600,48 @@ void tcpClient::sendExceptionDataToServer()
 }
 
 /**
+ * @brief 发送加班时间信息到服务端
+ */
+void tcpClient::sendOvertimeInfoToServer()
+{
+    // 检查服务端连接状态
+    if (!m_serverSocket || m_serverSocket->state() != QAbstractSocket::ConnectedState) {
+        qDebug() << "服务端未连接，跳过发送加班时间信息";
+        return; // 未连接，不发送
+    }
+    
+    // 获取当前日期、班次和时间戳
+    QDateTime now = QDateTime::currentDateTime();
+    QDate currentDate = now.date();
+    QString shiftType = getCurrentShift();
+    QString timestamp = now.toString("yyyy-MM-dd HH:mm:ss");
+    
+    // 构建JSON数据
+    QJsonObject jsonData;
+    jsonData["instructionType"] = "加班时间设置";
+    jsonData["date"] = currentDate.toString("yyyy-MM-dd");
+    jsonData["shiftType"] = shiftType;
+    jsonData["overtimeHours"] = m_overtimeHours;
+    jsonData["overtimeMinutes"] = static_cast<int>(m_overtimeHours * 60);
+    jsonData["timestamp"] = timestamp;
+    
+    QJsonDocument doc(jsonData);
+    QByteArray jsonBytes = doc.toJson();
+    
+    // 发送数据
+    qint64 bytesWritten = m_serverSocket->write(jsonBytes);
+    if (bytesWritten > 0) {
+        qDebug() << "已发送加班时间信息到服务端，大小:" << bytesWritten << "字节";
+        appendToLog(QString("已发送加班时间信息到服务端：%1小时（%2分钟）")
+                    .arg(m_overtimeHours)
+                    .arg(static_cast<int>(m_overtimeHours * 60)), false);
+    } else {
+        appendToLog("发送加班时间信息到服务端失败", true);
+        qWarning() << "发送加班时间信息失败";
+    }
+}
+
+/**
  * @brief 获取当前班次（"白班"或"夜班"）
  * @return 当前班次字符串
  */
@@ -11182,6 +11272,10 @@ void tcpClient::loadAssemblyIndicatorFromDb(const QDate& date, const QString& sh
     qDebug() << QString("从数据库加载完成：总装引取行%1个，计划行%2个，实际行%3个")
                 .arg(vehicleAssemblyData.size()).arg(vehiclePlanData.size()).arg(vehicleActualData.size());
 
+    // 四舍五入加班时间到0.25的倍数，避免浮点数精度问题
+    loadedOvertimeHours = qRound(loadedOvertimeHours / 0.25) * 0.25;
+    qDebug() << QString("从数据库加载的加班时间（四舍五入后）：%1小时").arg(loadedOvertimeHours);
+
     // 如果当前班次表没有数据，但配置表有数据，则只加载配置表的参量
     if (vehicleAssemblyData.isEmpty() && vehiclePlanData.isEmpty() && vehicleActualData.isEmpty() && !configData.isEmpty()) {
         qDebug() << QString("当前班次表无数据，仅加载配置表的参量设置");
@@ -11193,7 +11287,8 @@ void tcpClient::loadAssemblyIndicatorFromDb(const QDate& date, const QString& sh
     TwoLevelHeaderView* header = static_cast<TwoLevelHeaderView*>(headerView);
 
     // 先恢复加班时间设置（如果需要）
-    if (loadedOvertimeHours != m_overtimeHours) {
+    // 使用容差判断，避免浮点数精度问题导致误判
+    if (qAbs(loadedOvertimeHours - m_overtimeHours) > 0.01) {
         // 如果之前有加班时间列，先移除
         if (m_overtimeHours > 0) {
             // 计算需要移除的列数（每15分钟一列，所以0.25小时=1列，0.5小时=2列，1小时=4列）
@@ -11333,9 +11428,9 @@ void tcpClient::loadAssemblyIndicatorFromDb(const QDate& date, const QString& sh
 
                     QTableWidgetItem* assemblyItem = assemblyIndicatorTable->item(assemblyRow, col);
                     if (assemblyItem) {
-                        // 总装引取行使用整数格式
+                        // 总装引取行使用整数格式，0值显示为空
                         int intValue = static_cast<int>(value);
-                        assemblyItem->setText(QString::number(intValue));
+                        assemblyItem->setText(intValue > 0 ? QString::number(intValue) : "");
                     }
                 }
             }
@@ -11667,9 +11762,13 @@ void tcpClient::updateTableModeButtons(bool isHistoryMode)
         // 如果切换到历史表格模式，重置按钮文本
         if (isHistoryMode) {
             pushButtonSelectHistoryDateShift->setText("选择班次时间");
-            m_selectedHistoryDate = QDate(); // 重置选择的日期
-            m_selectedHistoryShift = ""; // 重置选择的班次
         }
+    }
+    
+    // 显示/隐藏导出按钮
+    if (pushButtonExportHistoryTable) {
+        // 只有在历史表格模式下才显示导出按钮
+        pushButtonExportHistoryTable->setVisible(isHistoryMode);
     }
 }
 
@@ -11887,6 +11986,414 @@ void tcpClient::onSelectHistoryDateShiftClicked()
 }
 
 /**
+ * @brief 导出历史表格按钮点击处理
+ */
+void tcpClient::onExportHistoryTableClicked()
+{
+    // 检查是否在历史表格模式下
+    if (!m_isHistoryTableMode) {
+        QMessageBox::warning(this, "提示", "请先切换到历史表格模式");
+        return;
+    }
+    
+    // 检查是否已选择日期和班次
+    if (!m_selectedHistoryDate.isValid() || m_selectedHistoryShift.isEmpty()) {
+        QMessageBox::warning(this, "提示", "请先选择要导出的日期和班次");
+        return;
+    }
+    
+    // 检查表格是否为空
+    if (!assemblyIndicatorTable || assemblyIndicatorTable->rowCount() == 0) {
+        QMessageBox::warning(this, "提示", "表格为空，无法导出");
+        return;
+    }
+    
+    // 弹出对话框让用户选择导出格式
+    QStringList formatOptions;
+    formatOptions << "Excel格式（支持单元格合并，推荐）" << "CSV格式（通用格式，简单编辑）";
+    
+    bool ok;
+    QString selectedFormat = QInputDialog::getItem(this, "选择导出格式", 
+                                                   "请选择导出格式：", 
+                                                   formatOptions, 
+                                                   0, 
+                                                   false, &ok);
+    
+    if (ok && !selectedFormat.isEmpty()) {
+        if (selectedFormat.contains("Excel")) {
+            exportAssemblyIndicatorTableToHTML();
+        } else {
+            exportAssemblyIndicatorTableToCSV();
+        }
+    }
+}
+
+/**
+ * @brief 导出总装指示表数据为CSV文件
+ */
+void tcpClient::exportAssemblyIndicatorTableToCSV()
+{
+    // 生成默认文件名：总装指示表_日期_班次.csv
+    QString defaultFileName = QString("总装指示表_%1_%2.csv")
+                              .arg(m_selectedHistoryDate.toString("yyyy-MM-dd"))
+                              .arg(m_selectedHistoryShift);
+    
+    // 弹出文件保存对话框
+    QString fileName = QFileDialog::getSaveFileName(this,
+                                                    "导出总装指示表",
+                                                    defaultFileName,
+                                                    "CSV文件 (*.csv)");
+    
+    if (fileName.isEmpty()) {
+        return; // 用户取消了保存
+    }
+    
+    // 创建CSV文件
+    QFile file(fileName);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        QMessageBox::critical(this, "错误", QString("无法创建文件: %1").arg(fileName));
+        return;
+    }
+    
+    // 手动写入UTF-8 BOM（0xEF, 0xBB, 0xBF），以便Excel正确识别UTF-8编码
+    QByteArray bom;
+    bom.append((char)0xEF);
+    bom.append((char)0xBB);
+    bom.append((char)0xBF);
+    file.write(bom);
+    
+    QTextStream out(&file);
+    // Qt 6: 使用setEncoding代替setCodec
+    out.setEncoding(QStringConverter::Utf8);
+    
+    // 获取表头
+    QHeaderView* headerView = assemblyIndicatorTable->horizontalHeader();
+    TwoLevelHeaderView* header = dynamic_cast<TwoLevelHeaderView*>(headerView);
+    
+    int colCount = assemblyIndicatorTable->columnCount();
+    int rowCount = assemblyIndicatorTable->rowCount();
+    
+    // 写入表头信息
+    out << "总装指示表历史数据\n";
+    out << QString("日期：%1\n").arg(m_selectedHistoryDate.toString("yyyy-MM-dd"));
+    out << QString("班次：%1\n").arg(m_selectedHistoryShift);
+    out << QString("导出时间：%1\n\n").arg(QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss"));
+    
+    // 写入表头（第一行：一级表头）
+    for (int col = 0; col < colCount; ++col) {
+        if (header) {
+            QString firstLevelText = header->getFirstLevelHeader(col);
+            // 替换换行符为空格，便于CSV显示
+            firstLevelText = firstLevelText.replace('\n', ' ');
+            out << "\"" << firstLevelText << "\"";
+        } else {
+            out << "\"\"";
+        }
+        
+        if (col < colCount - 1) {
+            out << ",";
+        }
+    }
+    out << "\n";
+    
+    // 写入表头（第二行：二级表头）
+    for (int col = 0; col < colCount; ++col) {
+        if (header) {
+            QString secondLevelText = header->getSecondLevelHeader(col);
+            out << "\"" << secondLevelText << "\"";
+        } else {
+            // 如果没有自定义表头，使用默认表头
+            out << "\"" << assemblyIndicatorTable->horizontalHeaderItem(col)->text() << "\"";
+        }
+        
+        if (col < colCount - 1) {
+            out << ",";
+        }
+    }
+    out << "\n";
+    
+    // 写入数据行（改进格式：模拟合并单元格效果）
+    for (int row = 0; row < rowCount; ++row) {
+        // 每3行为一组（总装引取行、计划行、实际行）
+        int groupRow = row % 3; // 0=总装引取行, 1=计划行, 2=实际行
+        
+        for (int col = 0; col < colCount; ++col) {
+            QString cellText;
+            
+            // 列0-4（车型名称、收容数、产量、生产总托数、节拍）在原表格中是合并的3行
+            // 只在第一行（总装引取行）输出内容，其他行留空以模拟合并效果
+            if (col >= 0 && col <= 4) {
+                if (groupRow == 0) {
+                    // 总装引取行：显示合并单元格的内容
+                    int assemblyRow = (row / 3) * 3;
+                    QTableWidgetItem* item = assemblyIndicatorTable->item(assemblyRow, col);
+                    if (item) {
+                        cellText = item->text();
+                    }
+                } else {
+                    // 计划行和实际行：留空（模拟合并单元格效果）
+                    cellText = "";
+                }
+            } else {
+                // 列5及之后：正常输出每行的内容
+                QTableWidgetItem* item = assemblyIndicatorTable->item(row, col);
+                if (item) {
+                    cellText = item->text();
+                }
+            }
+            
+            // CSV格式：字段用双引号包围，内部的双引号要转义为两个双引号
+            cellText = cellText.replace("\"", "\"\"");
+            out << "\"" << cellText << "\"";
+            
+            if (col < colCount - 1) {
+                out << ",";
+            }
+        }
+        out << "\n";
+    }
+    
+    file.close();
+    
+    // 导出成功提示
+    QMessageBox::information(this, "成功", QString("数据已成功导出到:\n%1\n\n提示：CSV格式不支持单元格合并，\n合并列在第一行显示内容，其他行留空。\n如需完整的单元格合并效果，\n请选择Excel格式导出。").arg(fileName));
+    appendToLog(QString("总装指示表数据已导出到CSV: %1").arg(fileName), false);
+}
+
+/**
+ * @brief 导出总装指示表数据为Excel文件（.xls格式，支持单元格合并）
+ * 
+ * 实际上是HTML格式的内容，但保存为.xls扩展名，这样双击时会自动用Excel/WPS打开
+ */
+void tcpClient::exportAssemblyIndicatorTableToHTML()
+{
+    // 生成默认文件名：总装指示表_日期_班次.xls
+    QString defaultFileName = QString("总装指示表_%1_%2.xls")
+                              .arg(m_selectedHistoryDate.toString("yyyy-MM-dd"))
+                              .arg(m_selectedHistoryShift);
+    
+    // 弹出文件保存对话框
+    QString fileName = QFileDialog::getSaveFileName(this,
+                                                    "导出总装指示表（Excel格式）",
+                                                    defaultFileName,
+                                                    "Excel文件 (*.xls)");
+    
+    if (fileName.isEmpty()) {
+        return; // 用户取消了保存
+    }
+    
+    // 创建HTML文件
+    QFile file(fileName);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        QMessageBox::critical(this, "错误", QString("无法创建文件: %1").arg(fileName));
+        return;
+    }
+    
+    QTextStream out(&file);
+    out.setEncoding(QStringConverter::Utf8);
+    
+    // 获取表头
+    QHeaderView* headerView = assemblyIndicatorTable->horizontalHeader();
+    TwoLevelHeaderView* header = dynamic_cast<TwoLevelHeaderView*>(headerView);
+    
+    int colCount = assemblyIndicatorTable->columnCount();
+    int rowCount = assemblyIndicatorTable->rowCount();
+    
+    // 写入HTML文档头部
+    out << "<!DOCTYPE html>\n";
+    out << "<html>\n";
+    out << "<head>\n";
+    out << "<meta charset=\"UTF-8\">\n";
+    out << "<title>总装指示表 - " << m_selectedHistoryDate.toString("yyyy-MM-dd") << " " << m_selectedHistoryShift << "</title>\n";
+    out << "<style>\n";
+    out << "body { font-family: Arial, 'Microsoft YaHei', sans-serif; margin: 20px; }\n";
+    out << "h1 { color: #333; text-align: center; }\n";
+    out << ".info { text-align: center; color: #666; margin-bottom: 20px; }\n";
+    out << "table { border-collapse: collapse; width: 100%; margin: 20px auto; }\n";
+    out << "th, td { border: 1px solid #ccc; padding: 8px; text-align: center; }\n";
+    out << "th { background-color: #4CAF50; color: white; font-weight: bold; }\n";
+    out << ".header-row-1 th { background-color: #4CAF50; color: white; font-weight: bold; }\n";
+    out << ".header-row-2 th { background-color: #4CAF50; color: white; font-weight: bold; }\n";
+    out << ".assembly-row { background-color: #E8F5E9; }\n";
+    out << ".plan-row { background-color: #FFF3E0; }\n";
+    out << ".actual-row { background-color: #E3F2FD; }\n";
+    out << "</style>\n";
+    out << "</head>\n";
+    out << "<body>\n";
+    
+    // 写入标题和信息
+    out << "<h1>总装指示表历史数据</h1>\n";
+    out << "<div class=\"info\">\n";
+    out << "<p>日期：" << m_selectedHistoryDate.toString("yyyy-MM-dd") << "</p>\n";
+    out << "<p>班次：" << m_selectedHistoryShift << "</p>\n";
+    out << "<p>导出时间：" << QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss") << "</p>\n";
+    out << "</div>\n";
+    
+    // 开始写入表格
+    out << "<table>\n";
+    
+    // 写入第一行表头（一级表头，需要合并列）
+    out << "<tr class=\"header-row-1\">\n";
+    
+    // 前5列（车型名称、收容数、产量、生产总托数、节拍）跨两行（一级和二级表头）
+    for (int col = 0; col <= 4; ++col) {
+        QString firstLevelText;
+        if (header) {
+            firstLevelText = header->getFirstLevelHeader(col);
+        }
+        // 先转义HTML特殊字符，再替换换行符为<br>
+        firstLevelText = firstLevelText.toHtmlEscaped();
+        firstLevelText = firstLevelText.replace('\n', "<br>");
+        out << "<th rowspan=\"2\">" << firstLevelText << "</th>\n";
+    }
+    
+    // 列5（托盘搬运）跨两行
+    if (header) {
+        QString firstLevelText = header->getFirstLevelHeader(5);
+        // 先转义HTML特殊字符，再替换换行符为<br>
+        firstLevelText = firstLevelText.toHtmlEscaped();
+        firstLevelText = firstLevelText.replace('\n', "<br>");
+        out << "<th rowspan=\"2\">" << firstLevelText << "</th>\n";
+    }
+    
+    // 列6开始是时间列，每个一级表头跨4列（除了休息列22是1列）
+    int col = 6;
+    QString lastFirstLevelText;
+    int colspan = 0;
+    
+    while (col < colCount) {
+        if (col == 22) {
+            // 休息列：单独一列，跨两行（一级和二级表头）
+            QString firstLevelText;
+            if (header) {
+                firstLevelText = header->getFirstLevelHeader(col);
+            }
+            // 先转义HTML特殊字符，再替换换行符为<br>
+            firstLevelText = firstLevelText.toHtmlEscaped();
+            firstLevelText = firstLevelText.replace('\n', "<br>");
+            out << "<th rowspan=\"2\">" << firstLevelText << "</th>\n";
+            col++;
+        } else {
+            // 时间列：每个时间段跨4列
+            QString firstLevelText;
+            if (header) {
+                firstLevelText = header->getFirstLevelHeader(col);
+            }
+            // 先转义HTML特殊字符，再替换换行符为<br>
+            firstLevelText = firstLevelText.toHtmlEscaped();
+            firstLevelText = firstLevelText.replace('\n', "<br>");
+            
+            // 检查接下来有多少列属于同一个一级表头
+            colspan = 1;
+            int nextCol = col + 1;
+            while (nextCol < colCount && nextCol != 22) {
+                QString nextFirstLevelText;
+                if (header) {
+                    nextFirstLevelText = header->getFirstLevelHeader(nextCol);
+                }
+                if (nextFirstLevelText == header->getFirstLevelHeader(col)) {
+                    colspan++;
+                    nextCol++;
+                } else {
+                    break;
+                }
+            }
+            
+            // 输出合并的一级表头
+            if (colspan > 1) {
+                out << "<th colspan=\"" << colspan << "\">" << firstLevelText << "</th>\n";
+            } else {
+                out << "<th>" << firstLevelText << "</th>\n";
+            }
+            
+            col += colspan;
+        }
+    }
+    
+    out << "</tr>\n";
+    
+    // 写入第二行表头（二级表头）
+    out << "<tr class=\"header-row-2\">\n";
+    // 前6列（0-5）和休息列（22）已经在一级表头中使用rowspan=2，所以这里跳过
+    for (int col = 6; col < colCount; ++col) {
+        // 跳过休息列（列22），因为它在一级表头中已经使用了rowspan=2
+        if (col == 22) {
+            continue;
+        }
+        
+        QString secondLevelText;
+        if (header) {
+            secondLevelText = header->getSecondLevelHeader(col);
+        }
+        
+        // 先转义HTML特殊字符，再替换换行符为<br>
+        secondLevelText = secondLevelText.toHtmlEscaped();
+        secondLevelText = secondLevelText.replace('\n', "<br>");
+        
+        out << "<th>" << secondLevelText << "</th>\n";
+    }
+    out << "</tr>\n";
+    
+    // 写入数据行（支持单元格合并）
+    for (int row = 0; row < rowCount; ++row) {
+        int groupRow = row % 3; // 0=总装引取行, 1=计划行, 2=实际行
+        
+        // 设置行样式类
+        QString rowClass;
+        if (groupRow == 0) {
+            rowClass = "assembly-row";
+        } else if (groupRow == 1) {
+            rowClass = "plan-row";
+        } else {
+            rowClass = "actual-row";
+        }
+        
+        out << "<tr class=\"" << rowClass << "\">\n";
+        
+        for (int col = 0; col < colCount; ++col) {
+            QString cellText;
+            QTableWidgetItem* item = assemblyIndicatorTable->item(row, col);
+            
+            if (item) {
+                cellText = item->text().toHtmlEscaped();
+            }
+            
+            // 列0-4（车型名称、收容数、产量、生产总托数、节拍）在原表格中是合并的3行
+            if (col >= 0 && col <= 4) {
+                if (groupRow == 0) {
+                    // 总装引取行：输出合并单元格（rowspan=3）
+                    out << "<td rowspan=\"3\">" << cellText << "</td>\n";
+                }
+                // 计划行和实际行：不输出这些列（因为已经被合并）
+            } else if (col == 22) {
+                // 列22（休息列）合并所有数据行为一个单元格
+                if (row == 0) {
+                    // 第一行：输出合并单元格（rowspan=所有行数），显示加班时间
+                    out << "<td rowspan=\"" << rowCount << "\">" << cellText << "</td>\n";
+                }
+                // 其他行：不输出这列（因为已经被合并）
+            } else {
+                // 其他列：正常输出
+                out << "<td>" << cellText << "</td>\n";
+            }
+        }
+        
+        out << "</tr>\n";
+    }
+    
+    // 结束表格和HTML文档
+    out << "</table>\n";
+    out << "</body>\n";
+    out << "</html>\n";
+    
+    file.close();
+    
+    // 导出成功提示
+    QMessageBox::information(this, "成功", QString("数据已成功导出到:\n%1\n\n提示：文件可直接用Excel/WPS打开查看。").arg(fileName));
+    appendToLog(QString("总装指示表数据已导出到Excel格式: %1").arg(fileName), false);
+}
+
+/**
  * @brief 从历史表加载总装指示表数据
  */
 void tcpClient::loadAssemblyIndicatorHistoryFromDb(const QDate& date, const QString& shiftType)
@@ -11974,6 +12481,10 @@ void tcpClient::loadAssemblyIndicatorHistoryFromDb(const QDate& date, const QStr
         }
     }
 
+    // 四舍五入加班时间到0.25的倍数，避免浮点数精度问题
+    loadedOvertimeHours = qRound(loadedOvertimeHours / 0.25) * 0.25;
+    qDebug() << QString("从历史表加载的加班时间（四舍五入后）：%1小时").arg(loadedOvertimeHours);
+
     if (vehiclePlanData.isEmpty() && vehicleActualData.isEmpty()) {
         appendToLog(QString("未找到日期 %1 班次 %2 的历史数据，表格将显示为空").arg(date.toString("yyyy-MM-dd")).arg(shiftType), false);
         
@@ -12049,7 +12560,8 @@ void tcpClient::loadAssemblyIndicatorHistoryFromDb(const QDate& date, const QStr
     TwoLevelHeaderView* header = static_cast<TwoLevelHeaderView*>(headerView);
 
     // 先恢复加班时间设置（如果需要）
-    if (loadedOvertimeHours != m_overtimeHours) {
+    // 使用容差判断，避免浮点数精度问题导致误判
+    if (qAbs(loadedOvertimeHours - m_overtimeHours) > 0.01) {
         // 如果之前有加班时间列，先移除
         if (m_overtimeHours > 0) {
             int colsToRemove = static_cast<int>(m_overtimeHours * 4);
@@ -12079,9 +12591,38 @@ void tcpClient::loadAssemblyIndicatorHistoryFromDb(const QDate& date, const QStr
     bool wasBlocked = assemblyIndicatorTable->blockSignals(true);
 
     try {
-        // 先清空所有实际行的数据（时间列，列6开始）
+        // 先清空所有总装引取行、计划行和实际行的数据（时间列，列6开始）
         for (int row = 0; row < assemblyIndicatorTable->rowCount(); row += 3) {
+            int assemblyRow = row;
+            int planRow = row + 1;
             int actualRow = row + 2;
+            
+            // 清空总装引取行的所有时间列（列6开始，跳过休息列22）
+            for (int col = 6; col < assemblyIndicatorTable->columnCount(); ++col) {
+                if (col == 22) {
+                    continue; // 跳过休息列
+                }
+                QTableWidgetItem* assemblyItem = assemblyIndicatorTable->item(assemblyRow, col);
+                if (assemblyItem) {
+                    assemblyItem->setText("");
+                    assemblyItem->setBackground(QBrush(QColor(255, 255, 255)));
+                    assemblyItem->setForeground(QBrush(QColor(0, 0, 0)));
+                }
+            }
+            
+            // 清空计划行的所有时间列（列6开始，跳过休息列22）
+            for (int col = 6; col < assemblyIndicatorTable->columnCount(); ++col) {
+                if (col == 22) {
+                    continue; // 跳过休息列
+                }
+                QTableWidgetItem* planItem = assemblyIndicatorTable->item(planRow, col);
+                if (planItem) {
+                    planItem->setText("");
+                    planItem->setBackground(QBrush(QColor(255, 255, 255)));
+                    planItem->setForeground(QBrush(QColor(0, 0, 0)));
+                }
+            }
+            
             // 清空实际行的所有时间列（列6开始，跳过休息列22）
             for (int col = 6; col < assemblyIndicatorTable->columnCount(); ++col) {
                 if (col == 22) {
@@ -12129,12 +12670,16 @@ void tcpClient::loadAssemblyIndicatorHistoryFromDb(const QDate& date, const QStr
                     double value = colData["value"].toDouble();
 
                     QTableWidgetItem* assemblyItem = assemblyIndicatorTable->item(assemblyRow, col);
-                    if (assemblyItem && value > 0) {
-                        // 总装引取行使用整数格式
+                    if (assemblyItem) {
+                        // 总装引取行使用整数格式，0值显示为空
                         int intValue = static_cast<int>(value);
-                        assemblyItem->setText(QString::number(intValue));
-                        loadedCount++;
-                        qDebug() << QString("  恢复：列%1，值=%2").arg(col).arg(intValue);
+                        if (intValue > 0) {
+                            assemblyItem->setText(QString::number(intValue));
+                            loadedCount++;
+                            qDebug() << QString("  恢复：列%1，值=%2").arg(col).arg(intValue);
+                        } else {
+                            assemblyItem->setText("");
+                        }
                     }
                 }
                 
