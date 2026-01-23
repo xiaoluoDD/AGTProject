@@ -258,6 +258,7 @@ private:
     void saveShiftConfig(); ///< 保存班次设置到数据库
     void loadShiftConfig(); ///< 从数据库加载班次设置
     void updateServerConnectionStatus(bool connected); ///< 更新服务端连接状态显示
+    int findCompleteJsonObject(const QByteArray &buffer); ///< 查找缓冲区中第一个完整的JSON对象
     void processServerJsonData(const QByteArray &data, bool saveToTable = true); ///< 处理服务端JSON数据（支持多个连续的JSON对象）
     bool processSingleJsonObject(const QString &jsonString, bool saveToTable = true); ///< 处理单个JSON对象
     bool processProductionDataJson(const QJsonObject &obj, bool saveToTable = true); ///< 处理生产数据上报JSON
@@ -302,6 +303,7 @@ private:
     Ui::tcpClient *ui;            ///< UI界面指针
     QTcpSocket *m_socket;         ///< PLC TCP Socket对象
     QTcpSocket *m_serverSocket;  ///< 服务端 TCP Socket对象
+    QByteArray m_serverDataBuffer; ///< 服务端数据缓冲区（用于处理TCP分包）
     QTcpSocket *m_edSoftwareSocket; ///< ED软件 TCP Socket对象
     QTimer *m_connectionTimer;    ///< PLC连接超时定时器
     QTimer *m_serverConnectionTimer; ///< 服务端连接超时定时器

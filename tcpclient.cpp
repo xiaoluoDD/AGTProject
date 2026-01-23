@@ -1852,7 +1852,17 @@ void tcpClient::setupUI()
     pushButtonAssemblyIndicatorPage->setChecked(false);
     ui->pushButtonVehicleBindingPage->setChecked(false);
 
-    ui->pushButtonExportTable->setVisible(false);
+    // 显示并设置导出表格按钮
+    if (ui->pushButtonExportTable) {
+        ui->pushButtonExportTable->setVisible(true);
+        ui->pushButtonExportTable->setText("导出数据");
+    }
+    
+    // 设置清空表格按钮文本为"按日期删除"
+    if (ui->pushButtonClearTable) {
+        ui->pushButtonClearTable->setText("按日期删除");
+    }
+    
     // 隐藏上方状态标签
     ui->labelStatus->setVisible(false);
     // 右下角连接状态标签（3个TCP连接状态）
@@ -2395,30 +2405,88 @@ void tcpClient::onVehicleBindingPageClicked()
 }
 
 /**
- * @brief 清空表格按钮点击处理
+ * @brief 按日期删除按钮点击处理
  */
 void tcpClient::onClearTableClicked()
 {
     // 检查是否需要密码验证
     if (m_isPasswordSet) {
-        if (!showPasswordDialog("密码验证", "请输入密码以清空表格:")) {
+        if (!showPasswordDialog("密码验证", "请输入密码以删除记录:")) {
             return;
         }
     }
     
-    int rowCount = ui->tableWidget->rowCount();
-    if (rowCount > 0) {
-        QMessageBox::StandardButton reply = QMessageBox::question(
-            this, "确认清空",
-            QString("确定要清空表格中的所有 %1 条记录吗？").arg(rowCount),
-            QMessageBox::Yes | QMessageBox::No
-            );
-
-        if (reply == QMessageBox::Yes) {
-            ui->tableWidget->setRowCount(0);
-            clearDataRecords();
-        }
+    // 创建日期选择对话框
+    QDialog dialog(this);
+    dialog.setWindowTitle("选择删除日期");
+    QVBoxLayout* layout = new QVBoxLayout(&dialog);
+    
+    // 日期选择
+    QLabel* dateLabel = new QLabel("选择日期（将删除该日期及之前的所有记录）：", &dialog);
+    QDateEdit* dateEdit = new QDateEdit(&dialog);
+    dateEdit->setDate(QDate::currentDate());
+    dateEdit->setCalendarPopup(true);
+    dateEdit->setDisplayFormat("yyyy-MM-dd");
+    QHBoxLayout* dateLayout = new QHBoxLayout();
+    dateLayout->addWidget(dateLabel);
+    dateLayout->addWidget(dateEdit);
+    layout->addLayout(dateLayout);
+    
+    // 确定和取消按钮
+    QDialogButtonBox* buttonBox = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    connect(buttonBox, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttonBox, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    layout->addWidget(buttonBox);
+    
+    if (dialog.exec() != QDialog::Accepted) {
+        return; // 用户取消了日期选择
     }
+    
+    QDate selectedDate = dateEdit->date();
+    
+    // 确认删除
+    QMessageBox::StandardButton reply = QMessageBox::question(
+        this, "确认删除",
+        QString("确定要删除 %1 及之前的所有记录吗？\n此操作不可恢复！").arg(selectedDate.toString("yyyy-MM-dd")),
+        QMessageBox::Yes | QMessageBox::No
+    );
+    
+    if (reply != QMessageBox::Yes) {
+        return; // 用户取消了删除
+    }
+    
+    // 先查询要删除的记录数量
+    QSqlQuery countQuery;
+    countQuery.prepare("SELECT COUNT(*) FROM data_records WHERE DATE(time) <= ?");
+    countQuery.addBindValue(selectedDate.toString("yyyy-MM-dd"));
+    
+    int deleteCount = 0;
+    if (countQuery.exec() && countQuery.next()) {
+        deleteCount = countQuery.value(0).toInt();
+    }
+    
+    if (deleteCount == 0) {
+        QMessageBox::information(this, "提示", QString("没有找到 %1 及之前的记录").arg(selectedDate.toString("yyyy-MM-dd")));
+        return;
+    }
+    
+    // 删除数据库记录
+    QSqlQuery deleteQuery;
+    deleteQuery.prepare("DELETE FROM data_records WHERE DATE(time) <= ?");
+    deleteQuery.addBindValue(selectedDate.toString("yyyy-MM-dd"));
+    
+    if (!deleteQuery.exec()) {
+        QMessageBox::critical(this, "错误", QString("删除记录失败: %1").arg(deleteQuery.lastError().text()));
+        appendToLog(QString("删除记录失败: %1").arg(deleteQuery.lastError().text()), true);
+        return;
+    }
+    
+    // 刷新表格显示
+    loadDataRecordsFromDb();
+    
+    // 显示成功消息
+    QMessageBox::information(this, "删除成功", QString("已成功删除 %1 条记录").arg(deleteCount));
+    appendToLog(QString("已删除 %1 条记录（%2 及之前）").arg(deleteCount).arg(selectedDate.toString("yyyy-MM-dd")));
 }
 
 /**
@@ -2482,8 +2550,120 @@ void tcpClient::onDeleteTableClicked()
  */
 void tcpClient::onExportTableClicked()
 {
-    // 暂时显示提示信息，后续可以添加导出功能
-    QMessageBox::information(this, "导出功能", "导出功能将在后续版本中实现");
+    // 创建日期选择对话框
+    QDialog dialog(this);
+    dialog.setWindowTitle("选择导出日期");
+    QVBoxLayout* layout = new QVBoxLayout(&dialog);
+    
+    // 日期选择
+    QLabel* dateLabel = new QLabel("选择日期：", &dialog);
+    QDateEdit* dateEdit = new QDateEdit(&dialog);
+    dateEdit->setDate(QDate::currentDate());
+    dateEdit->setCalendarPopup(true);
+    dateEdit->setDisplayFormat("yyyy-MM-dd");
+    QHBoxLayout* dateLayout = new QHBoxLayout();
+    dateLayout->addWidget(dateLabel);
+    dateLayout->addWidget(dateEdit);
+    layout->addLayout(dateLayout);
+    
+    // 确定和取消按钮
+    QDialogButtonBox* buttonBox = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    connect(buttonBox, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttonBox, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    layout->addWidget(buttonBox);
+    
+    if (dialog.exec() != QDialog::Accepted) {
+        return; // 用户取消了日期选择
+    }
+    
+    QDate selectedDate = dateEdit->date();
+    
+    // 生成默认文件名：数据表格_日期.csv
+    QString defaultFileName = QString("数据表格_%1.csv").arg(selectedDate.toString("yyyy-MM-dd"));
+    
+    // 弹出文件保存对话框
+    QString fileName = QFileDialog::getSaveFileName(this,
+                                                    "导出数据表格",
+                                                    defaultFileName,
+                                                    "CSV文件 (*.csv)");
+    
+    if (fileName.isEmpty()) {
+        return; // 用户取消了保存
+    }
+    
+    // 创建CSV文件
+    QFile file(fileName);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        QMessageBox::critical(this, "错误", QString("无法创建文件: %1").arg(fileName));
+        return;
+    }
+    
+    // 手动写入UTF-8 BOM（0xEF, 0xBB, 0xBF），以便Excel正确识别UTF-8编码
+    QByteArray bom;
+    bom.append((char)0xEF);
+    bom.append((char)0xBB);
+    bom.append((char)0xBF);
+    file.write(bom);
+    
+    QTextStream out(&file);
+    // Qt 6: 使用setEncoding代替setCodec
+    out.setEncoding(QStringConverter::Utf8);
+    
+    // 写入表头信息
+    out << "数据表格\n";
+    out << QString("日期：%1\n").arg(selectedDate.toString("yyyy-MM-dd"));
+    out << QString("导出时间：%1\n\n").arg(QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss"));
+    
+    // 写入CSV表头
+    out << "\"滑槽号\",\"送入送出状态\",\"车型代码\",\"车型名称\",\"数量（件）\",\"时间\"\n";
+    
+    // 从数据库查询指定日期的数据
+    QSqlDatabase db = QSqlDatabase::database();
+    if (!db.isOpen()) {
+        QMessageBox::critical(this, "错误", "数据库未连接");
+        file.close();
+        return;
+    }
+    
+    QSqlQuery query(db);
+    // 查询指定日期的数据（time字段格式：yyyy-MM-dd HH:mm:ss）
+    query.prepare("SELECT slot_no, status, model_code, model_name, count, time "
+                  "FROM data_records "
+                  "WHERE DATE(time) = ? "
+                  "ORDER BY time ASC");
+    query.addBindValue(selectedDate.toString("yyyy-MM-dd"));
+    
+    if (!query.exec()) {
+        QMessageBox::critical(this, "错误", QString("查询数据失败: %1").arg(query.lastError().text()));
+        file.close();
+        return;
+    }
+    
+    int recordCount = 0;
+    while (query.next()) {
+        int slotNo = query.value(0).toInt();
+        QString status = query.value(1).toString();
+        QString modelCode = query.value(2).toString();
+        QString modelName = query.value(3).toString();
+        int count = query.value(4).toInt();
+        QString time = query.value(5).toString();
+        
+        // 写入CSV行（使用引号包裹，处理包含逗号的情况）
+        out << "\"" << slotNo << "\","
+            << "\"" << status << "\","
+            << "\"" << modelCode << "\","
+            << "\"" << modelName << "\","
+            << "\"" << count << "\","
+            << "\"" << time << "\"\n";
+        
+        recordCount++;
+    }
+    
+    file.close();
+    
+    // 导出成功提示
+    QMessageBox::information(this, "成功", QString("数据已成功导出到:\n%1\n\n共导出 %2 条记录").arg(fileName).arg(recordCount));
+    appendToLog(QString("数据表格已导出到CSV: %1（日期：%2，共%3条记录）").arg(fileName).arg(selectedDate.toString("yyyy-MM-dd")).arg(recordCount), false);
 }
 
 /**
@@ -3134,8 +3314,8 @@ void tcpClient::processHexData(const QByteArray &data)
 
             // 如果找到车型信息，添加到表格
             if (!vehicleName.isEmpty()) {
-                int tableRow = ui->tableWidget->rowCount();
-                ui->tableWidget->insertRow(tableRow);
+                // 插入到第一行（最新记录在上）
+                ui->tableWidget->insertRow(0);
                 
                 // 滑槽号（实托盘1-3显示为1-3，空托盘1-3显示为4-6）
                 // 映射为实际滑槽号：1->2001, 2->2002, 3->2003, 4->2103, 5->2102, 6->2101
@@ -3143,22 +3323,22 @@ void tcpClient::processHexData(const QByteArray &data)
                 QString slotNoStr = QString::number(actualSlotNo);
                 QTableWidgetItem* item0 = new QTableWidgetItem(slotNoStr);
                 item0->setTextAlignment(Qt::AlignCenter);
-                ui->tableWidget->setItem(tableRow, 0, item0);
+                ui->tableWidget->setItem(0, 0, item0);
                 
                 // 状态
                 QTableWidgetItem* item1 = new QTableWidgetItem(tray.statusStr);
                 item1->setTextAlignment(Qt::AlignCenter);
-                ui->tableWidget->setItem(tableRow, 1, item1);
+                ui->tableWidget->setItem(0, 1, item1);
                 
                 // 车型代码
                 QTableWidgetItem* item2 = new QTableWidgetItem(vehicleCode);
                 item2->setTextAlignment(Qt::AlignCenter);
-                ui->tableWidget->setItem(tableRow, 2, item2);
+                ui->tableWidget->setItem(0, 2, item2);
                 
                 // 车型名称
                 QTableWidgetItem* item3 = new QTableWidgetItem(vehicleName);
                 item3->setTextAlignment(Qt::AlignCenter);
-                ui->tableWidget->setItem(tableRow, 3, item3);
+                ui->tableWidget->setItem(0, 3, item3);
                 
                 // 数量 - 空托盘的数量应该为0
                 int displayCount = count;
@@ -3167,12 +3347,12 @@ void tcpClient::processHexData(const QByteArray &data)
                 }
                 QTableWidgetItem* item4 = new QTableWidgetItem(QString::number(displayCount));
                 item4->setTextAlignment(Qt::AlignCenter);
-                ui->tableWidget->setItem(tableRow, 4, item4);
+                ui->tableWidget->setItem(0, 4, item4);
                 
                 // 时间
                 QTableWidgetItem* item5 = new QTableWidgetItem(currentTime);
                 item5->setTextAlignment(Qt::AlignCenter);
-                ui->tableWidget->setItem(tableRow, 5, item5);
+                ui->tableWidget->setItem(0, 5, item5);
                 
                 // 保存到数据库 - 空托盘的数量应该为0
                 int saveCount = count;
@@ -3298,102 +3478,102 @@ void tcpClient::addDataToTable(int status1, unsigned int value1, unsigned int va
     }
     // 添加第5字节（满托/空托）数据
     if (status1 != 0x00 && !vehicleName1.isEmpty()) {
-        int row1 = ui->tableWidget->rowCount();
-        ui->tableWidget->insertRow(row1);
+        // 插入到第一行（最新记录在上）
+        ui->tableWidget->insertRow(0);
         QTableWidgetItem* t0 = new QTableWidgetItem("1");
         t0->setTextAlignment(Qt::AlignCenter);
-        ui->tableWidget->setItem(row1, 0, t0);
+        ui->tableWidget->setItem(0, 0, t0);
         QTableWidgetItem* t1 = new QTableWidgetItem(statusStr1);
         t1->setTextAlignment(Qt::AlignCenter);
-        ui->tableWidget->setItem(row1, 1, t1);
+        ui->tableWidget->setItem(0, 1, t1);
         QTableWidgetItem* t2 = new QTableWidgetItem(vehicleCode1);
         t2->setTextAlignment(Qt::AlignCenter);
-        ui->tableWidget->setItem(row1, 2, t2);
+        ui->tableWidget->setItem(0, 2, t2);
         QTableWidgetItem* t3 = new QTableWidgetItem(vehicleName1);
         t3->setTextAlignment(Qt::AlignCenter);
-        ui->tableWidget->setItem(row1, 3, t3);
+        ui->tableWidget->setItem(0, 3, t3);
         QTableWidgetItem* t4 = new QTableWidgetItem(QString::number(count1));
         t4->setTextAlignment(Qt::AlignCenter);
-        ui->tableWidget->setItem(row1, 4, t4);
+        ui->tableWidget->setItem(0, 4, t4);
         QTableWidgetItem* t5 = new QTableWidgetItem(currentTime);
         t5->setTextAlignment(Qt::AlignCenter);
-        ui->tableWidget->setItem(row1, 5, t5);
+        ui->tableWidget->setItem(0, 5, t5);
         insertDataRecord(1, statusStr1, vehicleName1, vehicleCode1, count1, currentTime);
         addDataToCurrentShiftTable(1, statusStr1, vehicleCode1, vehicleName1, count1, currentTime);
     }
     if (status1 != 0x00 && !vehicleName2.isEmpty()) {
-        int row2 = ui->tableWidget->rowCount();
-        ui->tableWidget->insertRow(row2);
+        // 插入到第一行（最新记录在上）
+        ui->tableWidget->insertRow(0);
         QTableWidgetItem* t6 = new QTableWidgetItem("2");
         t6->setTextAlignment(Qt::AlignCenter);
-        ui->tableWidget->setItem(row2, 0, t6);
+        ui->tableWidget->setItem(0, 0, t6);
         QTableWidgetItem* t7 = new QTableWidgetItem(statusStr1);
         t7->setTextAlignment(Qt::AlignCenter);
-        ui->tableWidget->setItem(row2, 1, t7);
+        ui->tableWidget->setItem(0, 1, t7);
         QTableWidgetItem* t8 = new QTableWidgetItem(vehicleCode2);
         t8->setTextAlignment(Qt::AlignCenter);
-        ui->tableWidget->setItem(row2, 2, t8);
+        ui->tableWidget->setItem(0, 2, t8);
         QTableWidgetItem* t9 = new QTableWidgetItem(vehicleName2);
         t9->setTextAlignment(Qt::AlignCenter);
-        ui->tableWidget->setItem(row2, 3, t9);
+        ui->tableWidget->setItem(0, 3, t9);
         QTableWidgetItem* t10 = new QTableWidgetItem(QString::number(count2));
         t10->setTextAlignment(Qt::AlignCenter);
-        ui->tableWidget->setItem(row2, 4, t10);
+        ui->tableWidget->setItem(0, 4, t10);
         QTableWidgetItem* t11 = new QTableWidgetItem(currentTime);
         t11->setTextAlignment(Qt::AlignCenter);
-        ui->tableWidget->setItem(row2, 5, t11);
+        ui->tableWidget->setItem(0, 5, t11);
         insertDataRecord(2, statusStr1, vehicleName2, vehicleCode2, count2, currentTime);
         addDataToCurrentShiftTable(2, statusStr1, vehicleCode2, vehicleName2, count2, currentTime);
     }
     // 添加第6字节（满托/空托）数据
     // 空托盘的数量应该为0
     if (status2 != 0x00 && !vehicleName3.isEmpty()) {
-        int row1 = ui->tableWidget->rowCount();
-        ui->tableWidget->insertRow(row1);
+        // 插入到第一行（最新记录在上）
+        ui->tableWidget->insertRow(0);
         QTableWidgetItem* t12 = new QTableWidgetItem("1");
         t12->setTextAlignment(Qt::AlignCenter);
-        ui->tableWidget->setItem(row1, 0, t12);
+        ui->tableWidget->setItem(0, 0, t12);
         QTableWidgetItem* t13 = new QTableWidgetItem(statusStr2);
         t13->setTextAlignment(Qt::AlignCenter);
-        ui->tableWidget->setItem(row1, 1, t13);
+        ui->tableWidget->setItem(0, 1, t13);
         QTableWidgetItem* t14 = new QTableWidgetItem(vehicleCode3);
         t14->setTextAlignment(Qt::AlignCenter);
-        ui->tableWidget->setItem(row1, 2, t14);
+        ui->tableWidget->setItem(0, 2, t14);
         QTableWidgetItem* t15 = new QTableWidgetItem(vehicleName3);
         t15->setTextAlignment(Qt::AlignCenter);
-        ui->tableWidget->setItem(row1, 3, t15);
+        ui->tableWidget->setItem(0, 3, t15);
         // 空托盘数量设置为0
         QTableWidgetItem* t16 = new QTableWidgetItem("0");
         t16->setTextAlignment(Qt::AlignCenter);
-        ui->tableWidget->setItem(row1, 4, t16);
+        ui->tableWidget->setItem(0, 4, t16);
         QTableWidgetItem* t17 = new QTableWidgetItem(currentTime);
         t17->setTextAlignment(Qt::AlignCenter);
-        ui->tableWidget->setItem(row1, 5, t17);
+        ui->tableWidget->setItem(0, 5, t17);
         insertDataRecord(1, statusStr2, vehicleName3, vehicleCode3, 0, currentTime);
         addDataToCurrentShiftTable(1, statusStr2, vehicleCode3, vehicleName3, 0, currentTime);
     }
     if (status2 != 0x00 && !vehicleName4.isEmpty()) {
-        int row2 = ui->tableWidget->rowCount();
-        ui->tableWidget->insertRow(row2);
+        // 插入到第一行（最新记录在上）
+        ui->tableWidget->insertRow(0);
         QTableWidgetItem* t18 = new QTableWidgetItem("2");
         t18->setTextAlignment(Qt::AlignCenter);
-        ui->tableWidget->setItem(row2, 0, t18);
+        ui->tableWidget->setItem(0, 0, t18);
         QTableWidgetItem* t19 = new QTableWidgetItem(statusStr2);
         t19->setTextAlignment(Qt::AlignCenter);
-        ui->tableWidget->setItem(row2, 1, t19);
+        ui->tableWidget->setItem(0, 1, t19);
         QTableWidgetItem* t20 = new QTableWidgetItem(vehicleCode4);
         t20->setTextAlignment(Qt::AlignCenter);
-        ui->tableWidget->setItem(row2, 2, t20);
+        ui->tableWidget->setItem(0, 2, t20);
         QTableWidgetItem* t21 = new QTableWidgetItem(vehicleName4);
         t21->setTextAlignment(Qt::AlignCenter);
-        ui->tableWidget->setItem(row2, 3, t21);
+        ui->tableWidget->setItem(0, 3, t21);
         // 空托盘数量设置为0
         QTableWidgetItem* t22 = new QTableWidgetItem("0");
         t22->setTextAlignment(Qt::AlignCenter);
-        ui->tableWidget->setItem(row2, 4, t22);
+        ui->tableWidget->setItem(0, 4, t22);
         QTableWidgetItem* t23 = new QTableWidgetItem(currentTime);
         t23->setTextAlignment(Qt::AlignCenter);
-        ui->tableWidget->setItem(row2, 5, t23);
+        ui->tableWidget->setItem(0, 5, t23);
         insertDataRecord(2, statusStr2, vehicleName4, vehicleCode4, 0, currentTime);
         addDataToCurrentShiftTable(2, statusStr2, vehicleCode4, vehicleName4, 0, currentTime);
     }
@@ -5157,9 +5337,9 @@ void tcpClient::onTableHeaderClicked(int logicalIndex)
 void tcpClient::applyTableFilter()
 {
     if (m_tableFilters.isEmpty()) {
-        // 如果没有筛选条件，重新加载所有数据
+        // 如果没有筛选条件，重新加载所有数据（按时间降序，最新记录在上）
         ui->tableWidget->setRowCount(0);
-        QSqlQuery query("SELECT slot_no, status, model_code, model_name, count, time FROM data_records");
+        QSqlQuery query("SELECT slot_no, status, model_code, model_name, count, time FROM data_records ORDER BY time DESC");
         int row = 0;
         while (query.next()) {
             ui->tableWidget->insertRow(row);
@@ -5187,9 +5367,9 @@ void tcpClient::applyTableFilter()
         return;
     }
     
-    // 重新从数据库加载所有数据并应用筛选
+    // 重新从数据库加载所有数据并应用筛选（按时间降序，最新记录在上）
     ui->tableWidget->setRowCount(0);
-    QSqlQuery query("SELECT slot_no, status, model_code, model_name, count, time FROM data_records");
+    QSqlQuery query("SELECT slot_no, status, model_code, model_name, count, time FROM data_records ORDER BY time DESC");
     int row = 0;
     while (query.next()) {
         QString slotNo = QString::number(query.value(0).toInt()); // 直接使用数据库中的slotNo值
@@ -6787,6 +6967,9 @@ void tcpClient::onServerSocketDisconnected()
     m_projectGroupDataTimer->stop();
     m_exceptionDataTimer->stop();
     
+    // 清空数据缓冲区
+    m_serverDataBuffer.clear();
+    
     appendToLog("服务端连接已断开", false);
 }
 
@@ -6799,7 +6982,10 @@ void tcpClient::onServerSocketError(QAbstractSocket::SocketError error)
     m_serverConnectionTimer->stop();
     m_isServerConnected = false;
     updateServerConnectionStatus(false);
-
+    
+    // 清空数据缓冲区
+    m_serverDataBuffer.clear();
+    
     QString errorMsg = m_serverSocket->errorString();
     appendToLog(QString("服务端连接错误: %1").arg(errorMsg), true);
 }
@@ -6809,12 +6995,41 @@ void tcpClient::onServerSocketError(QAbstractSocket::SocketError error)
  */
 void tcpClient::onServerSocketReadyRead()
 {
-    QByteArray data = m_serverSocket->readAll();
-    appendToLog(QString("收到服务端数据: %1 字节").arg(data.size()), false);
-    qDebug() << "服务端数据:" << data;
+    // 读取新数据并追加到缓冲区
+    QByteArray newData = m_serverSocket->readAll();
+    m_serverDataBuffer.append(newData);
     
-    // 处理JSON数据
-    processServerJsonData(data);
+    appendToLog(QString("收到服务端数据: %1 字节（缓冲区总大小: %2 字节）").arg(newData.size()).arg(m_serverDataBuffer.size()), false);
+    qDebug() << "服务端新数据:" << newData.size() << "字节";
+    
+    // 尝试从缓冲区中提取完整的JSON对象并处理
+    while (true) {
+        // 如果缓冲区为空，退出循环
+        if (m_serverDataBuffer.isEmpty()) {
+            break;
+        }
+        
+        // 查找第一个完整的JSON对象（通过大括号匹配）
+        int jsonEndPos = findCompleteJsonObject(m_serverDataBuffer);
+        
+        if (jsonEndPos > 0) {
+            // 找到了完整的JSON对象
+            QByteArray completeJson = m_serverDataBuffer.left(jsonEndPos);
+            m_serverDataBuffer.remove(0, jsonEndPos);
+            
+            qDebug() << "提取到完整JSON对象，大小:" << completeJson.size() << "字节，剩余缓冲区:" << m_serverDataBuffer.size() << "字节";
+            
+            // 处理完整的JSON数据
+            processServerJsonData(completeJson);
+        } else {
+            // 没有找到完整的JSON对象，等待更多数据
+            // 只有当缓冲区不为空时才输出日志（避免处理完所有数据后输出误导性日志）
+            if (!m_serverDataBuffer.isEmpty()) {
+                qDebug() << "JSON数据不完整，等待更多数据。当前缓冲区大小:" << m_serverDataBuffer.size() << "字节";
+            }
+            break;
+        }
+    }
 }
 
 /**
@@ -6945,38 +7160,38 @@ bool tcpClient::processSingleJsonObject(const QString &jsonString, bool saveToTa
     
     // 给数据表格添加记录（只有当saveToTable为true时才添加）
     if (saveToTable && !modelName.isEmpty() && !modelCode.isEmpty()) {
-        int tableRow = ui->tableWidget->rowCount();
-        ui->tableWidget->insertRow(tableRow);
+        // 插入到第一行（最新记录在上）
+        ui->tableWidget->insertRow(0);
         
         // 滑槽号（使用映射后的实际滑槽号）
         QTableWidgetItem* item0 = new QTableWidgetItem(QString::number(actualSlotNumber));
         item0->setTextAlignment(Qt::AlignCenter);
-        ui->tableWidget->setItem(tableRow, 0, item0);
+        ui->tableWidget->setItem(0, 0, item0);
         
         // 状态
         QTableWidgetItem* item1 = new QTableWidgetItem(status);
         item1->setTextAlignment(Qt::AlignCenter);
-        ui->tableWidget->setItem(tableRow, 1, item1);
+        ui->tableWidget->setItem(0, 1, item1);
         
         // 车型代码
         QTableWidgetItem* item2 = new QTableWidgetItem(modelCode);
         item2->setTextAlignment(Qt::AlignCenter);
-        ui->tableWidget->setItem(tableRow, 2, item2);
+        ui->tableWidget->setItem(0, 2, item2);
         
         // 车型名称
         QTableWidgetItem* item3 = new QTableWidgetItem(modelName);
         item3->setTextAlignment(Qt::AlignCenter);
-        ui->tableWidget->setItem(tableRow, 3, item3);
+        ui->tableWidget->setItem(0, 3, item3);
         
         // 数量
         QTableWidgetItem* item4 = new QTableWidgetItem(QString::number(count));
         item4->setTextAlignment(Qt::AlignCenter);
-        ui->tableWidget->setItem(tableRow, 4, item4);
+        ui->tableWidget->setItem(0, 4, item4);
         
         // 时间
         QTableWidgetItem* item5 = new QTableWidgetItem(currentTime);
         item5->setTextAlignment(Qt::AlignCenter);
-        ui->tableWidget->setItem(tableRow, 5, item5);
+        ui->tableWidget->setItem(0, 5, item5);
         
         // 保存到数据库（使用映射后的实际滑槽号）
         insertDataRecord(actualSlotNumber, status, modelName, modelCode, count, currentTime);
@@ -7043,22 +7258,22 @@ bool tcpClient::processProductionDataJson(const QJsonObject &obj, bool saveToTab
         }
         
         // 根据车型名称查找对应的表格行（每3行为一组：总装引取行、计划行、实际行）
-        int planRow = -1;
+        int assemblyRow = -1;
         for (int row = 0; row < assemblyIndicatorTable->rowCount(); row += 3) {
             QTableWidgetItem* vehicleNameItem = assemblyIndicatorTable->item(row, 0);
             if (vehicleNameItem && vehicleNameItem->text().trimmed() == partName) {
-                planRow = row + 1; // 计划行是第二行
+                assemblyRow = row; // 总装引取行（第一行），列0-4是合并的单元格
                 break;
             }
         }
         
-        if (planRow < 0) {
+        if (assemblyRow < 0) {
             appendToLog(QString("未找到车型%1对应的表格行，跳过").arg(partName), false);
             continue;
         }
         
-        // 获取收容数（列1）
-        QTableWidgetItem* capacityItem = assemblyIndicatorTable->item(planRow, 1);
+        // 获取收容数（列1）- 列0-4是合并的单元格，应该从assemblyRow获取
+        QTableWidgetItem* capacityItem = assemblyIndicatorTable->item(assemblyRow, 1);
         if (!capacityItem) {
             appendToLog(QString("车型%1的收容数不存在，跳过").arg(partName), false);
             continue;
@@ -7070,27 +7285,27 @@ bool tcpClient::processProductionDataJson(const QJsonObject &obj, bool saveToTab
             continue;
         }
         
-        // 更新产量（列2）
-        QTableWidgetItem* yieldItem = assemblyIndicatorTable->item(planRow, 2);
+        // 更新产量（列2）- 列0-4是合并的单元格，应该从assemblyRow获取
+        QTableWidgetItem* yieldItem = assemblyIndicatorTable->item(assemblyRow, 2);
         if (yieldItem) {
             yieldItem->setText(QString::number(productionQty));
             hasUpdate = true;
         }
         
-        // 更新节拍（列4）- 保存为整数
-        QTableWidgetItem* rhythmItem = assemblyIndicatorTable->item(planRow, 4);
+        // 更新节拍（列4）- 保存为整数，列0-4是合并的单元格，应该从assemblyRow获取
+        QTableWidgetItem* rhythmItem = assemblyIndicatorTable->item(assemblyRow, 4);
         int rhythmInt = 0;
         if (rhythmItem) {
-            // 将节拍转换为整数（四舍五入）
-            rhythmInt = static_cast<int>(std::round(slotOutActual));
+            // 将节拍转换为整数（直接截断小数部分，不四舍五入）
+            rhythmInt = static_cast<int>(slotOutActual);
             rhythmItem->setText(QString::number(rhythmInt));
             hasUpdate = true;
         }
         
-        // 计算并更新生产总托数（列3）= 产量 / 收容数，向上取整
+        // 计算并更新生产总托数（列3）= 产量 / 收容数，向上取整，列0-4是合并的单元格，应该从assemblyRow获取
         if (productionQty > 0 && capacity > 0) {
             int totalTrays = static_cast<int>(std::ceil(productionQty / capacity));
-            QTableWidgetItem* totalTraysItem = assemblyIndicatorTable->item(planRow, 3);
+            QTableWidgetItem* totalTraysItem = assemblyIndicatorTable->item(assemblyRow, 3);
             if (totalTraysItem) {
                 totalTraysItem->setText(QString::number(totalTrays));
                 hasUpdate = true;
@@ -7128,7 +7343,8 @@ bool tcpClient::processProductionDataJson(const QJsonObject &obj, bool saveToTab
                     // 直接取整数部分（向下取整，不四舍五入）
                     QString planValueStr = QString::number(static_cast<int>(planValue));
                     
-                    // 设置计划行的值
+                    // 设置计划行的值（计划行是assemblyRow + 1）
+                    int planRow = assemblyRow + 1;
                     QTableWidgetItem* planItem = assemblyIndicatorTable->item(planRow, timeCol);
                     if (planItem) {
                         planItem->setText(planValueStr);
@@ -7439,6 +7655,63 @@ bool tcpClient::processAssemblyInstructionJson(const QJsonObject &obj, bool save
     }
     
     return true;
+}
+
+/**
+ * @brief 查找缓冲区中第一个完整的JSON对象
+ * @param buffer 数据缓冲区
+ * @return 完整JSON对象的结束位置（字节位置，包含），如果未找到完整对象则返回-1
+ */
+int tcpClient::findCompleteJsonObject(const QByteArray &buffer)
+{
+    if (buffer.isEmpty()) {
+        return -1;
+    }
+    
+    int braceCount = 0;
+    bool inString = false;
+    bool escapeNext = false;
+    bool foundStart = false;
+    
+    // 直接处理字节数组，避免字符位置和字节位置不匹配的问题
+    for (int i = 0; i < buffer.size(); ++i) {
+        char ch = buffer[i];
+        
+        if (escapeNext) {
+            escapeNext = false;
+            continue;
+        }
+        
+        if (ch == '\\') {
+            escapeNext = true;
+            continue;
+        }
+        
+        if (ch == '"') {
+            inString = !inString;
+            continue;
+        }
+        
+        if (inString) {
+            continue;
+        }
+        
+        if (ch == '{') {
+            if (!foundStart) {
+                foundStart = true;
+            }
+            braceCount++;
+        } else if (ch == '}') {
+            braceCount--;
+            if (foundStart && braceCount == 0) {
+                // 找到了完整的JSON对象
+                return i + 1; // 返回字节位置+1（包含结束的大括号）
+            }
+        }
+    }
+    
+    // 没有找到完整的JSON对象
+    return -1;
 }
 
 /**
@@ -12091,24 +12364,8 @@ void tcpClient::onExportHistoryTableClicked()
         return;
     }
     
-    // 弹出对话框让用户选择导出格式
-    QStringList formatOptions;
-    formatOptions << "Excel格式（支持单元格合并，推荐）" << "CSV格式（通用格式，简单编辑）";
-    
-    bool ok;
-    QString selectedFormat = QInputDialog::getItem(this, "选择导出格式", 
-                                                   "请选择导出格式：", 
-                                                   formatOptions, 
-                                                   0, 
-                                                   false, &ok);
-    
-    if (ok && !selectedFormat.isEmpty()) {
-        if (selectedFormat.contains("Excel")) {
-            exportAssemblyIndicatorTableToHTML();
-        } else {
-            exportAssemblyIndicatorTableToCSV();
-        }
-    }
+    // 直接使用Excel格式导出（.xls格式，支持单元格合并）
+    exportAssemblyIndicatorTableToHTML();
 }
 
 /**
