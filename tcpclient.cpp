@@ -1307,12 +1307,12 @@ void tcpClient::setupUI()
     pushButtonOvertimeTime->setMinimumSize(120, 30);
     topButtonLayout->addWidget(pushButtonOvertimeTime);
     
-    // 创建保存按钮（已隐藏，改为选择加班时间后自动保存）
+    // 创建保存按钮
     pushButtonSaveAssemblyIndicator = new QPushButton(assemblyIndicatorBox);
     pushButtonSaveAssemblyIndicator->setText("保存数据");
     pushButtonSaveAssemblyIndicator->setObjectName("pushButtonSaveAssemblyIndicator");
     pushButtonSaveAssemblyIndicator->setMinimumSize(100, 30);
-    pushButtonSaveAssemblyIndicator->setVisible(false); // 隐藏按钮，改为自动保存
+    pushButtonSaveAssemblyIndicator->setVisible(true); // 显示保存按钮
     topButtonLayout->addWidget(pushButtonSaveAssemblyIndicator);
     
     // 创建当前表格按钮
@@ -7247,10 +7247,10 @@ bool tcpClient::processProductionDataJson(const QJsonObject &obj, bool saveToTab
     for (int i = 0; i < databody.size(); ++i) {
         QJsonObject item = databody[i].toObject();
         
-        // 提取参数
-        QString partName = item.value("partName").toString().trimmed();
-        int productionQty = item.value("productionQty").toInt();
-        double slotOutActual = item.value("slotOutActual").toDouble();
+        // 提取参数（适配新的JSON格式）
+        QString partName = item.value("vehicle_part_info").toString().trimmed();
+        int productionQty = item.value("production_quantity").toInt();
+        double slotOutActual = item.value("engineering_beat").toDouble();
         
         if (partName.isEmpty()) {
             appendToLog(QString("第%1条记录：车型名称为空，跳过").arg(i + 1), false);
