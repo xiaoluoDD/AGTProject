@@ -413,8 +413,13 @@ private:
     void updateStatisticsTableDisplay(); ///< 刷新统计表格所有单元格
     QString getStatisticsRowTimeRange(int rowIndex) const; ///< 根据总成指示表时间列返回统计表某行对应的时间范围（第一节/第二节/吃饭/第三节/第四节/加班）
     int getPlanSumForSecondLevelValue(int secondLevelValue) const; ///< 总成指示表时间列（二级表头值120/230/350/460）所有计划行的和
+    int getActualSumForSecondLevelValue(int secondLevelValue) const; ///< 总成指示表时间列所有实际行的和（用于启动时从表格恢复统计）
+    int getActualSumAtOrBeforeColumn(int col) const; ///< 实际行在指定列或往前第一个有数据列的和（列无数据时往前找）
+    int getColumnForCurrentTime(); ///< 根据当前时间返回对应时间列索引（含fallback到前一时段最后一列）
     int getPlanSumForOvertimeLastColumn() const; ///< 加班时间列最后一列所有计划行的和（无加班返回0）
+    void syncStatisticsFromAssemblyIndicator(); ///< 从总成指示表实际行同步四节实际便次到统计表（启动时调用，加载到当前时间）
     int getSectionFromTimeColumn(int colIndex) const; ///< 根据总成指示表时间列索引返回便次节（1=第一节,2=第二节,3=第三节,4=第四节,0=吃饭/休息,5=加班）
+    bool hasReachedStatisticsRow(int rowIndex); ///< 当前时间是否已到达统计表某行对应时段（未到则显示空）
     int m_planTotal;              ///< 计划便次（用于右侧表格及差异计算）
     int m_plannedCount;           ///< 第一节便次计划值
     int m_actualCount;             ///< 第二节便次（保留兼容，总数=四节实际便次之和）
@@ -424,6 +429,7 @@ private:
     int m_section2ActualCount;     ///< 第二节便次实际次数
     int m_section3ActualCount;     ///< 第三节便次实际次数
     int m_section4ActualCount;     ///< 第四节便次实际次数
+    int m_mealActualCount;         ///< 吃饭时间实际次数（11:30-12:15/21:15-22:00 收到数据时累加）
     int m_totalCount;              ///< 总数便次数值
     QString m_currentDisplayShift; ///< 当前显示的班次（"current"表示当前班次，"previous"表示前一个班次）
     QString m_projectGroupDisplayShift; ///< 工程组记录界面显示的班次（"current"表示当前班次，"previous"表示前一个班次）
@@ -436,6 +442,7 @@ private:
     int m_displayedSection2ActualCount;
     int m_displayedSection3ActualCount;
     int m_displayedSection4ActualCount;
+    int m_displayedMealActualCount;     ///< 显示的吃饭时间实际便次（前班次用）
 
     // 实托盘批次处理相关
     int m_realTrayBatchCount;     ///< 当前批次已搬入的车型数量（0-3），0表示新批次开始
