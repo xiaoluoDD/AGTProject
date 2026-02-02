@@ -158,6 +158,9 @@ private slots:
     void onServerSocketError(QAbstractSocket::SocketError error); ///< 服务端Socket错误处理
     void onServerSocketReadyRead();     ///< 服务端Socket数据可读处理
     void onServerConnectionTimeout();   ///< 服务端连接超时处理
+    void onServerAutoReconnect();       ///< 服务端自动重连处理
+    void onEdSoftwareAutoReconnect();   ///< ED软件自动重连处理
+    void startAutoConnect();            ///< 启动时自动连接（加载数据库/连接配置后调用）
 
     // 密码管理槽函数
     void onSetPasswordClicked();  ///< 设置密码按钮点击处理
@@ -314,12 +317,17 @@ private:
     QTimer *m_exceptionDataTimer; ///< 异常数据发送定时器（单次触发，发送工程组后3秒发送异常记录）
     QTimer *m_shiftDisplayAutoResetTimer; ///< 班次显示自动恢复定时器（1分钟后恢复）
     QTimer *m_plcAutoReconnectTimer; ///< PLC自动重连定时器（每3秒检测一次）
+    QTimer *m_serverAutoReconnectTimer; ///< 服务端自动重连定时器（每3秒检测一次）
+    QTimer *m_edSoftwareAutoReconnectTimer; ///< ED软件自动重连定时器（每3秒检测一次）
     QTimer *m_currentShiftTableDailyClearTimer; ///< 当前班次表格每日清空定时器（每分钟检查一次，凌晨6点清空）
     QTimer *m_projectGroupShiftAutoResetTimer; ///< 工程组记录界面班次自动恢复定时器（1分钟后恢复）
     bool m_isConnected;           ///< PLC连接状态标志
     bool m_isServerConnected;     ///< 服务端连接状态标志
     bool m_isEdSoftwareConnected; ///< ED软件连接状态标志
-    bool m_isAutoReconnecting;   ///< 是否正在自动重连标志
+    bool m_isAutoReconnecting;   ///< 是否正在自动重连标志（PLC）
+    bool m_plcManualDisconnect;  ///< PLC是否为用户手动断开（手动断开后不自动重连）
+    bool m_serverManualDisconnect; ///< 服务端是否为用户手动断开（手动断开后不自动重连）
+    bool m_edSoftwareManualDisconnect; ///< ED软件是否为用户手动断开（手动断开后不自动重连）
     int m_fullTrayCount;          ///< 满托盘时数量
     QDateTime m_lastStatus1Time;  ///< 旧版本兼容，已废弃
     QDateTime m_lastStatus2Time; ///< 旧版本兼容，已废弃

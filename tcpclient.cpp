@@ -1,4 +1,4 @@
-﻿#include "tcpclient.h"
+#include "tcpclient.h"
 #include "./ui_tcpclient.h"
 #include <QMessageBox>
 #include <QDateTime>
@@ -306,12 +306,17 @@ tcpClient::tcpClient(QWidget *parent)
     , m_exceptionDataTimer(new QTimer(this))
     , m_shiftDisplayAutoResetTimer(new QTimer(this))
     , m_plcAutoReconnectTimer(new QTimer(this))
+    , m_serverAutoReconnectTimer(new QTimer(this))
+    , m_edSoftwareAutoReconnectTimer(new QTimer(this))
     , m_currentShiftTableDailyClearTimer(new QTimer(this))
     , m_projectGroupShiftAutoResetTimer(new QTimer(this))
     , m_isConnected(false)
     , m_isServerConnected(false)
     , m_isEdSoftwareConnected(false)
     , m_isAutoReconnecting(false)
+    , m_plcManualDisconnect(false)
+    , m_serverManualDisconnect(false)
+    , m_edSoftwareManualDisconnect(false)
     , m_fullTrayCount(0)
     , m_password("")
     , m_isPasswordSet(false)
@@ -421,6 +426,9 @@ tcpClient::tcpClient(QWidget *parent)
         loadConnectionConfig();
         qDebug() << "loadConnectionConfig completed";
         
+        // 加载数据库/连接配置后延迟自动连接三个服务器（PLC、服务端、ED软件）
+        QTimer::singleShot(500, this, &tcpClient::startAutoConnect);
+        
         // 加载班次设置（延迟加载，确保UI已准备好）
         QTimer::singleShot(300, this, [this]() {
             loadShiftConfig();
@@ -447,6 +455,16 @@ tcpClient::tcpClient(QWidget *parent)
         // 设置PLC自动重连定时器（每3秒检测一次）
         m_plcAutoReconnectTimer->setSingleShot(false);
         m_plcAutoReconnectTimer->setInterval(3000);
+        
+        // 连接服务端自动重连定时器
+        connect(m_serverAutoReconnectTimer, &QTimer::timeout, this, &tcpClient::onServerAutoReconnect);
+        m_serverAutoReconnectTimer->setSingleShot(false);
+        m_serverAutoReconnectTimer->setInterval(3000);
+        
+        // 连接ED软件自动重连定时器
+        connect(m_edSoftwareAutoReconnectTimer, &QTimer::timeout, this, &tcpClient::onEdSoftwareAutoReconnect);
+        m_edSoftwareAutoReconnectTimer->setSingleShot(false);
+        m_edSoftwareAutoReconnectTimer->setInterval(3000);
         
         // 连接服务端Socket信号槽
         connect(m_serverSocket, &QTcpSocket::connected, this, &tcpClient::onServerSocketConnected);
@@ -1741,6 +1759,9 @@ void tcpClient::setupUI()
     // 将ED软件连接设置插入到服务端连接设置之后
     ui->verticalLayout_2->insertWidget(2, groupBoxEdSoftwareConnection);
     
+    // 再次加载连接配置，使服务端和ED的IP/端口从数据库应用到刚创建的控件
+    loadConnectionConfig();
+    
     // 连接ED软件连接配置按钮信号槽
     connect(pushButtonSaveEdSoftwareConfig, &QPushButton::clicked, this, &tcpClient::onSaveEdSoftwareConnectionConfigClicked);
     connect(pushButtonEdSoftwareConnect, &QPushButton::clicked, this, &tcpClient::onEdSoftwareConnectClicked);
@@ -2822,6 +2843,7 @@ void tcpClient::onConnectClicked()
 
     // 开始连接
     m_isAutoReconnecting = false; // 标记是手动连接
+    m_plcManualDisconnect = false; // 用户主动连接，允许后续非手动断开时自动重连
     QString connectMsg = QString("正在连接到 %1:%2...").arg(serverIP).arg(port);
     appendToLog(connectMsg);
     qInfo() << connectMsg;
@@ -2838,7 +2860,8 @@ void tcpClient::onConnectClicked()
 void tcpClient::onDisconnectClicked()
 {
     if (m_socket->state() == QAbstractSocket::ConnectedState) {
-        // 用户手动断开连接，停止自动重连定时器
+        // 用户手动断开连接，停止自动重连定时器，并标记为手动断开（不再自动重连）
+        m_plcManualDisconnect = true;
         m_plcAutoReconnectTimer->stop();
         m_socket->disconnectFromHost();
         appendToLog("正在断开连接...");
@@ -2900,10 +2923,9 @@ void tcpClient::onSocketDisconnected()
     updateConnectionStatus(false);
     appendToLog("连接已断开", false);
     
-    // 启动自动重连定时器
-    if (!m_plcAutoReconnectTimer->isActive()) {
+    // 仅当非用户手动断开时启动自动重连定时器
+    if (!m_plcManualDisconnect && !m_plcAutoReconnectTimer->isActive()) {
         m_plcAutoReconnectTimer->start();
-        // 自动重连不写入日志
     }
 }
 
@@ -2923,10 +2945,9 @@ void tcpClient::onSocketError(QAbstractSocket::SocketError error)
         appendToLog(QString("连接错误: %1").arg(errorMsg), true);
     }
     
-    // 启动自动重连定时器（用户主动取消连接通常不会触发errorOccurred信号）
-    if (!m_plcAutoReconnectTimer->isActive()) {
+    // 仅当非用户手动断开时启动自动重连定时器
+    if (!m_plcManualDisconnect && !m_plcAutoReconnectTimer->isActive()) {
         m_plcAutoReconnectTimer->start();
-        // 自动重连不写入日志
     }
     
     m_isAutoReconnecting = false; // 重置标志
@@ -2955,10 +2976,9 @@ void tcpClient::onConnectionTimeout()
     
     updateConnectionStatus(false);
     
-    // 启动自动重连定时器
-    if (!m_plcAutoReconnectTimer->isActive()) {
+    // 仅当非用户手动断开时启动自动重连定时器
+    if (!m_plcManualDisconnect && !m_plcAutoReconnectTimer->isActive()) {
         m_plcAutoReconnectTimer->start();
-        // 自动重连不写入日志
     }
     
     m_isAutoReconnecting = false; // 重置标志
@@ -3001,6 +3021,58 @@ void tcpClient::onPlcAutoReconnect()
     m_isAutoReconnecting = true; // 标记正在自动重连
     m_socket->connectToHost(serverIP, port);
     m_connectionTimer->start();
+}
+
+/**
+ * @brief 启动时自动连接（加载数据库/连接配置后调用）
+ */
+void tcpClient::startAutoConnect()
+{
+    // 1. 自动连接 PLC
+    if (!m_isConnected && m_socket->state() != QAbstractSocket::ConnectingState) {
+        QString serverIP = ui->lineEditServerIP->text().trimmed();
+        QString portStr = ui->lineEditPort->text().trimmed();
+        bool ok = false;
+        int port = portStr.toInt(&ok);
+        if (!serverIP.isEmpty() && ok && port > 0 && port <= 65535) {
+            m_plcManualDisconnect = false;
+            m_isAutoReconnecting = true;
+            m_socket->connectToHost(serverIP, port);
+            m_connectionTimer->start();
+            ui->pushButtonConnect->setEnabled(false);
+            qDebug() << "自动连接PLC:" << serverIP << ":" << port;
+        }
+    }
+    
+    // 2. 自动连接服务端
+    if (!m_isServerConnected && m_serverSocket->state() != QAbstractSocket::ConnectingState && lineEditServerIP && lineEditServerPort) {
+        QString serverIP = lineEditServerIP->text().trimmed();
+        QString portStr = lineEditServerPort->text().trimmed();
+        bool ok = false;
+        int port = portStr.toInt(&ok);
+        if (!serverIP.isEmpty() && ok && port > 0 && port <= 65535) {
+            m_serverManualDisconnect = false;
+            m_serverSocket->connectToHost(serverIP, port);
+            m_serverConnectionTimer->start();
+            pushButtonServerConnect->setEnabled(false);
+            qDebug() << "自动连接服务端:" << serverIP << ":" << port;
+        }
+    }
+    
+    // 3. 自动连接 ED 软件
+    if (!m_isEdSoftwareConnected && m_edSoftwareSocket->state() != QAbstractSocket::ConnectingState && lineEditEdSoftwareIP && lineEditEdSoftwarePort) {
+        QString edIP = lineEditEdSoftwareIP->text().trimmed();
+        QString portStr = lineEditEdSoftwarePort->text().trimmed();
+        bool ok = false;
+        int port = portStr.toInt(&ok);
+        if (!edIP.isEmpty() && ok && port > 0 && port <= 65535) {
+            m_edSoftwareManualDisconnect = false;
+            m_edSoftwareSocket->connectToHost(edIP, port);
+            m_edSoftwareConnectionTimer->start();
+            pushButtonEdSoftwareConnect->setEnabled(false);
+            qDebug() << "自动连接ED软件:" << edIP << ":" << port;
+        }
+    }
 }
 
 /**
@@ -6908,6 +6980,7 @@ void tcpClient::onServerConnectClicked()
     }
 
     // 开始连接
+    m_serverManualDisconnect = false; // 用户主动连接，允许后续非手动断开时自动重连
     QString connectMsg = QString("正在连接到服务端 %1:%2...").arg(serverIP).arg(port);
     appendToLog(connectMsg);
     qInfo() << connectMsg;
@@ -6924,6 +6997,8 @@ void tcpClient::onServerConnectClicked()
 void tcpClient::onServerDisconnectClicked()
 {
     if (m_serverSocket->state() == QAbstractSocket::ConnectedState) {
+        m_serverManualDisconnect = true; // 用户手动断开，不再自动重连
+        m_serverAutoReconnectTimer->stop();
         m_serverSocket->disconnectFromHost();
         appendToLog("正在断开服务端连接...");
     }
@@ -6935,6 +7010,7 @@ void tcpClient::onServerDisconnectClicked()
 void tcpClient::onServerSocketConnected()
 {
     m_serverConnectionTimer->stop();
+    m_serverAutoReconnectTimer->stop(); // 连接成功，停止自动重连定时器
     m_isServerConnected = true;
     updateServerConnectionStatus(true);
     
@@ -6971,6 +7047,11 @@ void tcpClient::onServerSocketDisconnected()
     m_serverDataBuffer.clear();
     
     appendToLog("服务端连接已断开", false);
+    
+    // 仅当非用户手动断开时启动自动重连定时器
+    if (!m_serverManualDisconnect && !m_serverAutoReconnectTimer->isActive()) {
+        m_serverAutoReconnectTimer->start();
+    }
 }
 
 /**
@@ -6988,6 +7069,38 @@ void tcpClient::onServerSocketError(QAbstractSocket::SocketError error)
     
     QString errorMsg = m_serverSocket->errorString();
     appendToLog(QString("服务端连接错误: %1").arg(errorMsg), true);
+    
+    // 仅当非用户手动断开时启动自动重连定时器
+    if (!m_serverManualDisconnect && !m_serverAutoReconnectTimer->isActive()) {
+        m_serverAutoReconnectTimer->start();
+    }
+}
+
+/**
+ * @brief 服务端自动重连处理
+ */
+void tcpClient::onServerAutoReconnect()
+{
+    if (m_isServerConnected || m_serverSocket->state() == QAbstractSocket::ConnectedState) {
+        m_serverAutoReconnectTimer->stop();
+        return;
+    }
+    if (m_serverSocket->state() == QAbstractSocket::ConnectingState) {
+        return;
+    }
+    if (!lineEditServerIP || !lineEditServerPort) {
+        return;
+    }
+    QString serverIP = lineEditServerIP->text().trimmed();
+    QString portStr = lineEditServerPort->text().trimmed();
+    bool ok = false;
+    int port = portStr.toInt(&ok);
+    if (serverIP.isEmpty() || !ok || port <= 0 || port > 65535) {
+        return;
+    }
+    m_serverSocket->connectToHost(serverIP, port);
+    m_serverConnectionTimer->start();
+    pushButtonServerConnect->setEnabled(false);
 }
 
 /**
@@ -7040,6 +7153,11 @@ void tcpClient::onServerConnectionTimeout()
     m_serverSocket->abort();
     appendToLog("服务端连接超时", true);
     updateServerConnectionStatus(false);
+    
+    // 仅当非用户手动断开时启动自动重连定时器
+    if (!m_serverManualDisconnect && !m_serverAutoReconnectTimer->isActive()) {
+        m_serverAutoReconnectTimer->start();
+    }
 }
 
 /**
@@ -9498,6 +9616,7 @@ void tcpClient::onEdSoftwareConnectClicked()
     }
 
     // 开始连接
+    m_edSoftwareManualDisconnect = false; // 用户主动连接，允许后续非手动断开时自动重连
     QString connectMsg = QString("正在连接到ED软件 %1:%2...").arg(edSoftwareIP).arg(port);
     appendToLog(connectMsg);
     qInfo() << connectMsg;
@@ -9514,6 +9633,8 @@ void tcpClient::onEdSoftwareConnectClicked()
 void tcpClient::onEdSoftwareDisconnectClicked()
 {
     if (m_edSoftwareSocket->state() == QAbstractSocket::ConnectedState) {
+        m_edSoftwareManualDisconnect = true; // 用户手动断开，不再自动重连
+        m_edSoftwareAutoReconnectTimer->stop();
         m_edSoftwareSocket->disconnectFromHost();
         appendToLog("正在断开ED软件连接...");
     }
@@ -9525,6 +9646,7 @@ void tcpClient::onEdSoftwareDisconnectClicked()
 void tcpClient::onEdSoftwareSocketConnected()
 {
     m_edSoftwareConnectionTimer->stop();
+    m_edSoftwareAutoReconnectTimer->stop(); // 连接成功，停止自动重连定时器
     m_isEdSoftwareConnected = true;
     updateEdSoftwareConnectionStatus(true);
     
@@ -9543,6 +9665,11 @@ void tcpClient::onEdSoftwareSocketDisconnected()
     updateEdSoftwareConnectionStatus(false);
     
     appendToLog("ED软件连接已断开", false);
+    
+    // 仅当非用户手动断开时启动自动重连定时器
+    if (!m_edSoftwareManualDisconnect && !m_edSoftwareAutoReconnectTimer->isActive()) {
+        m_edSoftwareAutoReconnectTimer->start();
+    }
 }
 
 /**
@@ -9557,6 +9684,38 @@ void tcpClient::onEdSoftwareSocketError(QAbstractSocket::SocketError error)
 
     QString errorMsg = m_edSoftwareSocket->errorString();
     appendToLog(QString("ED软件连接错误: %1").arg(errorMsg), true);
+    
+    // 仅当非用户手动断开时启动自动重连定时器
+    if (!m_edSoftwareManualDisconnect && !m_edSoftwareAutoReconnectTimer->isActive()) {
+        m_edSoftwareAutoReconnectTimer->start();
+    }
+}
+
+/**
+ * @brief ED软件自动重连处理
+ */
+void tcpClient::onEdSoftwareAutoReconnect()
+{
+    if (m_isEdSoftwareConnected || m_edSoftwareSocket->state() == QAbstractSocket::ConnectedState) {
+        m_edSoftwareAutoReconnectTimer->stop();
+        return;
+    }
+    if (m_edSoftwareSocket->state() == QAbstractSocket::ConnectingState) {
+        return;
+    }
+    if (!lineEditEdSoftwareIP || !lineEditEdSoftwarePort) {
+        return;
+    }
+    QString edIP = lineEditEdSoftwareIP->text().trimmed();
+    QString portStr = lineEditEdSoftwarePort->text().trimmed();
+    bool ok = false;
+    int port = portStr.toInt(&ok);
+    if (edIP.isEmpty() || !ok || port <= 0 || port > 65535) {
+        return;
+    }
+    m_edSoftwareSocket->connectToHost(edIP, port);
+    m_edSoftwareConnectionTimer->start();
+    pushButtonEdSoftwareConnect->setEnabled(false);
 }
 
 /**
@@ -9580,6 +9739,11 @@ void tcpClient::onEdSoftwareConnectionTimeout()
     m_edSoftwareSocket->abort();
     appendToLog("ED软件连接超时", true);
     updateEdSoftwareConnectionStatus(false);
+    
+    // 仅当非用户手动断开时启动自动重连定时器
+    if (!m_edSoftwareManualDisconnect && !m_edSoftwareAutoReconnectTimer->isActive()) {
+        m_edSoftwareAutoReconnectTimer->start();
+    }
 }
 
 /**
