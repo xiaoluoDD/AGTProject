@@ -159,6 +159,8 @@ private slots:
     void onServerSocketReadyRead();     ///< 服务端Socket数据可读处理
     void onServerConnectionTimeout();   ///< 服务端连接超时处理
     void onServerAutoReconnect();       ///< 服务端自动重连处理
+    void onServerHeartbeat();           ///< 服务端心跳发送处理（发送ping）
+    void onServerHeartbeatPongTimeout(); ///< 服务端心跳应答超时处理（重发3次无应答则弹窗提示）
     void onEdSoftwareAutoReconnect();   ///< ED软件自动重连处理
     void startAutoConnect();            ///< 启动时自动连接（加载数据库/连接配置后调用）
 
@@ -321,6 +323,9 @@ private:
     QTimer *m_shiftDisplayAutoResetTimer; ///< 班次显示自动恢复定时器（1分钟后恢复）
     QTimer *m_plcAutoReconnectTimer; ///< PLC自动重连定时器（每3秒检测一次）
     QTimer *m_serverAutoReconnectTimer; ///< 服务端自动重连定时器（每3秒检测一次）
+    QTimer *m_serverHeartbeatTimer;     ///< 服务端心跳定时器（每30秒发送ping）
+    QTimer *m_serverHeartbeatPongTimer; ///< 服务端心跳应答超时定时器（重发3次无应答则弹窗）
+    int m_serverHeartbeatRetryCount;    ///< 服务端心跳重发次数（收到pong时清零）
     QTimer *m_edSoftwareAutoReconnectTimer; ///< ED软件自动重连定时器（每3秒检测一次）
     QTimer *m_currentShiftTableDailyClearTimer; ///< 当前班次表格每日清空定时器（每分钟检查一次，凌晨6点清空）
     QTimer *m_projectGroupShiftAutoResetTimer; ///< 工程组记录界面班次自动恢复定时器（1分钟后恢复）

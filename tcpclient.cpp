@@ -324,6 +324,9 @@ tcpClient::tcpClient(QWidget *parent)
     , m_shiftDisplayAutoResetTimer(new QTimer(this))
     , m_plcAutoReconnectTimer(new QTimer(this))
     , m_serverAutoReconnectTimer(new QTimer(this))
+    , m_serverHeartbeatTimer(new QTimer(this))
+    , m_serverHeartbeatPongTimer(new QTimer(this))
+    , m_serverHeartbeatRetryCount(0)
     , m_edSoftwareAutoReconnectTimer(new QTimer(this))
     , m_currentShiftTableDailyClearTimer(new QTimer(this))
     , m_projectGroupShiftAutoResetTimer(new QTimer(this))
@@ -518,6 +521,14 @@ tcpClient::tcpClient(QWidget *parent)
         // 设置服务端连接超时时间（5秒）
         m_serverConnectionTimer->setSingleShot(true);
         m_serverConnectionTimer->setInterval(5000);
+
+        // 连接服务端心跳定时器
+        connect(m_serverHeartbeatTimer, &QTimer::timeout, this, &tcpClient::onServerHeartbeat);
+        m_serverHeartbeatTimer->setSingleShot(false);
+        m_serverHeartbeatTimer->setInterval(30000); // 每30秒发送一次ping
+        connect(m_serverHeartbeatPongTimer, &QTimer::timeout, this, &tcpClient::onServerHeartbeatPongTimeout);
+        m_serverHeartbeatPongTimer->setSingleShot(true);
+        m_serverHeartbeatPongTimer->setInterval(15000); // 15秒内未收到pong则重发
         
         // 连接ED软件Socket信号槽
         connect(m_edSoftwareSocket, &QTcpSocket::connected, this, &tcpClient::onEdSoftwareSocketConnected);
@@ -7573,6 +7584,10 @@ void tcpClient::onServerSocketConnected()
     m_isServerConnected = true;
     updateServerConnectionStatus(true);
     
+    // 启动心跳定时器并立即发送第一次ping
+    m_serverHeartbeatTimer->start();
+    onServerHeartbeat();
+    
     // 启动可视化数据发送定时器
     m_visualizationDataTimer->start();
     appendToLog("数据发送定时器已启动（每3秒触发一次，1秒间隔上报AGT搬运、工程组和异常记录数据）", false);
@@ -7596,6 +7611,11 @@ void tcpClient::onServerSocketDisconnected()
     m_serverConnectionTimer->stop();
     m_isServerConnected = false;
     updateServerConnectionStatus(false);
+    
+    // 停止心跳定时器
+    m_serverHeartbeatTimer->stop();
+    m_serverHeartbeatPongTimer->stop();
+    m_serverHeartbeatRetryCount = 0;
     
     // 停止数据发送定时器
     m_visualizationDataTimer->stop();
@@ -7660,6 +7680,52 @@ void tcpClient::onServerAutoReconnect()
     m_serverSocket->connectToHost(serverIP, port);
     m_serverConnectionTimer->start();
     pushButtonServerConnect->setEnabled(false);
+}
+
+/**
+ * @brief 服务端心跳发送处理（发送ping）
+ */
+void tcpClient::onServerHeartbeat()
+{
+    if (!m_serverSocket || m_serverSocket->state() != QAbstractSocket::ConnectedState) {
+        return;
+    }
+    QJsonObject pingObj;
+    pingObj["action"] = "ping";
+    QJsonDocument doc(pingObj);
+    QByteArray jsonBytes = doc.toJson(QJsonDocument::Compact);
+    qint64 bytesWritten = m_serverSocket->write(jsonBytes);
+    if (bytesWritten > 0) {
+        qDebug() << "已发送心跳ping到服务端";
+        m_serverHeartbeatPongTimer->start(); // 启动pong超时检测
+    }
+}
+
+/**
+ * @brief 服务端心跳应答超时处理（重发3次无应答则弹窗提示）
+ */
+void tcpClient::onServerHeartbeatPongTimeout()
+{
+    m_serverHeartbeatRetryCount++;
+    appendToLog(QString("服务端心跳超时，第%1次重发").arg(m_serverHeartbeatRetryCount), true);
+
+    if (m_serverHeartbeatRetryCount >= 3) {
+        // 重发3次后仍无应答，弹窗提示，不断开连接
+        m_serverHeartbeatRetryCount = 0;
+        QMessageBox::warning(this, "通讯超时", "与服务端通讯超时，请检查网络连接。");
+        return;
+    }
+
+    // 立即重发ping
+    if (m_serverSocket && m_serverSocket->state() == QAbstractSocket::ConnectedState) {
+        QJsonObject pingObj;
+        pingObj["action"] = "ping";
+        QJsonDocument doc(pingObj);
+        QByteArray jsonBytes = doc.toJson(QJsonDocument::Compact);
+        if (m_serverSocket->write(jsonBytes) > 0) {
+            m_serverHeartbeatPongTimer->start();
+        }
+    }
 }
 
 /**
@@ -7777,6 +7843,16 @@ bool tcpClient::processSingleJsonObject(const QString &jsonString, bool saveToTa
     }
     
     QJsonObject obj = doc.object();
+    
+    // 检查是否是心跳应答（pong）
+    QString message = obj.value("message").toString();
+    bool success = obj.value("success").toBool(false);
+    if (message == "pong" && success) {
+        m_serverHeartbeatPongTimer->stop(); // 收到pong，停止超时检测
+        m_serverHeartbeatRetryCount = 0;   // 收到pong，清零重发计数
+        qDebug() << "收到服务端心跳pong应答";
+        return true;
+    }
     
     // 检查是否是生产数据上报（production_data类型）
     QString action = obj.value("action").toString();
