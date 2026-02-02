@@ -188,9 +188,12 @@ private slots:
     void updateEdSoftwareConnectionStatus(bool connected); ///< 更新ED软件连接状态显示
 
     // 统计信息双击编辑槽函数
-    void onPlannedCountLabelDoubleClicked(); ///< 计划便次标签双击处理
-    void onActualCountLabelDoubleClicked(); ///< 实际便次标签双击处理
-    void onDelayedCountLabelDoubleClicked(); ///< 延迟便次标签双击处理
+    void onPlannedCountLabelDoubleClicked();   ///< 第一节便次标签双击处理
+    void onActualCountLabelDoubleClicked();    ///< 第二节便次标签双击处理
+    void onDelayedCountLabelDoubleClicked();   ///< 第三节便次标签双击处理
+    void onSection4CountLabelDoubleClicked();  ///< 第四节便次标签双击处理
+    void onTotalCountLabelDoubleClicked();     ///< 总数便次标签双击处理
+    void updateTotalCountDisplay();            ///< 更新总数便次显示（总数=第一节+第二节+第三节+第四节）
 
     // 滑槽标签双击编辑函数
     void onTraySlotLabelDoubleClicked(QLabel* label, bool isRealTray, int slotIndex); ///< 滑槽标签双击处理
@@ -399,19 +402,40 @@ private:
     QTime m_nightShiftEnd;        ///< 夜班结束时间
     bool m_shiftConfigLoaded;     ///< 班次设置是否已加载
 
-    // 统计信息标签和数值
-    QLabel* plannedCountLabel;    ///< 计划便次标签
-    QLabel* actualCountLabel;      ///< 实际便次标签
-    QLabel* delayedCountLabel;     ///< 延迟便次标签
+    // 统计信息：单一表格（项目 | 计划便次 | 实际便次 | 差异），行：第一节便次、第二节便次、吃饭时间、第三节便次、第四节便次、加班时间、总数便次
+    QTableWidget* statisticsTableWidget; ///< 统计信息表格
+    QLabel* plannedCountLabel;    ///< 保留用于兼容（可为null）
+    QLabel* actualCountLabel;
+    QLabel* delayedCountLabel;
+    QLabel* section4CountLabel;
+    QLabel* totalCountLabel;
     QPushButton* shiftDisplayButton; ///< 班次显示按钮
-    int m_plannedCount;           ///< 计划便次数值
-    int m_actualCount;            ///< 实际便次数值
-    int m_delayedCount;           ///< 延迟便次数值
+    void updateStatisticsTableDisplay(); ///< 刷新统计表格所有单元格
+    QString getStatisticsRowTimeRange(int rowIndex) const; ///< 根据总成指示表时间列返回统计表某行对应的时间范围（第一节/第二节/吃饭/第三节/第四节/加班）
+    int getPlanSumForSecondLevelValue(int secondLevelValue) const; ///< 总成指示表时间列（二级表头值120/230/350/460）所有计划行的和
+    int getPlanSumForOvertimeLastColumn() const; ///< 加班时间列最后一列所有计划行的和（无加班返回0）
+    int getSectionFromTimeColumn(int colIndex) const; ///< 根据总成指示表时间列索引返回便次节（1=第一节,2=第二节,3=第三节,4=第四节,0=吃饭/休息,5=加班）
+    int m_planTotal;              ///< 计划便次（用于右侧表格及差异计算）
+    int m_plannedCount;           ///< 第一节便次计划值
+    int m_actualCount;             ///< 第二节便次（保留兼容，总数=四节实际便次之和）
+    int m_delayedCount;            ///< 第三节便次
+    int m_section4Count;           ///< 第四节便次
+    int m_section1ActualCount;     ///< 第一节便次实际次数（仅空托盘搬出时按时间累加）
+    int m_section2ActualCount;     ///< 第二节便次实际次数
+    int m_section3ActualCount;     ///< 第三节便次实际次数
+    int m_section4ActualCount;     ///< 第四节便次实际次数
+    int m_totalCount;              ///< 总数便次数值
     QString m_currentDisplayShift; ///< 当前显示的班次（"current"表示当前班次，"previous"表示前一个班次）
     QString m_projectGroupDisplayShift; ///< 工程组记录界面显示的班次（"current"表示当前班次，"previous"表示前一个班次）
-    int m_displayedPlannedCount;  ///< 显示的计划便次（可能是前一个班次的）
-    int m_displayedActualCount;   ///< 显示的实际便次（可能是前一个班次的）
-    int m_displayedDelayedCount;  ///< 显示的延迟便次（可能是前一个班次的）           ///< 延迟便次数值
+    int m_displayedPlannedCount;   ///< 显示的第一节便次（可能是前一个班次的）
+    int m_displayedActualCount;    ///< 显示的第二节便次（可能是前一个班次的）
+    int m_displayedDelayedCount;   ///< 显示的第三节便次（可能是前一个班次的）
+    int m_displayedSection4Count;   ///< 显示的第四节便次
+    int m_displayedTotalCount;     ///< 显示的总数便次
+    int m_displayedSection1ActualCount;  ///< 显示的第一节实际便次（前班次用）
+    int m_displayedSection2ActualCount;
+    int m_displayedSection3ActualCount;
+    int m_displayedSection4ActualCount;
 
     // 实托盘批次处理相关
     int m_realTrayBatchCount;     ///< 当前批次已搬入的车型数量（0-3），0表示新批次开始
