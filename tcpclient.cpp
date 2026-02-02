@@ -51,7 +51,24 @@
 #include <QTimeEdit>
 #include <QTime>
 #include <QPainter>
+#include <QStyledItemDelegate>
+#include <QStyleOptionViewItem>
 #include <cmath>
+
+namespace {
+/// 三灰三白行背景委托：每3行为一组，前3行灰、后3行白交替
+class ThreeGrayThreeWhiteDelegate : public QStyledItemDelegate {
+public:
+    explicit ThreeGrayThreeWhiteDelegate(QObject* parent = nullptr) : QStyledItemDelegate(parent) {}
+    void initStyleOption(QStyleOptionViewItem* option, const QModelIndex& index) const override {
+        QStyledItemDelegate::initStyleOption(option, index);
+        int row = index.row();
+        // 三灰三白：行 0,1,2 灰；3,4,5 白；6,7,8 灰；...
+        QColor bg = ((row / 3) % 2 == 0) ? QColor(240, 240, 240) : Qt::white;
+        option->backgroundBrush = QBrush(bg);
+    }
+};
+} // namespace
 
 /**
  * @brief TwoLevelHeaderView构造函数
@@ -1133,7 +1150,8 @@ void tcpClient::setupUI()
         QStringList headers;
         headers << "滑槽号" << "车型代码" << "车型名称" << "数量" << "时间";
         (*tableWidget)->setHorizontalHeaderLabels(headers);
-        (*tableWidget)->setAlternatingRowColors(true);
+        (*tableWidget)->setAlternatingRowColors(false); // 使用委托实现三灰三白
+        (*tableWidget)->setItemDelegate(new ThreeGrayThreeWhiteDelegate(*tableWidget));
         (*tableWidget)->setSelectionBehavior(QAbstractItemView::SelectRows);
         (*tableWidget)->setSortingEnabled(false);
         (*tableWidget)->setEditTriggers(QAbstractItemView::NoEditTriggers);
