@@ -451,6 +451,8 @@ private:
     // 空托盘批次处理相关
     int m_emptyTrayBatchCount;    ///< 当前批次已搬出的车型数量（0-3），0表示新批次开始
 
+    QStringList m_pendingExceptionMessages; ///< 当前指令待弹窗的异常信息列表（一条指令只弹一次窗）
+
     // 数据库配置
     QString m_dbHost;             ///< 数据库主机地址
     int m_dbPort;                 ///< 数据库端口

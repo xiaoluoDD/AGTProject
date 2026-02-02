@@ -3258,6 +3258,8 @@ void tcpClient::processHexData(const QByteArray &data)
 
     qDebug() << "数据格式验证通过，开始解析数据";
 
+    m_pendingExceptionMessages.clear(); // 一条指令只弹一次窗，先清空本指令的异常列表
+
     // 定义托盘信息结构
     struct TrayInfo {
         int slotNo;           // 托盘号（1-6）
@@ -3508,6 +3510,11 @@ void tcpClient::processHexData(const QByteArray &data)
     ack.append(static_cast<char>(0x00));
     m_socket->write(ack);
     appendToLog("已发送应答: E0 00", false);
+
+    // 一条指令只弹一次窗，包含本指令所有异常信息
+    if (!m_pendingExceptionMessages.isEmpty()) {
+        QMessageBox::warning(this, "异常提示", m_pendingExceptionMessages.join("\n\n"));
+    }
 }
 
 /**
@@ -9396,6 +9403,11 @@ void tcpClient::insertExceptionRecord(int slotNo, const QString &modelName, cons
     } else {
         qDebug() << QString("异常记录已插入: 滑槽号=%1, 车型=%2, 状态=%3, 异常信息=%4, 日期=%5")
                     .arg(slotNo).arg(modelName).arg(status).arg(exceptionInfo).arg(date);
+        
+        // 加入待弹窗列表，一条指令处理完后统一弹一次窗
+        QString msg = QString("【异常记录】\n滑槽号：%1\n车型名称：%2\n送入送出状态：%3\n异常信息：%4\n时间：%5")
+                          .arg(slotNo).arg(modelName).arg(status).arg(exceptionInfo).arg(date);
+        m_pendingExceptionMessages.append(msg);
         
         // 同时更新表格显示（仅当该记录属于当前班次时才显示）
         if (exceptionTableWidget) {
