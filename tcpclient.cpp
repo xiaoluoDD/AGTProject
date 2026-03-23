@@ -3748,8 +3748,9 @@ void tcpClient::addDataToCurrentShiftTable(int slotNo, const QString &status, co
     qDebug() << QString("addDataToCurrentShiftTable: slotNo=%1, status=%2, modelName=%3, currentTime=%4")
                 .arg(slotNo).arg(status).arg(modelName).arg(currentTime);
     
-    int tableRow = targetTable->rowCount();
-    targetTable->insertRow(tableRow);
+    // 插入到第 0 行（表格最上方），与 loadCurrentShiftRecordsFromDb 中 ORDER BY time DESC 的展示顺序一致（最新在上）
+    targetTable->insertRow(0);
+    const int tableRow = 0;
     
     // 滑槽号（列0）
     QTableWidgetItem* item0 = new QTableWidgetItem(QString::number(slotNo));
@@ -3778,7 +3779,7 @@ void tcpClient::addDataToCurrentShiftTable(int slotNo, const QString &status, co
     
     // 注意：数据已保存到 data_records 表，当前班次表格从 data_records 表加载，无需再次保存
     
-    qDebug() << QString("已成功添加到当前班次表格，行号: %1").arg(tableRow);
+    qDebug() << QString("已成功添加到当前班次表格最上方（第%1行）").arg(tableRow);
 }
 
 /**
