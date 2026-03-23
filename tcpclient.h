@@ -199,6 +199,8 @@ private slots:
 
     // 滑槽标签双击编辑函数
     void onTraySlotLabelDoubleClicked(QLabel* label, bool isRealTray, int slotIndex); ///< 滑槽标签双击处理
+    void onRealEntranceLongPressTimeout();  ///< 实滑槽「三车间滑槽出口」长按3秒超时：弹出清空确认
+    void onEmptyEntranceLongPressTimeout(); ///< 空滑槽「三车间滑槽入口」长按3秒超时：弹出清空确认
     void onProjectGroupShiftButtonClicked(); ///< 工程组记录界面班次按钮点击处理
     void onProjectGroupShiftAutoReset(); ///< 工程组记录界面班次自动恢复处理
 
@@ -285,6 +287,8 @@ private:
     void advanceEmptyTrayVisualizationBy3(const QString &modelName = ""); ///< 推进空托盘可视化显示3个位置，modelName为新进入的车型名称（用于记录异常）
     void saveEmptyTrayVisualizationRecords(); ///< 保存空托盘可视化记录到数据库
     void loadEmptyTrayVisualizationRecords(); ///< 从数据库加载空托盘可视化记录
+    void clearAllRealTrayVisualizationSlots();  ///< 清空实滑槽全部车型及数据库 visualization_records
+    void clearAllEmptyTrayVisualizationSlots(); ///< 清空空滑槽全部车型及数据库 empty_tray_visualization_records
     int mapSlotNumberToActualSlot(int slotNumber); ///< 将指令滑槽号映射为实际滑槽号（1->2001, 2->2002, 3->2003, 4->2103, 5->2102, 6->2101）
     int getSlotNoFromIndex(int slotIndex, bool isRealTray); ///< 根据槽位索引获取滑槽号（实托盘：索引18、19、20对应2101、2102、2103；空托盘：索引18、19、20对应2001、2002、2003）
 
@@ -455,6 +459,8 @@ private:
 
     // 空托盘批次处理相关
     int m_emptyTrayBatchCount;    ///< 当前批次已搬出的车型数量（0-3），0表示新批次开始
+    QTimer *m_realEntranceLongPressTimer;  ///< 实滑槽入口标签长按3秒定时器
+    QTimer *m_emptyEntranceLongPressTimer; ///< 空滑槽入口标签长按3秒定时器
 
     QStringList m_pendingExceptionMessages; ///< 当前指令待弹窗的异常信息列表（一条指令只弹一次窗）
 

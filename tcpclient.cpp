@@ -22,6 +22,7 @@
 #include <QInputDialog>
 #include <QCloseEvent>
 #include <QMouseEvent>
+#include <QCursor>
 #include <QEvent>
 #include <QLoggingCategory>
 #include <QDir>
@@ -379,6 +380,8 @@ tcpClient::tcpClient(QWidget *parent)
     , m_displayedMealActualCount(0)
     , m_realTrayBatchCount(0)
     , m_emptyTrayBatchCount(0)
+    , m_realEntranceLongPressTimer(nullptr)
+    , m_emptyEntranceLongPressTimer(nullptr)
     , m_dbHost("localhost")
     , m_dbPort(3306)
     , m_dbName("agt_database")
@@ -412,6 +415,16 @@ tcpClient::tcpClient(QWidget *parent)
 
         setupUI();
         qDebug() << "setupUI completed";
+
+        // 实滑槽「三车间滑槽出口」/ 空滑槽「三车间滑槽入口」：长按3秒弹出清空全部车型确认
+        m_realEntranceLongPressTimer = new QTimer(this);
+        m_realEntranceLongPressTimer->setSingleShot(true);
+        m_realEntranceLongPressTimer->setInterval(3000);
+        connect(m_realEntranceLongPressTimer, &QTimer::timeout, this, &tcpClient::onRealEntranceLongPressTimeout);
+        m_emptyEntranceLongPressTimer = new QTimer(this);
+        m_emptyEntranceLongPressTimer->setSingleShot(true);
+        m_emptyEntranceLongPressTimer->setInterval(3000);
+        connect(m_emptyEntranceLongPressTimer, &QTimer::timeout, this, &tcpClient::onEmptyEntranceLongPressTimeout);
 
         setupTable();
         qDebug() << "setupTable completed";
@@ -779,6 +792,9 @@ void tcpClient::setupUI()
     entranceLabel->setText("三车间滑槽出口");
     m_realTrayLabels.append(entranceLabel);
     realTrayLayout->addWidget(entranceLabel, 0, 0, 1, 3, Qt::AlignCenter);
+    entranceLabel->installEventFilter(this);
+    entranceLabel->setCursor(Qt::PointingHandCursor);
+    entranceLabel->setToolTip(QStringLiteral("长按3秒可清空实滑槽全部车型记录"));
     
     // 第1行：列标签（2101、2102、2103）
     QStringList columnLabels = {"2101", "2102", "2103"};
@@ -904,6 +920,9 @@ void tcpClient::setupUI()
     emptyEntranceLabel->setText("三车间滑槽入口");
     m_emptyTrayLabels.append(emptyEntranceLabel);
     emptyTrayLayout->addWidget(emptyEntranceLabel, 0, 0, 1, 3, Qt::AlignCenter);
+    emptyEntranceLabel->installEventFilter(this);
+    emptyEntranceLabel->setCursor(Qt::PointingHandCursor);
+    emptyEntranceLabel->setToolTip(QStringLiteral("长按3秒可清空空滑槽全部车型记录"));
     
     // 第1行：列标签（2003、2002、2001）
     QStringList emptyColumnLabels = {"2003", "2002", "2001"};
@@ -5823,6 +5842,32 @@ void tcpClient::closeEvent(QCloseEvent *event)
  */
 bool tcpClient::eventFilter(QObject *obj, QEvent *event)
 {
+    // 实滑槽「三车间滑槽出口」/ 空滑槽「三车间滑槽入口」：按住左键3秒后触发清空确认（松手或移出则取消）
+    if (m_realTrayLabels.size() > 0 && obj == m_realTrayLabels[0]) {
+        if (event->type() == QEvent::MouseButtonPress) {
+            auto *me = static_cast<QMouseEvent *>(event);
+            if (me->button() == Qt::LeftButton && m_realEntranceLongPressTimer) {
+                m_realEntranceLongPressTimer->start(3000);
+            }
+        } else if (event->type() == QEvent::MouseButtonRelease || event->type() == QEvent::Leave) {
+            if (m_realEntranceLongPressTimer) {
+                m_realEntranceLongPressTimer->stop();
+            }
+        }
+    }
+    if (m_emptyTrayLabels.size() > 0 && obj == m_emptyTrayLabels[0]) {
+        if (event->type() == QEvent::MouseButtonPress) {
+            auto *me = static_cast<QMouseEvent *>(event);
+            if (me->button() == Qt::LeftButton && m_emptyEntranceLongPressTimer) {
+                m_emptyEntranceLongPressTimer->start(3000);
+            }
+        } else if (event->type() == QEvent::MouseButtonRelease || event->type() == QEvent::Leave) {
+            if (m_emptyEntranceLongPressTimer) {
+                m_emptyEntranceLongPressTimer->stop();
+            }
+        }
+    }
+
     if (event->type() == QEvent::MouseButtonDblClick) {
         QMouseEvent *mouseEvent = static_cast<QMouseEvent*>(event);
         if (mouseEvent->button() == Qt::LeftButton) {
@@ -5859,6 +5904,86 @@ bool tcpClient::eventFilter(QObject *obj, QEvent *event)
         }
     }
     return QWidget::eventFilter(obj, event);
+}
+
+void tcpClient::onRealEntranceLongPressTimeout()
+{
+    QMessageBox::StandardButton reply = QMessageBox::question(
+        this,
+        QStringLiteral("确认清空"),
+        QStringLiteral("是否清空实滑槽记录中的所有车型？\n此操作将同步清空数据库中的可视化记录。"),
+        QMessageBox::Yes | QMessageBox::No,
+        QMessageBox::No);
+    if (reply == QMessageBox::Yes) {
+        clearAllRealTrayVisualizationSlots();
+    }
+}
+
+void tcpClient::onEmptyEntranceLongPressTimeout()
+{
+    QMessageBox::StandardButton reply = QMessageBox::question(
+        this,
+        QStringLiteral("确认清空"),
+        QStringLiteral("是否清空空滑槽记录中的所有车型？\n此操作将同步清空数据库中的空托盘可视化记录。"),
+        QMessageBox::Yes | QMessageBox::No,
+        QMessageBox::No);
+    if (reply == QMessageBox::Yes) {
+        clearAllEmptyTrayVisualizationSlots();
+    }
+}
+
+void tcpClient::clearAllRealTrayVisualizationSlots()
+{
+    for (int i = 0; i < 21 && i < m_realTraySlots.size(); ++i) {
+        m_realTraySlots[i] = QString();
+    }
+    for (int i = 1; i <= 21 && i < m_realTrayLabels.size(); ++i) {
+        if (m_realTrayLabels[i]) {
+            m_realTrayLabels[i]->clear();
+        }
+    }
+    if (m_realTrayLabels.size() > 22 && m_realTrayLabels[22]) {
+        m_realTrayLabels[22]->setText(m_realTrayExitLabelText);
+    }
+    m_realTrayBatchCount = 0;
+    QSqlDatabase db = QSqlDatabase::database();
+    if (db.isOpen()) {
+        QSqlQuery q;
+        if (!q.exec(QStringLiteral("DELETE FROM visualization_records"))) {
+            appendToLog(QStringLiteral("清空可视化记录表失败: %1").arg(q.lastError().text()), true);
+            return;
+        }
+    } else {
+        appendToLog(QStringLiteral("数据库未打开，无法同步清空可视化记录表"), true);
+    }
+    appendToLog(QStringLiteral("已清空实滑槽所有车型记录（含数据库）"), false);
+}
+
+void tcpClient::clearAllEmptyTrayVisualizationSlots()
+{
+    for (int i = 0; i < 21 && i < m_emptyTraySlots.size(); ++i) {
+        m_emptyTraySlots[i] = QString();
+    }
+    for (int i = 1; i <= 21 && i < m_emptyTrayLabels.size(); ++i) {
+        if (m_emptyTrayLabels[i]) {
+            m_emptyTrayLabels[i]->clear();
+        }
+    }
+    if (m_emptyTrayLabels.size() > 22 && m_emptyTrayLabels[22]) {
+        m_emptyTrayLabels[22]->setText(m_emptyTrayExitLabelText);
+    }
+    m_emptyTrayBatchCount = 0;
+    QSqlDatabase db = QSqlDatabase::database();
+    if (db.isOpen()) {
+        QSqlQuery q;
+        if (!q.exec(QStringLiteral("DELETE FROM empty_tray_visualization_records"))) {
+            appendToLog(QStringLiteral("清空空托盘可视化记录表失败: %1").arg(q.lastError().text()), true);
+            return;
+        }
+    } else {
+        appendToLog(QStringLiteral("数据库未打开，无法同步清空空托盘可视化记录表"), true);
+    }
+    appendToLog(QStringLiteral("已清空空滑槽所有车型记录（含数据库）"), false);
 }
 
 /**
