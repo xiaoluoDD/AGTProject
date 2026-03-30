@@ -304,6 +304,8 @@ private:
     void initLogSystem();         ///< 初始化日志系统
     void setupLogDirectory();     ///< 设置日志目录
     void setupLogFile();          ///< 设置日志文件
+    void reopenLogFileForDate(const QDate& date); ///< 按指定日期打开/切换日志文件（不调用 qDebug，供消息处理器内使用）
+    void ensureLogFileForCurrentDate(); ///< 若已跨天则切换到当日日志文件
     void cleanupLogFiles();       ///< 清理旧日志文件
     static void logMessageHandler(QtMsgType type, const QMessageLogContext &context, const QString &msg); ///< 日志消息处理器
 
@@ -474,6 +476,7 @@ private:
     // 日志系统成员变量
     QString m_logDirectory;       ///< 日志目录路径
     QString m_logFileName;        ///< 当前日志文件名
+    QDate m_logFileDate;          ///< 当前日志文件对应的日历日期（用于跨天切换）
     QFile* m_logFile;             ///< 日志文件对象
     QTextStream* m_logStream;     ///< 日志流对象
     QMutex m_logMutex;            ///< 日志互斥锁

@@ -1117,7 +1117,10 @@ void tcpClient::setupUI()
     statisticsTableWidget->setColumnCount(4);
     statisticsTableWidget->setRowCount(6);
     statisticsTableWidget->setHorizontalHeaderLabels(QStringList() << "" << "计划便次" << "实际便次" << "差异");
-    statisticsTableWidget->horizontalHeader()->setStretchLastSection(true);
+    // 四列等宽：均分表格可用宽度
+    for (int c = 0; c < 4; ++c) {
+        statisticsTableWidget->horizontalHeader()->setSectionResizeMode(c, QHeaderView::Stretch);
+    }
     statisticsTableWidget->verticalHeader()->setVisible(false);
     statisticsTableWidget->setEditTriggers(QAbstractItemView::NoEditTriggers);
     statisticsTableWidget->setSelectionBehavior(QAbstractItemView::SelectItems);
@@ -6704,32 +6707,74 @@ void tcpClient::setupLogDirectory()
 }
 
 /**
+ * @brief 按指定日期打开日志文件（关闭并替换已有文件句柄）
+ * @note 不得在此函数内调用 qDebug/qWarning/qInfo，否则从 logMessageHandler 持锁重入会死锁。
+ */
+void tcpClient::reopenLogFileForDate(const QDate& date)
+{
+    if (!date.isValid()) {
+        return;
+    }
+    if (m_logFileDate == date && m_logStream && m_logFile && m_logFile->isOpen()) {
+        return;
+    }
+
+    delete m_logStream;
+    m_logStream = nullptr;
+    if (m_logFile) {
+        m_logFile->close();
+        delete m_logFile;
+        m_logFile = nullptr;
+    }
+    m_logFileDate = QDate();
+
+    const QString dateStr = date.toString("yyyy-MM-dd");
+    m_logFileName = QString("agt_client_%1.log").arg(dateStr);
+    const QString fullLogPath = m_logDirectory + "/" + m_logFileName;
+
+    m_logFile = new QFile(fullLogPath);
+    if (m_logFile->open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text)) {
+        m_logStream = new QTextStream(m_logFile);
+        const QString header = QString("\n=== AGT滑槽记录表客户端日志 - %1 ===\n")
+                                   .arg(QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss"));
+        *m_logStream << header << Qt::endl;
+        m_logStream->flush();
+        m_logFileDate = date;
+    } else {
+        delete m_logFile;
+        m_logFile = nullptr;
+        // 标记已处理该日期，避免打开失败时每条日志都重复尝试 reopen
+        m_logFileDate = date;
+    }
+}
+
+/**
+ * @brief 若系统日期与当前日志文件日期不一致，则切换到新日期的日志文件
+ */
+void tcpClient::ensureLogFileForCurrentDate()
+{
+    const QDate today = QDate::currentDate();
+    if (m_logFileDate == today) {
+        if (m_logStream && m_logFile && m_logFile->isOpen()) {
+            return;
+        }
+        // 当日已尝试过打开（含失败），不再每条日志重试
+        return;
+    }
+    reopenLogFileForDate(today);
+}
+
+/**
  * @brief 设置日志文件
  */
 void tcpClient::setupLogFile()
 {
-    // 生成日志文件名（包含日期）
-    QString currentDate = QDateTime::currentDateTime().toString("yyyy-MM-dd");
-    m_logFileName = QString("agt_client_%1.log").arg(currentDate);
-    QString fullLogPath = m_logDirectory + "/" + m_logFileName;
-
-    // 创建日志文件对象
-    m_logFile = new QFile(fullLogPath);
-    if (m_logFile->open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text)) {
-        m_logStream = new QTextStream(m_logFile);
-        // Qt 6中默认使用UTF-8编码，无需设置
-
-        // 写入日志文件头
-        QString header = QString("\n=== AGT滑槽记录表客户端日志 - %1 ===\n")
-                             .arg(QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss"));
-        *m_logStream << header << Qt::endl;
-        m_logStream->flush();
-
+    reopenLogFileForDate(QDate::currentDate());
+    const QString fullLogPath = m_logDirectory + "/" + m_logFileName;
+    if (m_logStream) {
         qDebug() << "日志文件创建成功:" << fullLogPath;
     } else {
         qWarning() << "无法创建日志文件:" << fullLogPath;
-        delete m_logFile;
-        m_logFile = nullptr;
     }
 }
 
@@ -6771,12 +6816,16 @@ void tcpClient::cleanupLogFiles()
  */
 void tcpClient::logMessageHandler(QtMsgType type, const QMessageLogContext &context, const QString &msg)
 {
-    // 如果实例不存在，使用默认处理器
-    if (!s_instance || !s_instance->m_logStream) {
+    if (!s_instance) {
         return;
     }
 
     QMutexLocker locker(&s_instance->m_logMutex);
+
+    s_instance->ensureLogFileForCurrentDate();
+    if (!s_instance->m_logStream) {
+        return;
+    }
 
     // 格式化日志消息
     QString timestamp = QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss.zzz");
