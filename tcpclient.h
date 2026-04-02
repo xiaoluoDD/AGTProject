@@ -224,7 +224,8 @@ private:
                         int status2, unsigned int value3, unsigned int value4,
                         const QString &currentTime); ///< 添加数据到表格
     void addDataToCurrentShiftTable(int slotNo, const QString &status, const QString &modelCode,
-                                    const QString &modelName, int count, const QString &currentTime); ///< 添加数据到当前班次表格
+                                    const QString &modelName, int count, const QString &currentTime,
+                                    int plcStripeBatchId = -1); ///< plcStripeBatchId>=0 时同值表示同一条 PLC 报文，用于行底色分组；-1 表示不设置（如从库加载时用行号回退）
 
     void initDatabase();
     void loadDatabaseConfig(); ///< 从配置文件加载数据库配置
@@ -233,7 +234,8 @@ private:
                                 const QString &username, const QString &password); ///< 测试数据库连接
     void loadModelBindingsFromDb();
     void loadDataRecordsFromDb();
-    void insertDataRecord(int slotNo, const QString &status, const QString &modelName, const QString &modelCode, int count, const QString &currentTime);
+    void insertDataRecord(int slotNo, const QString &status, const QString &modelName, const QString &modelCode, int count, const QString &currentTime,
+                          const QString &recordSource = QString(), int plcStripeBatch = -1); ///< recordSource 空=plc；ed=ED；plcStripeBatch>=0 写入库供重启后当前班次条纹着色
     void deleteDataRecord(int slotNo, const QString &status, const QString &modelName, const QString &modelCode, int count, const QString &currentTime);
     void insertModelBinding(const QString &modelCode, const QString &modelName, int count);
     void updateModelBinding(const QString &oldModelCode, const QString &oldModelName, int oldCount, int row);
@@ -456,6 +458,7 @@ private:
     int m_displayedMealActualCount;     ///< 显示的吃饭时间实际便次（前班次用）
 
     // 实托盘批次处理相关
+    int m_plcShiftTableStripeEpoch; ///< PLC 每条报文（processHexData / addDataToTable 一次调用）递增，当前班次表同报文多行同色
     int m_realTrayBatchCount;     ///< 当前批次已搬入的车型数量（0-3），0表示新批次开始
     QDateTime m_lastRealTrayOutTime; ///< 最后一次实托盘搬出的时间
 

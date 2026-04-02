@@ -57,16 +57,24 @@
 #include <cmath>
 
 namespace {
-/// 三灰三白行背景委托：每3行为一组，前3行灰、后3行白交替
-class ThreeGrayThreeWhiteDelegate : public QStyledItemDelegate {
+/// 当前班次表行背景：单元格 Qt::UserRole 存 PLC 报文批次号，同批次同色；无数据时按行号灰白交替（库加载回退）
+class CurrentShiftTableStripeDelegate : public QStyledItemDelegate {
 public:
-    explicit ThreeGrayThreeWhiteDelegate(QObject* parent = nullptr) : QStyledItemDelegate(parent) {}
+    explicit CurrentShiftTableStripeDelegate(QObject* parent = nullptr) : QStyledItemDelegate(parent) {}
     void initStyleOption(QStyleOptionViewItem* option, const QModelIndex& index) const override {
         QStyledItemDelegate::initStyleOption(option, index);
-        int row = index.row();
-        // 三灰三白：行 0,1,2 灰；3,4,5 白；6,7,8 灰；...
-        QColor bg = ((row / 3) % 2 == 0) ? QColor(240, 240, 240) : Qt::white;
-        option->backgroundBrush = QBrush(bg);
+        const QColor gray(240, 240, 240);
+        const QVariant v = index.data(Qt::UserRole);
+        bool ok = false;
+        const int batch = v.toInt(&ok);
+        if (ok && v.isValid()) {
+            const QColor bg = (batch % 2 == 0) ? gray : Qt::white;
+            option->backgroundBrush = QBrush(bg);
+        } else {
+            const int row = index.row();
+            const QColor bg = (row % 2 == 0) ? gray : Qt::white;
+            option->backgroundBrush = QBrush(bg);
+        }
     }
 };
 } // namespace
@@ -378,6 +386,7 @@ tcpClient::tcpClient(QWidget *parent)
     , m_displayedSection3ActualCount(0)
     , m_displayedSection4ActualCount(0)
     , m_displayedMealActualCount(0)
+    , m_plcShiftTableStripeEpoch(0)
     , m_realTrayBatchCount(0)
     , m_emptyTrayBatchCount(0)
     , m_realEntranceLongPressTimer(nullptr)
@@ -1198,8 +1207,8 @@ void tcpClient::setupUI()
         QStringList headers;
         headers << "滑槽号" << "车型代码" << "车型名称" << "数量" << "时间";
         (*tableWidget)->setHorizontalHeaderLabels(headers);
-        (*tableWidget)->setAlternatingRowColors(false); // 使用委托实现三灰三白
-        (*tableWidget)->setItemDelegate(new ThreeGrayThreeWhiteDelegate(*tableWidget));
+        (*tableWidget)->setAlternatingRowColors(false); // 委托：同 PLC 报文批次同色（UserRole），否则按行交替
+        (*tableWidget)->setItemDelegate(new CurrentShiftTableStripeDelegate(*tableWidget));
         (*tableWidget)->setSelectionBehavior(QAbstractItemView::SelectRows);
         (*tableWidget)->setSortingEnabled(false);
         (*tableWidget)->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -3423,8 +3432,10 @@ void tcpClient::processHexData(const QByteArray &data)
         }
     }
 
-    // 处理所有需要处理的托盘数据
+    // 处理所有需要处理的托盘数据（同一条 78 字节报文共用一个条纹批次号，当前班次四表内多行同色）
     if (!processedTrays.isEmpty()) {
+        ++m_plcShiftTableStripeEpoch;
+        const int plcStripeBatchId = m_plcShiftTableStripeEpoch;
         for (const TrayInfo& tray : processedTrays) {
             // 查找车型信息：将16进制的车型代码转换为10进制字符串进行匹配
             // tray.modelCode 已经是10进制的unsigned int值，直接转换为10进制字符串
@@ -3503,10 +3514,10 @@ void tcpClient::processHexData(const QByteArray &data)
                 int slotNoInt = actualSlotNo; // 使用映射后的实际滑槽号
                 qDebug() << QString("processHexData: 准备保存数据 - slotNoStr=%1, slotNoInt=%2, tray.slotNo=%3, isRealTray=%4")
                             .arg(slotNoStr).arg(slotNoInt).arg(tray.slotNo).arg(tray.isRealTray);
-                insertDataRecord(slotNoInt, tray.statusStr, vehicleName, vehicleCode, saveCount, currentTime);
+                insertDataRecord(slotNoInt, tray.statusStr, vehicleName, vehicleCode, saveCount, currentTime, QString(), plcStripeBatchId);
                 
-                // 给当前班次表格添加记录
-                addDataToCurrentShiftTable(slotNoInt, tray.statusStr, vehicleCode, vehicleName, saveCount, currentTime);
+                // 给当前班次表格添加记录（与同报文其它托盘行同色）
+                addDataToCurrentShiftTable(slotNoInt, tray.statusStr, vehicleCode, vehicleName, saveCount, currentTime, plcStripeBatchId);
                 
                 appendToLog(QString("托盘%1数据已添加到表格 - %2, 车型: %3").arg(slotNoStr).arg(tray.statusStr).arg(vehicleName), false);
                 
@@ -3567,6 +3578,9 @@ void tcpClient::addDataToTable(int status1, unsigned int value1, unsigned int va
                                int status2, unsigned int value3, unsigned int value4,
                                const QString &currentTime)
 {
+    ++m_plcShiftTableStripeEpoch;
+    const int plcStripeBatchId = m_plcShiftTableStripeEpoch;
+
     // 状态字符串定义
     QString statusStr1, statusStr2;
     switch (status1) {
@@ -3644,8 +3658,8 @@ void tcpClient::addDataToTable(int status1, unsigned int value1, unsigned int va
         QTableWidgetItem* t5 = new QTableWidgetItem(currentTime);
         t5->setTextAlignment(Qt::AlignCenter);
         ui->tableWidget->setItem(0, 5, t5);
-        insertDataRecord(1, statusStr1, vehicleName1, vehicleCode1, count1, currentTime);
-        addDataToCurrentShiftTable(1, statusStr1, vehicleCode1, vehicleName1, count1, currentTime);
+        insertDataRecord(1, statusStr1, vehicleName1, vehicleCode1, count1, currentTime, QString(), plcStripeBatchId);
+        addDataToCurrentShiftTable(1, statusStr1, vehicleCode1, vehicleName1, count1, currentTime, plcStripeBatchId);
     }
     if (status1 != 0x00 && !vehicleName2.isEmpty()) {
         // 插入到第一行（最新记录在上）
@@ -3668,8 +3682,8 @@ void tcpClient::addDataToTable(int status1, unsigned int value1, unsigned int va
         QTableWidgetItem* t11 = new QTableWidgetItem(currentTime);
         t11->setTextAlignment(Qt::AlignCenter);
         ui->tableWidget->setItem(0, 5, t11);
-        insertDataRecord(2, statusStr1, vehicleName2, vehicleCode2, count2, currentTime);
-        addDataToCurrentShiftTable(2, statusStr1, vehicleCode2, vehicleName2, count2, currentTime);
+        insertDataRecord(2, statusStr1, vehicleName2, vehicleCode2, count2, currentTime, QString(), plcStripeBatchId);
+        addDataToCurrentShiftTable(2, statusStr1, vehicleCode2, vehicleName2, count2, currentTime, plcStripeBatchId);
     }
     // 添加第6字节（满托/空托）数据
     // 空托盘的数量应该为0
@@ -3695,8 +3709,8 @@ void tcpClient::addDataToTable(int status1, unsigned int value1, unsigned int va
         QTableWidgetItem* t17 = new QTableWidgetItem(currentTime);
         t17->setTextAlignment(Qt::AlignCenter);
         ui->tableWidget->setItem(0, 5, t17);
-        insertDataRecord(1, statusStr2, vehicleName3, vehicleCode3, 0, currentTime);
-        addDataToCurrentShiftTable(1, statusStr2, vehicleCode3, vehicleName3, 0, currentTime);
+        insertDataRecord(1, statusStr2, vehicleName3, vehicleCode3, 0, currentTime, QString(), plcStripeBatchId);
+        addDataToCurrentShiftTable(1, statusStr2, vehicleCode3, vehicleName3, 0, currentTime, plcStripeBatchId);
     }
     if (status2 != 0x00 && !vehicleName4.isEmpty()) {
         // 插入到第一行（最新记录在上）
@@ -3720,8 +3734,8 @@ void tcpClient::addDataToTable(int status1, unsigned int value1, unsigned int va
         QTableWidgetItem* t23 = new QTableWidgetItem(currentTime);
         t23->setTextAlignment(Qt::AlignCenter);
         ui->tableWidget->setItem(0, 5, t23);
-        insertDataRecord(2, statusStr2, vehicleName4, vehicleCode4, 0, currentTime);
-        addDataToCurrentShiftTable(2, statusStr2, vehicleCode4, vehicleName4, 0, currentTime);
+        insertDataRecord(2, statusStr2, vehicleName4, vehicleCode4, 0, currentTime, QString(), plcStripeBatchId);
+        addDataToCurrentShiftTable(2, statusStr2, vehicleCode4, vehicleName4, 0, currentTime, plcStripeBatchId);
     }
     // 记录到日志
     if ((status1 != 0x00 && (!vehicleName1.isEmpty() || !vehicleName2.isEmpty())) ||
@@ -3743,9 +3757,11 @@ void tcpClient::addDataToTable(int status1, unsigned int value1, unsigned int va
  * @param modelName 车型名称
  * @param count 数量
  * @param currentTime 时间
+ * @param plcStripeBatchId 同一条 PLC 报文内多行传相同值；<0 不写 UserRole（从库加载等按行号回退着色）
  */
 void tcpClient::addDataToCurrentShiftTable(int slotNo, const QString &status, const QString &modelCode,
-                                           const QString &modelName, int count, const QString &currentTime)
+                                           const QString &modelName, int count, const QString &currentTime,
+                                           int plcStripeBatchId)
 {
     // 根据状态选择对应的表格
     QTableWidget* targetTable = nullptr;
@@ -3798,6 +3814,15 @@ void tcpClient::addDataToCurrentShiftTable(int slotNo, const QString &status, co
     QTableWidgetItem* item4 = new QTableWidgetItem(currentTime);
     item4->setTextAlignment(Qt::AlignCenter);
     targetTable->setItem(tableRow, 4, item4);
+
+    if (plcStripeBatchId >= 0) {
+        const QVariant batchData(plcStripeBatchId);
+        item0->setData(Qt::UserRole, batchData);
+        item1->setData(Qt::UserRole, batchData);
+        item2->setData(Qt::UserRole, batchData);
+        item3->setData(Qt::UserRole, batchData);
+        item4->setData(Qt::UserRole, batchData);
+    }
     
     // 注意：数据已保存到 data_records 表，当前班次表格从 data_records 表加载，无需再次保存
     
@@ -4115,10 +4140,31 @@ void tcpClient::initDatabase() {
                    "model_name VARCHAR(255),"
                    "model_code VARCHAR(255),"
                    "count INT,"
-                   "time VARCHAR(255))")) {
+                   "time VARCHAR(255),"
+                   "record_source VARCHAR(16) NULL,"
+                   "plc_stripe_batch INT NULL)")) {
         qDebug() << "数据记录表创建/检查成功";
     } else {
         qWarning() << "数据记录表创建失败:" << query.lastError().text();
+    }
+    // 旧库无 record_source 列时补充（MySQL 重复列错误码 1060）
+    {
+        QSqlQuery alterQuery;
+        if (!alterQuery.exec("ALTER TABLE data_records ADD COLUMN record_source VARCHAR(16) NULL")) {
+            const QSqlError e = alterQuery.lastError();
+            if (e.nativeErrorCode() != QLatin1String("1060")) {
+                qWarning() << "data_records 增加 record_source 列失败:" << e.text();
+            }
+        }
+    }
+    {
+        QSqlQuery alterBatch;
+        if (!alterBatch.exec("ALTER TABLE data_records ADD COLUMN plc_stripe_batch INT NULL")) {
+            const QSqlError e = alterBatch.lastError();
+            if (e.nativeErrorCode() != QLatin1String("1060")) {
+                qWarning() << "data_records 增加 plc_stripe_batch 列失败:" << e.text();
+            }
+        }
     }
 
     // 车型绑定表
@@ -4409,17 +4455,21 @@ int tcpClient::getSlotNoFromIndex(int slotIndex, bool isRealTray)
     }
 }
 
-void tcpClient::insertDataRecord(int slotNo, const QString &status, const QString &modelName, const QString &modelCode, int count, const QString &currentTime) {
-    qDebug() << QString("insertDataRecord被调用: slotNo=%1, status=%2, modelName=%3, modelCode=%4, count=%5, time=%6")
-                .arg(slotNo).arg(status).arg(modelName).arg(modelCode).arg(count).arg(currentTime);
+void tcpClient::insertDataRecord(int slotNo, const QString &status, const QString &modelName, const QString &modelCode, int count, const QString &currentTime,
+                                 const QString &recordSource, int plcStripeBatch) {
+    const QString src = recordSource.isEmpty() ? QStringLiteral("plc") : recordSource;
+    qDebug() << QString("insertDataRecord被调用: slotNo=%1, status=%2, modelName=%3, modelCode=%4, count=%5, time=%6, source=%7, stripe=%8")
+                .arg(slotNo).arg(status).arg(modelName).arg(modelCode).arg(count).arg(currentTime).arg(src).arg(plcStripeBatch);
     QSqlQuery query;
-    query.prepare("INSERT INTO data_records (slot_no, status, model_name, model_code, count, time) VALUES (?, ?, ?, ?, ?, ?)");
+    query.prepare("INSERT INTO data_records (slot_no, status, model_name, model_code, count, time, record_source, plc_stripe_batch) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
     query.addBindValue(slotNo);
     query.addBindValue(status);
     query.addBindValue(modelName);
     query.addBindValue(modelCode);
     query.addBindValue(count);
     query.addBindValue(currentTime);
+    query.addBindValue(src);
+    query.addBindValue(plcStripeBatch >= 0 ? QVariant(plcStripeBatch) : QVariant());
     if (!query.exec()) {
         appendToLog("插入数据记录失败: " + query.lastError().text(), true);
     }
@@ -4609,7 +4659,7 @@ void tcpClient::loadCurrentShiftRecordsFromDb()
     
     // 从数据表格（data_records）加载数据
     QSqlQuery query;
-    query.prepare("SELECT slot_no, status, model_name, model_code, count, time FROM data_records ORDER BY time DESC");
+    query.prepare("SELECT slot_no, status, model_name, model_code, count, time, record_source, plc_stripe_batch FROM data_records ORDER BY time DESC");
     
     if (!query.exec()) {
         appendToLog(QString("查询数据表格记录失败: %1").arg(query.lastError().text()), true);
@@ -4625,6 +4675,12 @@ void tcpClient::loadCurrentShiftRecordsFromDb()
         QString modelCode = query.value(3).toString();
         int count = query.value(4).toInt();
         QString timeStr = query.value(5).toString();
+        const QString recSrc = query.value(6).toString();
+        const QVariant stripeVar = query.value(7);
+        // 当前班次表仅展示 PLC 数据；ED/服务端 JSON 写入为 ed；旧数据 record_source 为空视为 PLC
+        if (recSrc == QStringLiteral("ed")) {
+            continue;
+        }
         
         // 解析记录时间
         QDateTime recordDateTime = QDateTime::fromString(timeStr, "yyyy-MM-dd HH:mm:ss");
@@ -4707,6 +4763,19 @@ void tcpClient::loadCurrentShiftRecordsFromDb()
         QTableWidgetItem* item4 = new QTableWidgetItem(timeStr);
         item4->setTextAlignment(Qt::AlignCenter);
         targetTable->setItem(row, 4, item4);
+
+        if (!stripeVar.isNull()) {
+            bool ok = false;
+            const int batch = stripeVar.toInt(&ok);
+            if (ok) {
+                const QVariant bd(batch);
+                item0->setData(Qt::UserRole, bd);
+                item1->setData(Qt::UserRole, bd);
+                item2->setData(Qt::UserRole, bd);
+                item3->setData(Qt::UserRole, bd);
+                item4->setData(Qt::UserRole, bd);
+            }
+        }
         
         loadedCount++;
     }
@@ -8121,11 +8190,8 @@ bool tcpClient::processSingleJsonObject(const QString &jsonString, bool saveToTa
         item5->setTextAlignment(Qt::AlignCenter);
         ui->tableWidget->setItem(0, 5, item5);
         
-        // 保存到数据库（使用映射后的实际滑槽号）
-        insertDataRecord(actualSlotNumber, status, modelName, modelCode, count, currentTime);
-        
-        // 给当前班次表格添加记录（使用映射后的实际滑槽号）
-        addDataToCurrentShiftTable(actualSlotNumber, status, modelCode, modelName, count, currentTime);
+        // 保存到数据库（使用映射后的实际滑槽号）；标记 ed，当前班次四表不写入（仅 PLC 进当前班次表）
+        insertDataRecord(actualSlotNumber, status, modelName, modelCode, count, currentTime, QStringLiteral("ed"));
 
         appendToLog(QString("滑槽指令数据已添加到表格 - %1, 车型: %2").arg(status).arg(modelName), false);
         
