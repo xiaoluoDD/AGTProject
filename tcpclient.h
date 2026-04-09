@@ -52,6 +52,10 @@ public:
     QString getFirstLevelHeader(int section) const;
     // 获取列索引对应的一级表头索引
     int getFirstLevelIndex(int section) const;
+    /// 在 logicalIndex 处插入列之前，将 >= insertPos 的 section 映射整体右移 1
+    void shiftSectionMapsBeforeInsert(int insertPos);
+    /// 删除 logicalIndex 列之后，移除该 section 的映射并将更大索引左移 1
+    void shiftSectionMapsAfterRemove(int removedSection);
 
 protected:
     void paintEvent(QPaintEvent *e) override;
@@ -103,8 +107,11 @@ private slots:
     void updateProjectGroupStatistics(); ///< 更新工程组统计表格
     void loadVehicleModelsToAssemblyIndicator(); ///< 加载绑定车型到总成指示表
     void onOvertimeTimeButtonClicked(); ///< 加班时间选择按钮点击处理
-    void addOvertimeColumns(double hours); ///< 添加加班时间列到总成指示表
+    void addOvertimeColumns(double hours); ///< 添加加班时间列到总成指示表（插在合计列之前）
     void updatePlanRowsForOvertimeColumns(int startCol); ///< 更新所有计划行在加班列中的值
+    int assemblyIndicatorTotalColumnIndex() const; ///< 最后一列「总装引取合计」的列索引（columnCount()-1）
+    void updateAssemblyPickupTotalForRow(int assemblyRow); ///< 汇总时间列更新总装引取合计
+    void removeAssemblyIndicatorOvertimeColumns(int columns); ///< 从列39起删除若干加班列（保留末尾合计）
     void onCurrentTableButtonClicked(); ///< 当前表格按钮点击处理
     void onHistoryTableButtonClicked(); ///< 历史表格按钮点击处理
     void updateTableModeButtons(bool isHistoryMode); ///< 更新按钮选中状态和显示/隐藏班次时间按钮
@@ -274,7 +281,10 @@ private:
     void processServerJsonData(const QByteArray &data, bool saveToTable = true); ///< 处理服务端JSON数据（支持多个连续的JSON对象）
     bool processSingleJsonObject(const QString &jsonString, bool saveToTable = true); ///< 处理单个JSON对象
     bool processProductionDataJson(const QJsonObject &obj, bool saveToTable = true); ///< 处理生产数据上报JSON
-    bool processAssemblyInstructionJson(const QJsonObject &obj, bool saveToTable = true); ///< 处理总装指令JSON
+    bool processAssemblyInstructionJson(const QJsonObject &obj, bool saveToTable = true); ///< 总装指令：依车型+时间戳定位时段列，每条消息+1（忽略次数字段）
+    bool processAssemblyPickupFullSyncJson(const QJsonObject &obj, bool saveToTable = true); ///< 处理总装引取全量同步（ED）
+    bool isDateTimeInCurrentShiftWindow(const QDateTime &recordDateTime); ///< 时间是否落在当前班次窗口内
+    int findAssemblyIndicatorColumnForDateTime(const QDateTime &dateTime, const QString &shiftType); ///< 总成表时间映射列；未落入任一时段时归到「前一时段」末列
     void sendVisualizationDataToServer(); ///< 发送可视化数据到服务端
     QJsonObject buildVisualizationData(); ///< 构建可视化数据JSON对象
     void sendProjectGroupDataToServer(); ///< 发送工程组数据到服务端

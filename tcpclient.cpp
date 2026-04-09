@@ -9,6 +9,7 @@
 #include <QStringConverter>
 #include <QTableWidgetItem>
 #include <QSet>
+#include <QHash>
 #include <algorithm>
 #include <QSqlDatabase>
 #include <QSqlQuery>
@@ -141,6 +142,48 @@ QString TwoLevelHeaderView::getFirstLevelHeader(int section) const
 int TwoLevelHeaderView::getFirstLevelIndex(int section) const
 {
     return m_sectionToFirstLevel.value(section, -1);
+}
+
+void TwoLevelHeaderView::shiftSectionMapsBeforeInsert(int insertPos)
+{
+    QMap<int, QString> oldS = m_secondLevelHeaders;
+    QMap<int, int> oldF = m_sectionToFirstLevel;
+    m_secondLevelHeaders.clear();
+    m_sectionToFirstLevel.clear();
+    for (auto it = oldS.constBegin(); it != oldS.constEnd(); ++it) {
+        const int k = it.key();
+        const int nk = k >= insertPos ? k + 1 : k;
+        m_secondLevelHeaders.insert(nk, it.value());
+    }
+    for (auto it = oldF.constBegin(); it != oldF.constEnd(); ++it) {
+        const int k = it.key();
+        const int nk = k >= insertPos ? k + 1 : k;
+        m_sectionToFirstLevel.insert(nk, it.value());
+    }
+}
+
+void TwoLevelHeaderView::shiftSectionMapsAfterRemove(int removedSection)
+{
+    QMap<int, QString> oldS = m_secondLevelHeaders;
+    QMap<int, int> oldF = m_sectionToFirstLevel;
+    m_secondLevelHeaders.clear();
+    m_sectionToFirstLevel.clear();
+    for (auto it = oldS.constBegin(); it != oldS.constEnd(); ++it) {
+        const int k = it.key();
+        if (k == removedSection) {
+            continue;
+        }
+        const int nk = k > removedSection ? k - 1 : k;
+        m_secondLevelHeaders.insert(nk, it.value());
+    }
+    for (auto it = oldF.constBegin(); it != oldF.constEnd(); ++it) {
+        const int k = it.key();
+        if (k == removedSection) {
+            continue;
+        }
+        const int nk = k > removedSection ? k - 1 : k;
+        m_sectionToFirstLevel.insert(nk, it.value());
+    }
 }
 
 /**
@@ -1498,8 +1541,8 @@ void tcpClient::setupUI()
     
     // 创建总成指示表表格
     assemblyIndicatorTable = new QTableWidget(assemblyIndicatorBox);
-    // 设置列数：车型名称，收容数，产量，生产总托数，节拍，托盘搬运，以及33列时间（8个时间列每个细分为4列 + 1个休息列1列）
-    assemblyIndicatorTable->setColumnCount(39);
+    // 列：0-5 基础列 + 33 列时间（含休息列22）+ 末尾 1 列「总装引取合计」
+    assemblyIndicatorTable->setColumnCount(40);
     
     // 创建自定义二级表头
     TwoLevelHeaderView* header = new TwoLevelHeaderView(Qt::Horizontal, assemblyIndicatorTable);
@@ -1574,7 +1617,8 @@ void tcpClient::setupUI()
             }
         }
     }
-    
+    header->setSecondLevelHeader(39, QStringLiteral("合计"));
+
     assemblyIndicatorTable->setAlternatingRowColors(true);
     assemblyIndicatorTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     assemblyIndicatorTable->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::SelectedClicked); // 允许双击编辑
@@ -1627,11 +1671,8 @@ void tcpClient::setupUI()
     header->setSectionResizeMode(5, QHeaderView::Fixed);
     assemblyIndicatorTable->setColumnWidth(5, 60);
     
-    // 列6-38: 33列时间列（8个时间列每个细分为4列 + 1个休息列1列）
-    // 休息列（列22）设置为固定宽度，刚好放下3个字
-    // 其他时间列自适应
+    // 列6-38: 时间列；列39: 合计列固定宽度
     for (int i = 6; i <= 38; ++i) {
-        // 休息列：列22（baseCol + 4*4 = 22，因为前4个时间列各占4列）
         if (i == 22) {
             header->setSectionResizeMode(i, QHeaderView::Fixed);
             assemblyIndicatorTable->setColumnWidth(i, 60);
@@ -1639,6 +1680,8 @@ void tcpClient::setupUI()
             header->setSectionResizeMode(i, QHeaderView::Stretch);
         }
     }
+    header->setSectionResizeMode(39, QHeaderView::Fixed);
+    assemblyIndicatorTable->setColumnWidth(39, 64);
     
     // 设置表格单元格文本换行显示（对于固定宽度的列）
     assemblyIndicatorTable->setWordWrap(true);
@@ -4918,11 +4961,10 @@ void tcpClient::loadVehicleModelsToAssemblyIndicator()
         item5_actual->setFlags(item5_actual->flags() & ~Qt::ItemIsEditable); // 设置为不可编辑
         assemblyIndicatorTable->setItem(actualRow, 5, item5_actual);
         
-        // 列6-38: 33列时间（8个时间列每个细分为4列：15、30、45、60 + 1个休息列1列）
-        // 第一行显示总装引取数据，第二行显示计划数据，第三行显示实际数据（初始为空）
+        // 列6 至「合计」前一列：时间数据；最后一列为总装引取合计
         int totalCols = assemblyIndicatorTable->columnCount();
-        for (int col = 6; col < totalCols; ++col) {
-            // 休息列（列22）跳过，最后统一处理
+        const int totalIdx = totalCols - 1;
+        for (int col = 6; col < totalIdx; ++col) {
             if (col == 22) {
                 continue;
             }
@@ -4942,6 +4984,19 @@ void tcpClient::loadVehicleModelsToAssemblyIndicator()
             timeItem_actual->setFlags(timeItem_actual->flags() & ~Qt::ItemIsEditable); // 设置为不可编辑
             assemblyIndicatorTable->setItem(actualRow, col, timeItem_actual);
         }
+        QTableWidgetItem* totalAsm = new QTableWidgetItem("");
+        totalAsm->setTextAlignment(Qt::AlignCenter | Qt::AlignVCenter);
+        totalAsm->setFlags(totalAsm->flags() & ~Qt::ItemIsEditable);
+        assemblyIndicatorTable->setItem(assemblyRow, totalIdx, totalAsm);
+        QTableWidgetItem* totalPl = new QTableWidgetItem("");
+        totalPl->setTextAlignment(Qt::AlignCenter | Qt::AlignVCenter);
+        totalPl->setFlags(totalPl->flags() & ~Qt::ItemIsEditable);
+        assemblyIndicatorTable->setItem(planRow, totalIdx, totalPl);
+        QTableWidgetItem* totalAc = new QTableWidgetItem("");
+        totalAc->setTextAlignment(Qt::AlignCenter | Qt::AlignVCenter);
+        totalAc->setFlags(totalAc->flags() & ~Qt::ItemIsEditable);
+        assemblyIndicatorTable->setItem(actualRow, totalIdx, totalAc);
+        updateAssemblyPickupTotalForRow(assemblyRow);
     }
     
     // 休息列（列22）统一处理：合并所有行，显示一个"45分钟"
@@ -4972,6 +5027,14 @@ void tcpClient::onAssemblyIndicatorItemChanged(QTableWidgetItem *item)
     // 计划行（row % 3 == 1）时间列（col>=6 且 col!=22，含加班列）编辑后刷新统计表
     if (row % 3 == 1 && col >= 6 && col != 22) {
         updateStatisticsTableDisplay();
+    }
+
+    // 总装引取行时间列编辑后刷新该行「合计」列
+    if (row % 3 == 0 && col >= 6 && col != 22) {
+        const int tc = assemblyIndicatorTotalColumnIndex();
+        if (tc >= 0 && col < tc) {
+            updateAssemblyPickupTotalForRow(row);
+        }
     }
 
     // 只处理产量（列2）和节拍（列4）的变化
@@ -5030,7 +5093,7 @@ void tcpClient::onAssemblyIndicatorItemChanged(QTableWidgetItem *item)
         TwoLevelHeaderView* header = static_cast<TwoLevelHeaderView*>(headerView);
         if (header) {
             // 遍历时间列（列6-38，跳过休息列22）
-            for (int timeCol = 6; timeCol < assemblyIndicatorTable->columnCount(); ++timeCol) {
+            for (int timeCol = 6; timeCol < assemblyIndicatorTable->columnCount() - 1; ++timeCol) {
                 if (timeCol == 22) {
                     continue; // 跳过休息列
                 }
@@ -5062,7 +5125,7 @@ void tcpClient::onAssemblyIndicatorItemChanged(QTableWidgetItem *item)
         }
     } else {
         // 如果数据不完整，清空计划行的所有时间列
-        for (int timeCol = 6; timeCol < assemblyIndicatorTable->columnCount(); ++timeCol) {
+        for (int timeCol = 6; timeCol < assemblyIndicatorTable->columnCount() - 1; ++timeCol) {
             if (timeCol == 22) {
                 continue; // 跳过休息列
             }
@@ -5130,15 +5193,12 @@ void tcpClient::onOvertimeTimeButtonClicked()
         if (hours != m_overtimeHours) {
             // 如果之前有加班时间列，先移除
             if (m_overtimeHours > 0) {
-                // 计算需要移除的列数（每15分钟一列，所以0.25小时=1列，0.5小时=2列，1小时=4列）
                 int colsToRemove = static_cast<int>(m_overtimeHours * 4);
-                int currentColCount = assemblyIndicatorTable->columnCount();
-                assemblyIndicatorTable->setColumnCount(currentColCount - colsToRemove);
+                removeAssemblyIndicatorOvertimeColumns(colsToRemove);
             }
             
             // 添加新的加班时间列
             if (hours > 0) {
-                // 记录添加列之前的列数，用于确定新添加列的起始位置
                 int colCountBeforeAdd = assemblyIndicatorTable->columnCount();
                 addOvertimeColumns(hours);
                 
@@ -5208,11 +5268,12 @@ void tcpClient::addOvertimeColumns(double hours)
     // 计算需要添加的列数（每15分钟一列，所以0.25小时=1列，0.5小时=2列，1小时=4列）
     int colsToAdd = static_cast<int>(hours * 4);
     
-    // 获取当前列数
     int currentColCount = assemblyIndicatorTable->columnCount();
-    
-    // 添加新列
-    assemblyIndicatorTable->setColumnCount(currentColCount + colsToAdd);
+    // 在「合计」列（原列39）之前插入加班列，并保持合计始终在最后一列
+    for (int k = 0; k < colsToAdd; ++k) {
+        header->shiftSectionMapsBeforeInsert(39);
+        assemblyIndicatorTable->insertColumn(39);
+    }
     
     // 动态获取最后一个正常时间列的二级表头值
     // 正常时间列的最后一列是列38（"15:25-16:15"的最后一列，二级表头值为460）
@@ -5263,7 +5324,7 @@ void tcpClient::addOvertimeColumns(double hours)
     QTime dayShiftCurrent(16, 15);  // 白班当前时间
     QTime nightShiftCurrent(2, 5);  // 夜班当前时间
     
-    int currentCol = currentColCount;
+    int currentCol = 39;
     int secondLevelValue = lastSecondLevelValue + 15; // 从最后一个值+15开始
     
     // 先添加完整的小时时间段（每个1小时）
@@ -5363,10 +5424,81 @@ void tcpClient::addOvertimeColumns(double hours)
         }
     }
     
+    header->setSecondLevelHeader(assemblyIndicatorTable->columnCount() - 1, QStringLiteral("合计"));
     // 刷新表头
     header->update();
     header->updateGeometry();
     header->repaint();
+    const int rowEnd = assemblyIndicatorTable->rowCount();
+    for (int r = 0; r < rowEnd; r += 3) {
+        updateAssemblyPickupTotalForRow(r);
+    }
+}
+
+int tcpClient::assemblyIndicatorTotalColumnIndex() const
+{
+    return assemblyIndicatorTable ? (assemblyIndicatorTable->columnCount() - 1) : -1;
+}
+
+void tcpClient::updateAssemblyPickupTotalForRow(int assemblyRow)
+{
+    if (!assemblyIndicatorTable || assemblyRow < 0) {
+        return;
+    }
+    const int tc = assemblyIndicatorTotalColumnIndex();
+    if (tc < 6) {
+        return;
+    }
+    QTableWidgetItem *totalItem = assemblyIndicatorTable->item(assemblyRow, tc);
+    if (!totalItem) {
+        totalItem = new QTableWidgetItem("");
+        totalItem->setTextAlignment(Qt::AlignCenter | Qt::AlignVCenter);
+        totalItem->setFlags(totalItem->flags() & ~Qt::ItemIsEditable);
+        assemblyIndicatorTable->setItem(assemblyRow, tc, totalItem);
+    }
+    long long sum = 0;
+    for (int col = 6; col < tc; ++col) {
+        if (col == 22) {
+            continue;
+        }
+        QTableWidgetItem *it = assemblyIndicatorTable->item(assemblyRow, col);
+        if (!it) {
+            continue;
+        }
+        bool ok = false;
+        const int v = it->text().trimmed().toInt(&ok);
+        if (ok) {
+            sum += v;
+        }
+    }
+    totalItem->setText(sum > 0 ? QString::number(sum) : QString());
+}
+
+void tcpClient::removeAssemblyIndicatorOvertimeColumns(int columns)
+{
+    if (!assemblyIndicatorTable || columns <= 0) {
+        return;
+    }
+    TwoLevelHeaderView *header = dynamic_cast<TwoLevelHeaderView *>(assemblyIndicatorTable->horizontalHeader());
+    for (int k = 0; k < columns; ++k) {
+        if (assemblyIndicatorTable->columnCount() <= 40) {
+            break;
+        }
+        if (header) {
+            header->shiftSectionMapsAfterRemove(39);
+        }
+        assemblyIndicatorTable->removeColumn(39);
+    }
+    if (header) {
+        const int last = assemblyIndicatorTable->columnCount() - 1;
+        if (last >= 0) {
+            header->setSecondLevelHeader(last, QStringLiteral("合计"));
+        }
+    }
+    const int rowEnd = assemblyIndicatorTable->rowCount();
+    for (int r = 0; r < rowEnd; r += 3) {
+        updateAssemblyPickupTotalForRow(r);
+    }
 }
 
 /**
@@ -5411,7 +5543,7 @@ void tcpClient::updatePlanRowsForOvertimeColumns(int startCol)
         // 如果节拍和收容数都有效，则计算计划行的值
         if (rhythmOk && capacityOk && rhythm > 0 && capacity > 0) {
             // 遍历新添加的加班列（从startCol开始到当前列数）
-            for (int timeCol = startCol; timeCol < assemblyIndicatorTable->columnCount(); ++timeCol) {
+            for (int timeCol = startCol; timeCol < assemblyIndicatorTable->columnCount() - 1; ++timeCol) {
                 if (timeCol == 22) {
                     continue; // 跳过休息列
                 }
@@ -6204,7 +6336,7 @@ QString tcpClient::getStatisticsRowTimeRange(int rowIndex) const
     case 5: { // 加班时间：所有加班列（first level index >= 9），显示每段加班时间范围
         int colCount = assemblyIndicatorTable->columnCount();
         QSet<int> seenFirstLevel;
-        for (int c = 39; c < colCount; ++c) {
+        for (int c = 39; c < colCount - 1; ++c) {
             int fl = header->getFirstLevelIndex(c);
             if (fl >= 9 && !seenFirstLevel.contains(fl)) {
                 seenFirstLevel.insert(fl);
@@ -6233,7 +6365,7 @@ int tcpClient::getPlanSumForSecondLevelValue(int secondLevelValue) const
     QString target = QString::number(secondLevelValue);
     int colCount = assemblyIndicatorTable->columnCount();
     int targetCol = -1;
-    for (int c = 6; c < colCount; ++c) {
+    for (int c = 6; c < colCount - 1; ++c) {
         if (c == 22) continue;
         if (header->getSecondLevelHeader(c).trimmed() == target) {
             targetCol = c;
@@ -6266,7 +6398,7 @@ int tcpClient::getActualSumForSecondLevelValue(int secondLevelValue) const
     QString target = QString::number(secondLevelValue);
     int colCount = assemblyIndicatorTable->columnCount();
     int targetCol = -1;
-    for (int c = 6; c < colCount; ++c) {
+    for (int c = 6; c < colCount - 1; ++c) {
         if (c == 22) continue;
         if (header->getSecondLevelHeader(c).trimmed() == target) {
             targetCol = c;
@@ -6293,12 +6425,15 @@ int tcpClient::getActualSumForSecondLevelValue(int secondLevelValue) const
 int tcpClient::getActualSumAtOrBeforeColumn(int col) const
 {
     if (!assemblyIndicatorTable || col < 6) return 0;
-    int totalCols = assemblyIndicatorTable->columnCount();
+    const int n = assemblyIndicatorTable->columnCount();
+    if (n < 8) return 0;
+    const int lastTimeIdx = n - 2;
+    const int walkFrom = qMin(col, lastTimeIdx);
     int sum = 0;
     int rowCount = assemblyIndicatorTable->rowCount();
     for (int row = 2; row < rowCount; row += 3) {
         int val = 0;
-        for (int c = col; c >= 6; --c) {
+        for (int c = walkFrom; c >= 6; --c) {
             if (c == 22) continue;
             QTableWidgetItem* item = assemblyIndicatorTable->item(row, c);
             if (item) {
@@ -6326,8 +6461,9 @@ int tcpClient::getColumnForCurrentTime()
     QTime currentTime = QTime::currentTime();
     QString currentShift = getCurrentShift();
     int totalCols = assemblyIndicatorTable->columnCount();
+    const int timeEndEx = totalCols - 1;
     int bestCol = -1;
-    for (int col = 6; col < totalCols; ++col) {
+    for (int col = 6; col < timeEndEx; ++col) {
         if (col == 22) continue;
         QString firstLevelText = header->getFirstLevelHeader(col);
         if (firstLevelText.isEmpty()) continue;
@@ -6363,7 +6499,7 @@ int tcpClient::getColumnForCurrentTime()
             int firstLevelIndex = header->getFirstLevelIndex(col);
             if (firstLevelIndex >= 0) {
                 QList<int> timeSlotColumns;
-                for (int c = 6; c < totalCols; ++c) {
+                for (int c = 6; c < timeEndEx; ++c) {
                     if (c == 22) continue;
                     if (header->getFirstLevelIndex(c) == firstLevelIndex) timeSlotColumns.append(c);
                 }
@@ -6380,7 +6516,7 @@ int tcpClient::getColumnForCurrentTime()
         for (int fl = 0; fl < 32; ++fl) {
             if (fl == 4) continue;
             int anyCol = -1;
-            for (int c = 6; c < totalCols; ++c) {
+            for (int c = 6; c < timeEndEx; ++c) {
                 if (c == 22) continue;
                 if (header->getFirstLevelIndex(c) == fl) { anyCol = c; break; }
             }
@@ -6405,7 +6541,7 @@ int tcpClient::getColumnForCurrentTime()
             if (!startTime.isValid() || !endTime.isValid()) continue;
             if (endTime > currentTime) continue;
             int lastCol = -1;
-            for (int c = 6; c < totalCols; ++c) {
+            for (int c = 6; c < timeEndEx; ++c) {
                 if (c == 22) continue;
                 if (header->getFirstLevelIndex(c) == fl && c > lastCol) lastCol = c;
             }
@@ -6434,7 +6570,7 @@ void tcpClient::syncStatisticsFromAssemblyIndicator()
     TwoLevelHeaderView* header = dynamic_cast<TwoLevelHeaderView*>(assemblyIndicatorTable->horizontalHeader());
     if (header) {
         int colCount = assemblyIndicatorTable->columnCount();
-        for (int c = 6; c < colCount; ++c) {
+        for (int c = 6; c < colCount - 1; ++c) {
             if (c == 22) continue;
             QString v = header->getSecondLevelHeader(c).trimmed();
             if (v == "120") col120 = c;
@@ -6477,15 +6613,21 @@ int tcpClient::getPlanSumForOvertimeLastColumn() const
 {
     if (!assemblyIndicatorTable) return 0;
     int colCount = assemblyIndicatorTable->columnCount();
-    if (colCount <= 39) return 0;
+    if (colCount <= 40) return 0;
     TwoLevelHeaderView* header = dynamic_cast<TwoLevelHeaderView*>(assemblyIndicatorTable->horizontalHeader());
     if (!header) return 0;
-    int lastCol = colCount - 1;
-    if (header->getFirstLevelIndex(lastCol) < 9) return 0;
+    const int totalIdx = colCount - 1;
+    int lastOtCol = -1;
+    for (int c = 39; c < totalIdx; ++c) {
+        if (header->getFirstLevelIndex(c) >= 9) {
+            lastOtCol = c;
+        }
+    }
+    if (lastOtCol < 0) return 0;
     int sum = 0;
     int rowCount = assemblyIndicatorTable->rowCount();
     for (int row = 1; row < rowCount; row += 3) {
-        QTableWidgetItem* item = assemblyIndicatorTable->item(row, lastCol);
+        QTableWidgetItem* item = assemblyIndicatorTable->item(row, lastOtCol);
         if (item) {
             bool ok = false;
             int v = item->text().trimmed().toInt(&ok);
@@ -6509,9 +6651,14 @@ int tcpClient::getSectionFromTimeColumn(int colIndex) const
     if (colIndex >= 23 && colIndex <= 30) return 3;  // 第三节（对应350列）
     if (colIndex >= 31 && colIndex <= 38) return 4;   // 第四节（对应460列）
     if (colIndex >= 39) {
+        const int totalIdx = assemblyIndicatorTable->columnCount() - 1;
+        if (colIndex >= totalIdx) {
+            return -1;
+        }
         TwoLevelHeaderView* header = dynamic_cast<TwoLevelHeaderView*>(assemblyIndicatorTable->horizontalHeader());
-        if (header && header->getFirstLevelIndex(colIndex) >= 9)
-            return 5; // 加班
+        if (header && header->getFirstLevelIndex(colIndex) >= 9) {
+            return 5;
+        }
     }
     return -1;
 }
@@ -8110,6 +8257,11 @@ bool tcpClient::processSingleJsonObject(const QString &jsonString, bool saveToTa
     
     QString instructionType = obj.value("instructionType").toString();
     
+    // 处理 ED 下发的总装引取全量（按车型×时间段列重算计数）
+    if (instructionType == "总装引取全量") {
+        return processAssemblyPickupFullSyncJson(obj, saveToTable);
+    }
+    
     // 处理"总装指令"
     if (instructionType == "总装指令") {
         return processAssemblyInstructionJson(obj, saveToTable);
@@ -8314,7 +8466,7 @@ bool tcpClient::processProductionDataJson(const QJsonObject &obj, bool saveToTab
             TwoLevelHeaderView* header = static_cast<TwoLevelHeaderView*>(headerView);
             if (header) {
                 // 遍历时间列（列6开始，跳过休息列22）
-                for (int timeCol = 6; timeCol < assemblyIndicatorTable->columnCount(); ++timeCol) {
+                for (int timeCol = 6; timeCol < assemblyIndicatorTable->columnCount() - 1; ++timeCol) {
                     if (timeCol == 22) {
                         continue; // 跳过休息列
                     }
@@ -8366,8 +8518,314 @@ bool tcpClient::processProductionDataJson(const QJsonObject &obj, bool saveToTab
     return hasUpdate;
 }
 
+bool tcpClient::isDateTimeInCurrentShiftWindow(const QDateTime &recordDateTime)
+{
+    if (!recordDateTime.isValid()) {
+        return false;
+    }
+    if (!m_shiftConfigLoaded) {
+        loadShiftConfig();
+    }
+    QString currentShift = getCurrentShift();
+    QDateTime now = QDateTime::currentDateTime();
+    QDate today = now.date();
+    QDateTime shiftStartTime;
+    QDateTime shiftEndTime;
+    if (currentShift == "白班") {
+        shiftStartTime = QDateTime(today, m_dayShiftStart);
+        shiftEndTime = QDateTime(today, m_dayShiftEnd);
+    } else {
+        shiftStartTime = QDateTime(today, m_nightShiftStart);
+        shiftEndTime = QDateTime(today.addDays(1), m_nightShiftEnd);
+    }
+    if (currentShift == "白班") {
+        return recordDateTime.date() == today
+               && recordDateTime >= shiftStartTime
+               && recordDateTime < shiftEndTime;
+    }
+    QDate recordDate = recordDateTime.date();
+    if (recordDate == today || recordDate == today.addDays(1)) {
+        return recordDateTime >= shiftStartTime && recordDateTime < shiftEndTime;
+    }
+    return false;
+}
+
+namespace {
+struct AssemblyTimeBlock {
+    int startCol = 0;
+    QTime startTime;
+    QTime endTime;
+    bool crossesMidnight = false;
+    QString timeRangeLabel;
+};
+
+int clipAssemblyIndicatorTimeCol(int col, int tableColumnCount)
+{
+    if (tableColumnCount <= 7) {
+        return -1;
+    }
+    const int totalIdx = tableColumnCount - 1;
+    const int maxTimeIdx = totalIdx - 1;
+    if (col < 6) {
+        return 6;
+    }
+    if (col == 22) {
+        return 21;
+    }
+    if (col >= tableColumnCount) {
+        return maxTimeIdx;
+    }
+    if (col >= totalIdx) {
+        return maxTimeIdx;
+    }
+    if (col > maxTimeIdx) {
+        return maxTimeIdx;
+    }
+    return col;
+}
+
 /**
- * @brief 处理总装指令JSON
+ * 总装引取行：按库里的数值恢复显示。最右「正数」列以左无数据显式为 0，以右保持空（与全量同步语义一致）。
+ */
+void restoreAssemblyPickupRowFromTimeData(QTableWidget *table, int assemblyRow, const QJsonObject &timeData)
+{
+    if (!table) {
+        return;
+    }
+    const int totalCols = table->columnCount();
+    const int totalIdx = totalCols - 1;
+    int maxDataCol = -1;
+    for (auto it = timeData.begin(); it != timeData.end(); ++it) {
+        const int col = it.key().toInt();
+        if (col == 22) {
+            continue;
+        }
+        const int v = static_cast<int>(it.value().toObject().value("value").toDouble());
+        if (v > 0) {
+            maxDataCol = qMax(maxDataCol, col);
+        }
+    }
+    for (int col = 6; col < totalIdx; ++col) {
+        if (col == 22) {
+            continue;
+        }
+        QTableWidgetItem *assemblyItem = table->item(assemblyRow, col);
+        if (!assemblyItem) {
+            continue;
+        }
+        int intValue = 0;
+        const QString key = QString::number(col);
+        if (timeData.contains(key)) {
+            intValue = static_cast<int>(timeData[key].toObject().value("value").toDouble());
+        }
+        if (maxDataCol < 0) {
+            assemblyItem->setText(intValue > 0 ? QString::number(intValue) : QString());
+        } else if (col > maxDataCol) {
+            assemblyItem->setText(QString());
+        } else {
+            assemblyItem->setText(intValue > 0 ? QString::number(intValue) : QStringLiteral("0"));
+        }
+    }
+}
+
+/**
+ * 表格已更新后：根据当前行最右正数列（及可选的本条指令列 rightEdgeHintCol），
+ * 把左侧空格填 0、右侧置空。hint 用于「整行此前无正数」时仍能按本条时段列补前导 0。
+ */
+void normalizeAssemblyPickupRowLeadingZeros(QTableWidget *table, int assemblyRow, int rightEdgeHintCol = -1)
+{
+    if (!table) {
+        return;
+    }
+    const int totalCols = table->columnCount();
+    int maxDataCol = -1;
+    const int totalIdx = totalCols - 1;
+    for (int col = 6; col < totalIdx; ++col) {
+        if (col == 22) {
+            continue;
+        }
+        QTableWidgetItem *it = table->item(assemblyRow, col);
+        if (!it) {
+            continue;
+        }
+        const QString t = it->text().trimmed();
+        if (t.isEmpty()) {
+            continue;
+        }
+        bool ok = false;
+        const int v = t.toInt(&ok);
+        if (ok && v > 0) {
+            maxDataCol = qMax(maxDataCol, col);
+        }
+    }
+    if (rightEdgeHintCol >= 6 && rightEdgeHintCol < totalIdx && rightEdgeHintCol != 22) {
+        maxDataCol = qMax(maxDataCol, rightEdgeHintCol);
+    } else if (rightEdgeHintCol == 22) {
+        maxDataCol = qMax(maxDataCol, 21);
+    }
+    if (maxDataCol < 0) {
+        return;
+    }
+    for (int col = 6; col < totalIdx; ++col) {
+        if (col == 22) {
+            continue;
+        }
+        QTableWidgetItem *it = table->item(assemblyRow, col);
+        if (!it) {
+            continue;
+        }
+        if (col > maxDataCol) {
+            it->setText(QString());
+        } else if (it->text().trimmed().isEmpty()) {
+            it->setText(QStringLiteral("0"));
+        }
+    }
+}
+} // namespace
+
+int tcpClient::findAssemblyIndicatorColumnForDateTime(const QDateTime &dateTime, const QString &shiftType)
+{
+    if (!assemblyIndicatorTable) {
+        return -1;
+    }
+    QHeaderView *headerView = assemblyIndicatorTable->horizontalHeader();
+    TwoLevelHeaderView *header = static_cast<TwoLevelHeaderView *>(headerView);
+    if (!header) {
+        return -1;
+    }
+    const QTime currentTime = dateTime.time();
+    const QString &currentShift = shiftType;
+    const int totalCols = assemblyIndicatorTable->columnCount();
+    const int timeColEndExclusive = totalCols - 1;
+
+    QVector<AssemblyTimeBlock> blocks;
+    blocks.reserve(32);
+    QString prevFirstLevel;
+    for (int col = 6; col < timeColEndExclusive; ++col) {
+        if (col == 22) {
+            continue;
+        }
+        const QString firstLevelText = header->getFirstLevelHeader(col);
+        if (firstLevelText.isEmpty()) {
+            prevFirstLevel.clear();
+            continue;
+        }
+        if (firstLevelText == prevFirstLevel) {
+            continue;
+        }
+        prevFirstLevel = firstLevelText;
+
+        const QStringList timeRanges = firstLevelText.split("\n");
+        if (timeRanges.size() < 2) {
+            continue;
+        }
+        QString dayShiftRange;
+        QString nightShiftRange;
+        if (timeRanges.size() >= 3 && timeRanges[0].contains("加班")) {
+            dayShiftRange = timeRanges[1];
+            nightShiftRange = timeRanges[2];
+        } else {
+            dayShiftRange = timeRanges[0];
+            nightShiftRange = timeRanges[1];
+        }
+        const QString timeRange = (currentShift == "白班") ? dayShiftRange : nightShiftRange;
+        const QStringList times = timeRange.split("-");
+        if (times.size() < 2) {
+            continue;
+        }
+        QTime startTime = QTime::fromString(times[0].trimmed(), "H:mm");
+        QTime endTime = QTime::fromString(times[1].trimmed(), "H:mm");
+        if (!startTime.isValid() || !endTime.isValid()) {
+            continue;
+        }
+        bool crossesMidnight = false;
+        if (currentShift == "夜班" && startTime > endTime) {
+            crossesMidnight = true;
+        }
+        AssemblyTimeBlock b;
+        b.startCol = col;
+        b.startTime = startTime;
+        b.endTime = endTime;
+        b.crossesMidnight = crossesMidnight;
+        b.timeRangeLabel = timeRange;
+        blocks.append(b);
+    }
+
+    if (blocks.isEmpty()) {
+        return -1;
+    }
+
+    // 1) 落在某时段内：按 15 分钟子列
+    for (const AssemblyTimeBlock &b : blocks) {
+        bool inRange = false;
+        if (b.crossesMidnight) {
+            inRange = (currentTime >= b.startTime || currentTime <= b.endTime);
+        } else {
+            inRange = (currentTime >= b.startTime && currentTime <= b.endTime);
+        }
+        if (!inRange) {
+            continue;
+        }
+        int currentMinutes = 0;
+        if (b.crossesMidnight && currentTime <= b.endTime) {
+            const QTime midnight(0, 0);
+            const int minutesToMidnight = b.startTime.secsTo(QTime(23, 59, 59)) / 60 + 1;
+            const int minutesFromMidnight = midnight.secsTo(currentTime) / 60;
+            currentMinutes = minutesToMidnight + minutesFromMidnight;
+        } else {
+            currentMinutes = b.startTime.secsTo(currentTime) / 60;
+        }
+        int targetColumnIndex = 0;
+        if (currentMinutes >= 45) {
+            targetColumnIndex = 3;
+        } else if (currentMinutes >= 30) {
+            targetColumnIndex = 2;
+        } else if (currentMinutes >= 15) {
+            targetColumnIndex = 1;
+        } else {
+            targetColumnIndex = 0;
+        }
+        const int bestCol = clipAssemblyIndicatorTimeCol(b.startCol + targetColumnIndex, totalCols);
+        qDebug() << QString("总成表时间列匹配：时间%1 -> 列%2（段%3，子列%4）")
+                        .arg(currentTime.toString("HH:mm"))
+                        .arg(bestCol)
+                        .arg(b.timeRangeLabel)
+                        .arg(targetColumnIndex);
+        return bestCol;
+    }
+
+    // 2) 不在任一时段：归到「前一个」时段（表头从左到右，上一段的第 4 子列）
+    int prevSegmentLastCol = -1;
+    for (const AssemblyTimeBlock &b : blocks) {
+        if (b.crossesMidnight) {
+            if (currentTime > b.endTime && currentTime < b.startTime) {
+                prevSegmentLastCol = b.startCol + 3;
+            }
+        } else {
+            if (currentTime > b.endTime) {
+                prevSegmentLastCol = b.startCol + 3;
+            }
+        }
+    }
+    if (prevSegmentLastCol >= 0) {
+        const int c = clipAssemblyIndicatorTimeCol(prevSegmentLastCol, totalCols);
+        qDebug() << QString("总成表时间列回退（前一时段）：时间%1 -> 列%2")
+                        .arg(currentTime.toString("HH:mm"))
+                        .arg(c);
+        return c;
+    }
+
+    // 3) 早于表内第一段开始等：用「最后一段」的最后一列（时间轴上最近的上一档）
+    const AssemblyTimeBlock &lastB = blocks.last();
+    const int lastCol = clipAssemblyIndicatorTimeCol(lastB.startCol + 3, totalCols);
+    qDebug() << QString("总成表时间列回退（末段）：时间%1 -> 列%2")
+                    .arg(currentTime.toString("HH:mm"))
+                    .arg(lastCol);
+    return lastCol;
+}
+
+/**
+ * @brief 处理总装指令 JSON：使用 modelName、timestamp；每条消息在对应时段列 +1（不读取 exchangeCount）
  * @param obj JSON对象
  * @param saveToTable 是否保存到表格和数据库（默认true）
  * @return 处理是否成功
@@ -8379,18 +8837,13 @@ bool tcpClient::processAssemblyInstructionJson(const QJsonObject &obj, bool save
         return false;
     }
     
-    // 解析JSON字段
+    // 解析JSON字段（每条指令固定计 1 次，忽略 exchangeCount 等次数字段）
     QString modelName = obj.value("modelName").toString();
-    int exchangeCount = obj.value("exchangeCount").toInt();
     QString timestamp = obj.value("timestamp").toString();
+    const int pickupDelta = 1;
     
     if (modelName.isEmpty()) {
         appendToLog("总装指令：车型名称为空", true);
-        return false;
-    }
-    
-    if (exchangeCount <= 0) {
-        appendToLog(QString("总装指令：引取次数无效 (%1)").arg(exchangeCount), true);
         return false;
     }
     
@@ -8404,8 +8857,8 @@ bool tcpClient::processAssemblyInstructionJson(const QJsonObject &obj, bool save
     QTime currentTime = dateTime.time();
     QString currentShift = getCurrentShift();
     
-    appendToLog(QString("收到总装指令: 车型=%1, 引取次数=%2, 时间=%3")
-                .arg(modelName).arg(exchangeCount).arg(timestamp), false);
+    appendToLog(QString("收到总装指令: 车型=%1, 时间=%2（本条计 1 次）")
+                .arg(modelName).arg(timestamp), false);
     
     // 如果是历史表格模式，不更新表格显示
     bool shouldUpdateDisplay = !m_isHistoryTableMode;
@@ -8432,106 +8885,7 @@ bool tcpClient::processAssemblyInstructionJson(const QJsonObject &obj, bool save
         return false;
     }
     
-    // 根据当前时间找到对应的时间列
-    int totalCols = assemblyIndicatorTable->columnCount();
-    int bestCol = -1;
-    
-    // 遍历所有时间列，找到在当前时间范围内的列
-    for (int col = 6; col < totalCols; ++col) {
-        if (col == 22) {
-            continue; // 跳过休息列
-        }
-
-        // 获取一级表头（时间范围）
-        QString firstLevelText = header->getFirstLevelHeader(col);
-        if (firstLevelText.isEmpty()) {
-            continue;
-        }
-
-        // 解析时间范围（格式：白班时间\n夜班时间 或 加班\n白班时间\n夜班时间）
-        QStringList timeRanges = firstLevelText.split("\n");
-        if (timeRanges.size() < 2) {
-            continue;
-        }
-
-        QString dayShiftRange;
-        QString nightShiftRange;
-        
-        // 如果是三行格式（加班列：加班\n白班时间\n夜班时间）
-        if (timeRanges.size() >= 3 && timeRanges[0].contains("加班")) {
-            dayShiftRange = timeRanges[1]; // 白班时间范围
-            nightShiftRange = timeRanges[2]; // 夜班时间范围
-        } else {
-            // 两行格式（正常列：白班时间\n夜班时间）
-            dayShiftRange = timeRanges[0]; // 白班时间范围
-            nightShiftRange = timeRanges[1]; // 夜班时间范围
-        }
-
-        // 根据当前班次选择对应的时间范围
-        QString timeRange = (currentShift == "白班") ? dayShiftRange : nightShiftRange;
-
-        // 解析时间范围（格式：H:MM-H:MM 或 HH:MM-HH:MM，支持一位或两位小时数）
-        QStringList times = timeRange.split("-");
-        if (times.size() < 2) {
-            continue;
-        }
-
-        // 使用 "H:mm" 格式支持一位或两位小时数（如 "7:30" 或 "07:30"）
-        QTime startTime = QTime::fromString(times[0].trimmed(), "H:mm");
-        QTime endTime = QTime::fromString(times[1].trimmed(), "H:mm");
-
-        if (!startTime.isValid() || !endTime.isValid()) {
-            continue;
-        }
-
-        // 处理跨天的情况（夜班可能跨天）
-        bool crossesMidnight = false;
-        if (currentShift == "夜班" && startTime > endTime) {
-            crossesMidnight = true;
-        }
-
-        // 判断当前时间是否在这个时间范围内
-        bool inRange = false;
-        if (crossesMidnight) {
-            // 跨天情况：当前时间 >= 开始时间 或 当前时间 <= 结束时间
-            inRange = (currentTime >= startTime || currentTime <= endTime);
-        } else {
-            // 正常情况：开始时间 <= 当前时间 <= 结束时间
-            inRange = (currentTime >= startTime && currentTime <= endTime);
-        }
-
-        if (inRange) {
-            // 计算当前时间在该时间段内的分钟数
-            int currentMinutes = 0;
-            if (crossesMidnight && currentTime <= endTime) {
-                // 跨天且当前时间在结束时间之前（第二天）
-                QTime midnight(0, 0);
-                int minutesToMidnight = startTime.secsTo(QTime(23, 59, 59)) / 60 + 1;
-                int minutesFromMidnight = midnight.secsTo(currentTime) / 60;
-                currentMinutes = minutesToMidnight + minutesFromMidnight;
-            } else {
-                currentMinutes = startTime.secsTo(currentTime) / 60;
-            }
-
-            // 根据当前时间在该时间段内的相对位置，确定应该使用该时间段内的第几列
-            // 规则：0-15分钟用第1列，15-30分钟用第2列，30-45分钟用第3列，45-60分钟用第4列
-            int targetColumnIndex = 0; // 在该时间段内的列索引（0-3）
-            if (currentMinutes >= 45) {
-                targetColumnIndex = 3; // 第4列（45-60分钟）
-            } else if (currentMinutes >= 30) {
-                targetColumnIndex = 2; // 第3列（30-45分钟）
-            } else if (currentMinutes >= 15) {
-                targetColumnIndex = 1; // 第2列（15-30分钟）
-            } else {
-                targetColumnIndex = 0; // 第1列（0-15分钟）
-            }
-
-            bestCol = col + targetColumnIndex;
-            qDebug() << QString("总装指令：时间%1匹配到列%2（时间段：%3，相对列索引：%4）")
-                        .arg(currentTime.toString("HH:mm")).arg(bestCol).arg(timeRange).arg(targetColumnIndex);
-            break;
-        }
-    }
+    int bestCol = findAssemblyIndicatorColumnForDateTime(dateTime, currentShift);
     
     if (bestCol < 0) {
         appendToLog(QString("总装指令：车型%1的时间（%2）不在任何时间段内（班次：%3），跳过更新")
@@ -8543,17 +8897,17 @@ bool tcpClient::processAssemblyInstructionJson(const QJsonObject &obj, bool save
     if (shouldUpdateDisplay) {
         // 当前表格模式：更新UI并保存
         QTableWidgetItem* assemblyItem = assemblyIndicatorTable->item(assemblyRow, bestCol);
+        int hintCol = -1;
         if (assemblyItem) {
-            // 获取当前值
             int currentValue = assemblyItem->text().trimmed().toInt();
-            // 取最大值（不累加）
-            int newValue = qMax(currentValue, exchangeCount);
-            // 如果值为0则显示空字符串，否则显示数值
-            assemblyItem->setText(newValue > 0 ? QString::number(newValue) : "");
-            
-            appendToLog(QString("总装指令：已更新车型%1在时间列%2的引取次数：当前=%3, 新值=%4, 最终=%5")
-                        .arg(modelName).arg(bestCol).arg(currentValue).arg(exchangeCount).arg(newValue), false);
+            int newValue = currentValue + pickupDelta;
+            assemblyItem->setText(newValue > 0 ? QString::number(newValue) : QStringLiteral("0"));
+            hintCol = bestCol;
+            appendToLog(QString("总装指令：车型%1时间列%2本时段+1：原=%3，合计=%4")
+                        .arg(modelName).arg(bestCol).arg(currentValue).arg(newValue), false);
         }
+        normalizeAssemblyPickupRowLeadingZeros(assemblyIndicatorTable, assemblyRow, hintCol);
+        updateAssemblyPickupTotalForRow(assemblyRow);
         
         // 保存到数据库
         if (saveToTable) {
@@ -8593,14 +8947,14 @@ bool tcpClient::processAssemblyInstructionJson(const QJsonObject &obj, bool save
                         QString secondLevelValueStr = header->getSecondLevelHeader(bestCol);
                         int secondLevelValue = secondLevelValueStr.toInt();
                         
-                        // 更新对应列的值（取最大值）
+                        // 该时间段列累加引取次数（与表格模式一致，不按累计总数取 max）
                         QString colKey = QString::number(bestCol);
                         int currentValue = 0;
                         if (timeData.contains(colKey)) {
                             QJsonObject colData = timeData[colKey].toObject();
                             currentValue = static_cast<int>(colData["value"].toDouble());
                         }
-                        int newValue = qMax(currentValue, exchangeCount);
+                        int newValue = currentValue + pickupDelta;
                         
                         // 更新JSON对象
                         QJsonObject colData;
@@ -8623,10 +8977,10 @@ bool tcpClient::processAssemblyInstructionJson(const QJsonObject &obj, bool save
                         query.addBindValue(shiftType);
                         
                         if (query.exec()) {
-                            appendToLog(QString("总装指令（历史模式）：收到车型%1的总装指令，已更新数据库（时间列：%2，当前=%3，新值=%4，最终=%5）")
-                                        .arg(modelName).arg(bestCol).arg(currentValue).arg(exchangeCount).arg(newValue), false);
-                            qDebug() << QString("历史模式：已更新车型%1的总装引取行数据（时间列：%2，当前=%3，新值=%4，最终=%5）")
-                                        .arg(modelName).arg(bestCol).arg(currentValue).arg(exchangeCount).arg(newValue);
+                            appendToLog(QString("总装指令（历史模式）：车型%1时间列%2本时段+1：原=%3，合计=%4")
+                                        .arg(modelName).arg(bestCol).arg(currentValue).arg(newValue), false);
+                            qDebug() << QString("历史模式：车型%1总装引取时间列%2 +1：原=%3 -> %4")
+                                        .arg(modelName).arg(bestCol).arg(currentValue).arg(newValue);
                         } else {
                             qWarning() << "历史模式：更新总装引取行数据失败:" << query.lastError().text();
                         }
@@ -8648,6 +9002,223 @@ bool tcpClient::processAssemblyInstructionJson(const QJsonObject &obj, bool save
         }
     }
     
+    return true;
+}
+
+bool tcpClient::processAssemblyPickupFullSyncJson(const QJsonObject &obj, bool saveToTable)
+{
+    if (!assemblyIndicatorTable) {
+        appendToLog("总成指示表未初始化，无法处理总装引取全量", true);
+        return false;
+    }
+    if (!m_shiftConfigLoaded) {
+        loadShiftConfig();
+    }
+    QJsonArray records = obj.value("records").toArray();
+    if (records.isEmpty()) {
+        records = obj.value("data").toArray();
+    }
+    if (records.isEmpty()) {
+        records = obj.value("list").toArray();
+    }
+
+    QString currentShift = getCurrentShift();
+    appendToLog(QString("收到总装引取全量：当前班次=%1，记录条数=%2")
+                    .arg(currentShift)
+                    .arg(records.size()),
+                false);
+
+    QHeaderView *headerView = assemblyIndicatorTable->horizontalHeader();
+    TwoLevelHeaderView *header = static_cast<TwoLevelHeaderView *>(headerView);
+    if (!header) {
+        appendToLog("总装引取全量：表头无效", true);
+        return false;
+    }
+
+    QHash<QString, QHash<int, int>> countsByModel;
+    int parsedOk = 0;
+    int skippedShift = 0;
+    int skippedCol = 0;
+
+    for (const QJsonValue &v : records) {
+        if (!v.isObject()) {
+            continue;
+        }
+        QJsonObject rec = v.toObject();
+        QString modelName = rec.value("modelName").toString().trimmed();
+        QString timeStr = rec.value("time").toString().trimmed();
+        if (modelName.isEmpty() || timeStr.isEmpty()) {
+            continue;
+        }
+        QDateTime dt = QDateTime::fromString(timeStr, "yyyy-MM-dd HH:mm:ss");
+        if (!dt.isValid()) {
+            dt = QDateTime::fromString(timeStr, "yyyy-MM-dd hh:mm:ss");
+        }
+        if (!dt.isValid()) {
+            continue;
+        }
+        if (!isDateTimeInCurrentShiftWindow(dt)) {
+            skippedShift++;
+            continue;
+        }
+        int bestCol = findAssemblyIndicatorColumnForDateTime(dt, currentShift);
+        if (bestCol < 0) {
+            skippedCol++;
+            continue;
+        }
+        countsByModel[modelName][bestCol] += 1;
+        parsedOk++;
+    }
+
+    bool shouldUpdateDisplay = !m_isHistoryTableMode;
+    int totalCols = assemblyIndicatorTable->columnCount();
+
+    if (shouldUpdateDisplay) {
+        for (int row = 0; row < assemblyIndicatorTable->rowCount(); row += 3) {
+            QTableWidgetItem *vehicleNameItem = assemblyIndicatorTable->item(row, 0);
+            if (!vehicleNameItem || vehicleNameItem->text().trimmed().isEmpty()) {
+                continue;
+            }
+            for (int col = 6; col < totalCols - 1; ++col) {
+                if (col == 22) {
+                    continue;
+                }
+                QTableWidgetItem *assemblyItem = assemblyIndicatorTable->item(row, col);
+                if (assemblyItem) {
+                    assemblyItem->setText("");
+                }
+            }
+        }
+
+        for (auto modelIt = countsByModel.constBegin(); modelIt != countsByModel.constEnd(); ++modelIt) {
+            const QString &modelName = modelIt.key();
+            int assemblyRow = -1;
+            for (int row = 0; row < assemblyIndicatorTable->rowCount(); row += 3) {
+                QTableWidgetItem *vehicleNameItem = assemblyIndicatorTable->item(row, 0);
+                if (vehicleNameItem && vehicleNameItem->text().trimmed() == modelName) {
+                    assemblyRow = row;
+                    break;
+                }
+            }
+            if (assemblyRow < 0) {
+                continue;
+            }
+            const QHash<int, int> &colMap = modelIt.value();
+            int maxDataCol = -1;
+            for (auto colIt = colMap.constBegin(); colIt != colMap.constEnd(); ++colIt) {
+                const int c = colIt.key();
+                if (c != 22) {
+                    maxDataCol = qMax(maxDataCol, c);
+                }
+            }
+            if (maxDataCol < 0) {
+                continue;
+            }
+            // 从最左时间列到「有数据的最右列」：无计数写 0；该列以右保持空
+            for (int col = 6; col < totalCols - 1; ++col) {
+                if (col == 22) {
+                    continue;
+                }
+                QTableWidgetItem *assemblyItem = assemblyIndicatorTable->item(assemblyRow, col);
+                if (!assemblyItem) {
+                    continue;
+                }
+                if (col > maxDataCol) {
+                    assemblyItem->setText(QString());
+                } else {
+                    const int cnt = colMap.value(col, 0);
+                    assemblyItem->setText(cnt > 0 ? QString::number(cnt) : QStringLiteral("0"));
+                }
+            }
+            updateAssemblyPickupTotalForRow(assemblyRow);
+        }
+
+        if (saveToTable) {
+            saveAssemblyIndicatorCurrentShift();
+            saveAssemblyIndicatorHistory();
+            appendToLog("总装引取全量：已写入表格并保存当前班次与历史", false);
+        }
+    } else {
+        if (saveToTable) {
+            QSqlDatabase db = QSqlDatabase::database();
+            if (!db.isOpen()) {
+                appendToLog("总装引取全量：数据库未打开（历史模式）", true);
+                return false;
+            }
+            QDate currentDate = QDate::currentDate();
+            QSqlQuery query(db);
+            int dbUpdated = 0;
+            for (auto modelIt = countsByModel.constBegin(); modelIt != countsByModel.constEnd(); ++modelIt) {
+                const QString vehicleName = modelIt.key();
+                const QHash<int, int> &colMap = modelIt.value();
+
+                query.prepare("SELECT 1 FROM assembly_indicator_records "
+                              "WHERE vehicle_name = ? AND record_date = ? AND shift_type = ? AND row_type = 'assembly'");
+                query.addBindValue(vehicleName);
+                query.addBindValue(currentDate);
+                query.addBindValue(currentShift);
+                if (!query.exec() || !query.next()) {
+                    continue;
+                }
+
+                int maxDataCol = -1;
+                for (auto colIt = colMap.constBegin(); colIt != colMap.constEnd(); ++colIt) {
+                    const int c = colIt.key();
+                    if (c != 22) {
+                        maxDataCol = qMax(maxDataCol, c);
+                    }
+                }
+                if (maxDataCol < 0) {
+                    continue;
+                }
+
+                QJsonObject assemblyTimeData;
+                for (int col = 6; col < totalCols - 1; ++col) {
+                    if (col == 22) {
+                        continue;
+                    }
+                    QString secondLevelValueStr = header->getSecondLevelHeader(col);
+                    if (secondLevelValueStr.isEmpty()) {
+                        secondLevelValueStr = QString::number(col);
+                    }
+                    int secondLevelValue = secondLevelValueStr.toInt();
+                    const int cnt = (col > maxDataCol) ? 0 : colMap.value(col, 0);
+                    QJsonObject colData;
+                    colData["column_index"] = col;
+                    colData["second_level_value"] = secondLevelValue;
+                    colData["value"] = cnt;
+                    assemblyTimeData[QString::number(col)] = colData;
+                }
+                QString assemblyTimeDataStr = QJsonDocument(assemblyTimeData).toJson(QJsonDocument::Compact);
+                query.prepare("UPDATE assembly_indicator_records SET time_data = ?, update_time = ? "
+                              "WHERE vehicle_name = ? AND record_date = ? AND shift_type = ? AND row_type = 'assembly'");
+                query.addBindValue(assemblyTimeDataStr);
+                query.addBindValue(QDateTime::currentDateTime());
+                query.addBindValue(vehicleName);
+                query.addBindValue(currentDate);
+                query.addBindValue(currentShift);
+                if (query.exec()) {
+                    dbUpdated++;
+                } else {
+                    qWarning() << "总装引取全量（历史模式）更新失败:" << query.lastError().text();
+                }
+            }
+            saveAssemblyIndicatorHistory();
+            appendToLog(QString("总装引取全量（历史模式）：已更新数据库 assembly 行 %1 个车型").arg(dbUpdated), false);
+        }
+    }
+
+    int colBucketCount = 0;
+    for (auto it = countsByModel.constBegin(); it != countsByModel.constEnd(); ++it) {
+        colBucketCount += it.value().size();
+    }
+    appendToLog(QString("总装引取全量统计：计入班次=%1，非本班次=%2，无匹配列=%3，车型数=%4，列计数桶=%5")
+                    .arg(parsedOk)
+                    .arg(skippedShift)
+                    .arg(skippedCol)
+                    .arg(countsByModel.size())
+                    .arg(colBucketCount),
+                false);
     return true;
 }
 
@@ -10017,7 +10588,7 @@ void tcpClient::checkShiftChange()
                     int planRow = row + 1;
                     int actualRow = row + 2;
                     // 清空总装引取行的所有时间列（列6开始，跳过休息列22）
-                    for (int col = 6; col < assemblyIndicatorTable->columnCount(); ++col) {
+                    for (int col = 6; col < assemblyIndicatorTable->columnCount() - 1; ++col) {
                         if (col == 22) {
                             continue; // 跳过休息列
                         }
@@ -10030,7 +10601,7 @@ void tcpClient::checkShiftChange()
                         }
                     }
                     // 清空计划行的所有时间列（列6开始，跳过休息列22）
-                    for (int col = 6; col < assemblyIndicatorTable->columnCount(); ++col) {
+                    for (int col = 6; col < assemblyIndicatorTable->columnCount() - 1; ++col) {
                         if (col == 22) {
                             continue; // 跳过休息列
                         }
@@ -10043,7 +10614,7 @@ void tcpClient::checkShiftChange()
                         }
                     }
                     // 清空实际行的所有时间列（列6开始，跳过休息列22）
-                    for (int col = 6; col < assemblyIndicatorTable->columnCount(); ++col) {
+                    for (int col = 6; col < assemblyIndicatorTable->columnCount() - 1; ++col) {
                         if (col == 22) {
                             continue; // 跳过休息列
                         }
@@ -10130,7 +10701,7 @@ void tcpClient::checkShiftChange()
                     int planRow = row + 1;
                     int actualRow = row + 2;
                     // 清空总装引取行的所有时间列（列6开始，跳过休息列22）
-                    for (int col = 6; col < assemblyIndicatorTable->columnCount(); ++col) {
+                    for (int col = 6; col < assemblyIndicatorTable->columnCount() - 1; ++col) {
                         if (col == 22) {
                             continue; // 跳过休息列
                         }
@@ -10143,7 +10714,7 @@ void tcpClient::checkShiftChange()
                         }
                     }
                     // 清空计划行的所有时间列（列6开始，跳过休息列22）
-                    for (int col = 6; col < assemblyIndicatorTable->columnCount(); ++col) {
+                    for (int col = 6; col < assemblyIndicatorTable->columnCount() - 1; ++col) {
                         if (col == 22) {
                             continue; // 跳过休息列
                         }
@@ -10156,7 +10727,7 @@ void tcpClient::checkShiftChange()
                         }
                     }
                     // 清空实际行的所有时间列（列6开始，跳过休息列22）
-                    for (int col = 6; col < assemblyIndicatorTable->columnCount(); ++col) {
+                    for (int col = 6; col < assemblyIndicatorTable->columnCount() - 1; ++col) {
                         if (col == 22) {
                             continue; // 跳过休息列
                         }
@@ -11926,8 +12497,8 @@ void tcpClient::saveAssemblyIndicatorCurrentShift()
         QJsonObject planTimeData;
         QJsonObject actualTimeData;
 
-        // 遍历所有时间列
-        for (int col = 6; col < totalCols; ++col) {
+        const int timeDataEndExclusive = assemblyIndicatorTotalColumnIndex();
+        for (int col = 6; col < timeDataEndExclusive; ++col) {
             // 跳过休息列（列22）
             if (col == 22) {
                 continue;
@@ -12408,14 +12979,12 @@ void tcpClient::saveAssemblyIndicatorHistory()
         QJsonObject planTimeData;
         QJsonObject actualTimeData;
 
-        // 遍历所有时间列
-        for (int col = 6; col < totalCols; ++col) {
-            // 跳过休息列（列22）
+        const int timeDataEndExclusive = assemblyIndicatorTotalColumnIndex();
+        for (int col = 6; col < timeDataEndExclusive; ++col) {
             if (col == 22) {
                 continue;
             }
 
-            // 获取二级表头值
             QString secondLevelValueStr = header->getSecondLevelHeader(col);
             if (secondLevelValueStr.isEmpty()) {
                 secondLevelValueStr = QString::number(col);
@@ -12714,15 +13283,11 @@ void tcpClient::loadAssemblyIndicatorFromDb(const QDate& date, const QString& sh
     if (qAbs(loadedOvertimeHours - m_overtimeHours) > 0.01) {
         // 如果之前有加班时间列，先移除
         if (m_overtimeHours > 0) {
-            // 计算需要移除的列数（每15分钟一列，所以0.25小时=1列，0.5小时=2列，1小时=4列）
             int colsToRemove = static_cast<int>(m_overtimeHours * 4);
-            int currentColCount = assemblyIndicatorTable->columnCount();
-            assemblyIndicatorTable->setColumnCount(currentColCount - colsToRemove);
+            removeAssemblyIndicatorOvertimeColumns(colsToRemove);
         }
         
-        // 添加新的加班时间列（如果有）
         if (loadedOvertimeHours > 0) {
-            // 记录添加列之前的列数，用于确定新添加列的起始位置
             int colCountBeforeAdd = assemblyIndicatorTable->columnCount();
             addOvertimeColumns(loadedOvertimeHours);
             
@@ -12751,7 +13316,7 @@ void tcpClient::loadAssemblyIndicatorFromDb(const QDate& date, const QString& sh
             int planRow = row + 1;
             int actualRow = row + 2;
             // 清空总装引取行的所有时间列（列6开始，跳过休息列22）
-            for (int col = 6; col < assemblyIndicatorTable->columnCount(); ++col) {
+            for (int col = 6; col < assemblyIndicatorTable->columnCount() - 1; ++col) {
                 if (col == 22) {
                     continue; // 跳过休息列
                 }
@@ -12761,7 +13326,7 @@ void tcpClient::loadAssemblyIndicatorFromDb(const QDate& date, const QString& sh
                 }
             }
             // 清空计划行的所有时间列（列6开始，跳过休息列22）
-            for (int col = 6; col < assemblyIndicatorTable->columnCount(); ++col) {
+            for (int col = 6; col < assemblyIndicatorTable->columnCount() - 1; ++col) {
                 if (col == 22) {
                     continue; // 跳过休息列
                 }
@@ -12771,7 +13336,7 @@ void tcpClient::loadAssemblyIndicatorFromDb(const QDate& date, const QString& sh
                 }
             }
             // 清空实际行的所有时间列（列6开始，跳过休息列22）
-            for (int col = 6; col < assemblyIndicatorTable->columnCount(); ++col) {
+            for (int col = 6; col < assemblyIndicatorTable->columnCount() - 1; ++col) {
                 if (col == 22) {
                     continue; // 跳过休息列
                 }
@@ -12837,25 +13402,9 @@ void tcpClient::loadAssemblyIndicatorFromDb(const QDate& date, const QString& sh
                 auto assemblyData = vehicleAssemblyData[vehicleName];
                 QJsonObject timeData = assemblyData.second;
 
-                // 恢复总装引取行时间列数据
-                for (auto it = timeData.begin(); it != timeData.end(); ++it) {
-                    QString colKey = it.key();
-                    int col = colKey.toInt();
-                    
-                    if (col == 22) {
-                        continue; // 跳过休息列
-                    }
-
-                    QJsonObject colData = it.value().toObject();
-                    double value = colData["value"].toDouble();
-
-                    QTableWidgetItem* assemblyItem = assemblyIndicatorTable->item(assemblyRow, col);
-                    if (assemblyItem) {
-                        // 总装引取行使用整数格式，0值显示为空
-                        int intValue = static_cast<int>(value);
-                        assemblyItem->setText(intValue > 0 ? QString::number(intValue) : "");
-                    }
-                }
+                // 恢复总装引取行时间列（最右正数以左显式 0，以右空）
+                restoreAssemblyPickupRowFromTimeData(assemblyIndicatorTable, assemblyRow, timeData);
+                updateAssemblyPickupTotalForRow(assemblyRow);
             }
             
             // 恢复计划行数据
@@ -12927,7 +13476,7 @@ void tcpClient::loadAssemblyIndicatorFromDb(const QDate& date, const QString& sh
                     TwoLevelHeaderView* header = static_cast<TwoLevelHeaderView*>(headerView);
                     if (header) {
                         // 遍历所有时间列（列6开始，跳过休息列22）
-                        for (int timeCol = 6; timeCol < assemblyIndicatorTable->columnCount(); ++timeCol) {
+                        for (int timeCol = 6; timeCol < assemblyIndicatorTable->columnCount() - 1; ++timeCol) {
                             if (timeCol == 22) {
                                 continue; // 跳过休息列
                             }
@@ -12991,7 +13540,7 @@ void tcpClient::loadAssemblyIndicatorFromDb(const QDate& date, const QString& sh
                     TwoLevelHeaderView* header = static_cast<TwoLevelHeaderView*>(headerView);
                     if (header) {
                         // 遍历所有时间列（列6开始，跳过休息列22）
-                        for (int timeCol = 6; timeCol < assemblyIndicatorTable->columnCount(); ++timeCol) {
+                        for (int timeCol = 6; timeCol < assemblyIndicatorTable->columnCount() - 1; ++timeCol) {
                             if (timeCol == 22) {
                                 continue; // 跳过休息列
                             }
@@ -13095,6 +13644,10 @@ void tcpClient::loadAssemblyIndicatorFromDb(const QDate& date, const QString& sh
 
     // 恢复信号
     assemblyIndicatorTable->blockSignals(wasBlocked);
+
+    for (int r = 0; r < assemblyIndicatorTable->rowCount(); r += 3) {
+        updateAssemblyPickupTotalForRow(r);
+    }
 
     appendToLog(QString("总装指示表数据已加载（日期：%1，班次：%2，加班时间：%3小时）")
                 .arg(date.toString("yyyy-MM-dd")).arg(shiftType).arg(loadedOvertimeHours), false);
@@ -13220,7 +13773,7 @@ void tcpClient::onCurrentTableButtonClicked()
                 int planRow = row + 1;
                 int actualRow = row + 2;
                 // 清空总装引取行的所有时间列（列6开始，跳过休息列22）
-                for (int col = 6; col < assemblyIndicatorTable->columnCount(); ++col) {
+                for (int col = 6; col < assemblyIndicatorTable->columnCount() - 1; ++col) {
                     if (col == 22) {
                         continue; // 跳过休息列
                     }
@@ -13233,7 +13786,7 @@ void tcpClient::onCurrentTableButtonClicked()
                     }
                 }
                 // 清空计划行的所有时间列（列6开始，跳过休息列22）
-                for (int col = 6; col < assemblyIndicatorTable->columnCount(); ++col) {
+                for (int col = 6; col < assemblyIndicatorTable->columnCount() - 1; ++col) {
                     if (col == 22) {
                         continue; // 跳过休息列
                     }
@@ -13246,7 +13799,7 @@ void tcpClient::onCurrentTableButtonClicked()
                     }
                 }
                 // 清空实际行的所有时间列（列6开始，跳过休息列22）
-                for (int col = 6; col < assemblyIndicatorTable->columnCount(); ++col) {
+                for (int col = 6; col < assemblyIndicatorTable->columnCount() - 1; ++col) {
                     if (col == 22) {
                         continue; // 跳过休息列
                     }
@@ -13300,7 +13853,7 @@ void tcpClient::onHistoryTableButtonClicked()
                 int planRow = row + 1;
                 int actualRow = row + 2;
                 // 清空总装引取行的所有时间列（列6开始，跳过休息列22）
-                for (int col = 6; col < assemblyIndicatorTable->columnCount(); ++col) {
+                for (int col = 6; col < assemblyIndicatorTable->columnCount() - 1; ++col) {
                     if (col == 22) {
                         continue; // 跳过休息列
                     }
@@ -13313,7 +13866,7 @@ void tcpClient::onHistoryTableButtonClicked()
                     }
                 }
                 // 清空计划行的所有时间列（列6开始，跳过休息列22）
-                for (int col = 6; col < assemblyIndicatorTable->columnCount(); ++col) {
+                for (int col = 6; col < assemblyIndicatorTable->columnCount() - 1; ++col) {
                     if (col == 22) {
                         continue; // 跳过休息列
                     }
@@ -13326,7 +13879,7 @@ void tcpClient::onHistoryTableButtonClicked()
                     }
                 }
                 // 清空实际行的所有时间列（列6开始，跳过休息列22）
-                for (int col = 6; col < assemblyIndicatorTable->columnCount(); ++col) {
+                for (int col = 6; col < assemblyIndicatorTable->columnCount() - 1; ++col) {
                     if (col == 22) {
                         continue; // 跳过休息列
                     }
@@ -13900,8 +14453,7 @@ void tcpClient::loadAssemblyIndicatorHistoryFromDb(const QDate& date, const QStr
         // 移除加班列（如果有）
         if (m_overtimeHours > 0) {
             int colsToRemove = static_cast<int>(m_overtimeHours * 4);
-            int currentColCount = assemblyIndicatorTable->columnCount();
-            assemblyIndicatorTable->setColumnCount(currentColCount - colsToRemove);
+            removeAssemblyIndicatorOvertimeColumns(colsToRemove);
             m_overtimeHours = 0.0;
             if (pushButtonOvertimeTime) {
                 pushButtonOvertimeTime->setText("选择加班时间");
@@ -13917,7 +14469,7 @@ void tcpClient::loadAssemblyIndicatorHistoryFromDb(const QDate& date, const QStr
                 int actualRow = row + 2;
                 
                 // 清空总装引取行的所有时间列（列6开始，跳过休息列22）
-                for (int col = 6; col < assemblyIndicatorTable->columnCount(); ++col) {
+                for (int col = 6; col < assemblyIndicatorTable->columnCount() - 1; ++col) {
                     if (col == 22) {
                         continue; // 跳过休息列
                     }
@@ -13930,7 +14482,7 @@ void tcpClient::loadAssemblyIndicatorHistoryFromDb(const QDate& date, const QStr
                 }
                 
                 // 清空计划行的所有时间列（列6开始，跳过休息列22）
-                for (int col = 6; col < assemblyIndicatorTable->columnCount(); ++col) {
+                for (int col = 6; col < assemblyIndicatorTable->columnCount() - 1; ++col) {
                     if (col == 22) {
                         continue; // 跳过休息列
                     }
@@ -13943,7 +14495,7 @@ void tcpClient::loadAssemblyIndicatorHistoryFromDb(const QDate& date, const QStr
                 }
                 
                 // 清空实际行的所有时间列（列6开始，跳过休息列22）
-                for (int col = 6; col < assemblyIndicatorTable->columnCount(); ++col) {
+                for (int col = 6; col < assemblyIndicatorTable->columnCount() - 1; ++col) {
                     if (col == 22) {
                         continue; // 跳过休息列
                     }
@@ -13974,11 +14526,9 @@ void tcpClient::loadAssemblyIndicatorHistoryFromDb(const QDate& date, const QStr
         // 如果之前有加班时间列，先移除
         if (m_overtimeHours > 0) {
             int colsToRemove = static_cast<int>(m_overtimeHours * 4);
-            int currentColCount = assemblyIndicatorTable->columnCount();
-            assemblyIndicatorTable->setColumnCount(currentColCount - colsToRemove);
+            removeAssemblyIndicatorOvertimeColumns(colsToRemove);
         }
         
-        // 添加新的加班时间列（如果有）
         if (loadedOvertimeHours > 0) {
             int colCountBeforeAdd = assemblyIndicatorTable->columnCount();
             addOvertimeColumns(loadedOvertimeHours);
@@ -14007,7 +14557,7 @@ void tcpClient::loadAssemblyIndicatorHistoryFromDb(const QDate& date, const QStr
             int actualRow = row + 2;
             
             // 清空总装引取行的所有时间列（列6开始，跳过休息列22）
-            for (int col = 6; col < assemblyIndicatorTable->columnCount(); ++col) {
+            for (int col = 6; col < assemblyIndicatorTable->columnCount() - 1; ++col) {
                 if (col == 22) {
                     continue; // 跳过休息列
                 }
@@ -14020,7 +14570,7 @@ void tcpClient::loadAssemblyIndicatorHistoryFromDb(const QDate& date, const QStr
             }
             
             // 清空计划行的所有时间列（列6开始，跳过休息列22）
-            for (int col = 6; col < assemblyIndicatorTable->columnCount(); ++col) {
+            for (int col = 6; col < assemblyIndicatorTable->columnCount() - 1; ++col) {
                 if (col == 22) {
                     continue; // 跳过休息列
                 }
@@ -14033,7 +14583,7 @@ void tcpClient::loadAssemblyIndicatorHistoryFromDb(const QDate& date, const QStr
             }
             
             // 清空实际行的所有时间列（列6开始，跳过休息列22）
-            for (int col = 6; col < assemblyIndicatorTable->columnCount(); ++col) {
+            for (int col = 6; col < assemblyIndicatorTable->columnCount() - 1; ++col) {
                 if (col == 22) {
                     continue; // 跳过休息列
                 }
@@ -14065,34 +14615,9 @@ void tcpClient::loadAssemblyIndicatorHistoryFromDb(const QDate& date, const QStr
                 
                 qDebug() << QString("加载总装引取行：车型=%1，数据列数=%2").arg(vehicleName).arg(timeData.size());
 
-                // 恢复总装引取行时间列数据
-                int loadedCount = 0;
-                for (auto it = timeData.begin(); it != timeData.end(); ++it) {
-                    QString colKey = it.key();
-                    int col = colKey.toInt();
-                    
-                    if (col == 22) {
-                        continue; // 跳过休息列
-                    }
-
-                    QJsonObject colData = it.value().toObject();
-                    double value = colData["value"].toDouble();
-
-                    QTableWidgetItem* assemblyItem = assemblyIndicatorTable->item(assemblyRow, col);
-                    if (assemblyItem) {
-                        // 总装引取行使用整数格式，0值显示为空
-                        int intValue = static_cast<int>(value);
-                        if (intValue > 0) {
-                            assemblyItem->setText(QString::number(intValue));
-                            loadedCount++;
-                            qDebug() << QString("  恢复：列%1，值=%2").arg(col).arg(intValue);
-                        } else {
-                            assemblyItem->setText("");
-                        }
-                    }
-                }
-                
-                qDebug() << QString("总装引取行加载完成：车型=%1，恢复了%2个非零单元格").arg(vehicleName).arg(loadedCount);
+                restoreAssemblyPickupRowFromTimeData(assemblyIndicatorTable, assemblyRow, timeData);
+                updateAssemblyPickupTotalForRow(assemblyRow);
+                qDebug() << QString("总装引取行加载完成：车型=%1").arg(vehicleName);
             } else {
                 qDebug() << QString("未找到车型%1的总装引取行数据").arg(vehicleName);
             }
@@ -14216,6 +14741,10 @@ void tcpClient::loadAssemblyIndicatorHistoryFromDb(const QDate& date, const QStr
     // 恢复信号
     assemblyIndicatorTable->blockSignals(wasBlocked);
 
+    for (int r = 0; r < assemblyIndicatorTable->rowCount(); r += 3) {
+        updateAssemblyPickupTotalForRow(r);
+    }
+
     appendToLog(QString("历史数据已加载（日期：%1，班次：%2，加班时间：%3小时）")
                 .arg(date.toString("yyyy-MM-dd")).arg(shiftType).arg(loadedOvertimeHours), false);
     qDebug() << QString("历史数据已从数据库加载（日期：%1，班次：%2）").arg(date.toString("yyyy-MM-dd")).arg(shiftType);
@@ -14275,11 +14804,12 @@ void tcpClient::updateAssemblyIndicatorActualRow(const QString& vehicleName)
 
     // 根据当前时间找到对应的时间列；若不在任何已有时间段内，则写入「前一个时间段的最后一列」
     int totalCols = assemblyIndicatorTable->columnCount();
+    const int timeEndEx = totalCols - 1;
     
     // 遍历所有时间列，找到在当前时间范围内的列
     int bestCol = -1;
     
-    for (int col = 6; col < totalCols; ++col) {
+    for (int col = 6; col < timeEndEx; ++col) {
         if (col == 22) {
             continue; // 跳过休息列
         }
@@ -14377,7 +14907,7 @@ void tcpClient::updateAssemblyIndicatorActualRow(const QString& vehicleName)
             if (firstLevelIndex >= 0) {
                 // 收集该时间段内的所有列（排除休息列）
                 QList<int> timeSlotColumns;
-                for (int c = 6; c < totalCols; ++c) {
+                for (int c = 6; c < timeEndEx; ++c) {
                     if (c == 22) {
                         continue; // 跳过休息列
                     }
@@ -14405,7 +14935,7 @@ void tcpClient::updateAssemblyIndicatorActualRow(const QString& vehicleName)
         for (int fl = 0; fl < 32; ++fl) {
             if (fl == 4) continue; // 休息列
             int anyCol = -1;
-            for (int c = 6; c < totalCols; ++c) {
+            for (int c = 6; c < timeEndEx; ++c) {
                 if (c == 22) continue;
                 if (header->getFirstLevelIndex(c) == fl) { anyCol = c; break; }
             }
@@ -14432,7 +14962,7 @@ void tcpClient::updateAssemblyIndicatorActualRow(const QString& vehicleName)
             if (endTime > currentTime) continue;
             // 该时段最后一列：同一一级表头下列号最大
             int lastCol = -1;
-            for (int c = 6; c < totalCols; ++c) {
+            for (int c = 6; c < timeEndEx; ++c) {
                 if (c == 22) continue;
                 if (header->getFirstLevelIndex(c) == fl && c > lastCol) lastCol = c;
             }
@@ -14547,9 +15077,9 @@ void tcpClient::updateAssemblyIndicatorActualRow(const QString& vehicleName)
             assemblyIndicatorTable->setItem(actualRow, bestCol, actualItem);
         }
         
-        // 更新当前列及之后所有列的值（累加传播）
+        // 更新当前列及之后所有列的值（累加传播，不含最右「合计」列）
         int updatedCols = 0;
-        for (int nextCol = bestCol + 1; nextCol < totalCols; ++nextCol) {
+        for (int nextCol = bestCol + 1; nextCol < timeEndEx; ++nextCol) {
             if (nextCol == 22) {
                 continue; // 跳过休息列
             }
