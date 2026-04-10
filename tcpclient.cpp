@@ -6704,8 +6704,7 @@ bool tcpClient::hasReachedStatisticsRow(int rowIndex)
 
 /**
  * @brief 刷新统计表格所有单元格（第一列为便次名 | 计划便次 | 实际便次 | 差异）
- * 计划便次：第一节=120列计划行和，第二节=230列计划行和，吃饭=空，第三节=350列计划行和，第四节=460列计划行和，加班=加班最后一列计划行和
- * 实际便次：按节累加显示（第一节=第1节累计，第二节=第1+2节累计，第三节=前3节累计，第四节=四节累计，总数=四节之和）
+ * 计划/实际均按「各便次独立值」显示，不再显示累计值。
  */
 void tcpClient::updateStatisticsTableDisplay()
 {
@@ -6722,15 +6721,16 @@ void tcpClient::updateStatisticsTableDisplay()
     int plan3 = getPlanSumForSecondLevelValue(350);
     int plan4 = getPlanSumForSecondLevelValue(460);
     int planOvertime = getPlanSumForOvertimeLastColumn();
+    // 二级表头 120/230/350/460 对应累计值，这里转换为各便次独立值
+    const int planSeg1 = plan1;
+    const int planSeg2 = plan2 - plan1;
+    const int planSeg3 = plan3 - plan2;
+    const int planSeg4 = plan4 - plan3;
     int mealActual = (m_currentDisplayShift == "current") ? m_mealActualCount : m_displayedMealActualCount;
     int s1 = (m_currentDisplayShift == "current") ? m_section1ActualCount : m_displayedSection1ActualCount;
     int s2 = (m_currentDisplayShift == "current") ? m_section2ActualCount : m_displayedSection2ActualCount;
     int s3 = (m_currentDisplayShift == "current") ? m_section3ActualCount : m_displayedSection3ActualCount;
     int s4 = (m_currentDisplayShift == "current") ? m_section4ActualCount : m_displayedSection4ActualCount;
-    int cum1 = s1, cum2 = s1 + s2;
-    int mealCum = cum2 + mealActual; // 吃饭时间实际 = 第二节累计 + 吃饭时段收到数据
-    int cum3 = mealCum + s3;         // 第三节从吃饭时间数据开始累加
-    int cum4 = mealCum + s3 + s4;    // 第四节同理
     auto setPlan = [this](int row, const QString& text) {
         if (statisticsTableWidget->item(row, 1)) statisticsTableWidget->item(row, 1)->setText(text);
     };
@@ -6742,25 +6742,25 @@ void tcpClient::updateStatisticsTableDisplay()
         if (statisticsTableWidget->item(row, 3))
             statisticsTableWidget->item(row, 3)->setText(hasReachedStatisticsRow(row) ? text : "");
     };
-    setPlan(0, QString::number(plan1));
-    setPlan(1, QString::number(plan2));
+    setPlan(0, QString::number(planSeg1));
+    setPlan(1, QString::number(planSeg2));
     setPlan(2, "");
-    setPlan(3, QString::number(plan3));
-    setPlan(4, QString::number(plan4));
+    setPlan(3, QString::number(planSeg3));
+    setPlan(4, QString::number(planSeg4));
     setPlan(5, planOvertime > 0 ? QString::number(planOvertime) : "");
-    // 实际便次列（第2列）：未到时间不显示；吃饭时间 = 第二节累计+吃饭时段数据；加班无加班时为空
-    setActualIfReached(0, QString::number(cum1));
-    setActualIfReached(1, QString::number(cum2));
-    setActualIfReached(2, QString::number(mealCum));
-    setActualIfReached(3, QString::number(cum3));
-    setActualIfReached(4, QString::number(cum4));
+    // 实际便次列（第2列）：未到时间不显示；按各便次独立值显示
+    setActualIfReached(0, QString::number(s1));
+    setActualIfReached(1, QString::number(s2));
+    setActualIfReached(2, QString::number(mealActual));
+    setActualIfReached(3, QString::number(s3));
+    setActualIfReached(4, QString::number(s4));
     setActualIfReached(5, planOvertime > 0 ? "0" : ""); // 加班实际暂不统计，有加班时显示0
     // 差异列（第3列）：未到时间不显示
-    setDiffIfReached(0, QString::number(cum1 - plan1));
-    setDiffIfReached(1, QString::number(cum2 - plan2));
+    setDiffIfReached(0, QString::number(s1 - planSeg1));
+    setDiffIfReached(1, QString::number(s2 - planSeg2));
     setDiffIfReached(2, "");
-    setDiffIfReached(3, QString::number(cum3 - plan3));
-    setDiffIfReached(4, QString::number(cum4 - plan4));
+    setDiffIfReached(3, QString::number(s3 - planSeg3));
+    setDiffIfReached(4, QString::number(s4 - planSeg4));
     setDiffIfReached(5, planOvertime > 0 ? "0" : "");
 }
 
