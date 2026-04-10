@@ -3343,6 +3343,16 @@ void tcpClient::processHexData(const QByteArray &data)
 
     qDebug() << "数据格式验证通过，开始解析数据";
 
+    // 校验通过后立即应答 PLC，再执行解析/落库/界面更新，避免耗时过长导致对端超时断线
+    if (m_socket && m_socket->state() == QAbstractSocket::ConnectedState) {
+        QByteArray ackImmediate;
+        ackImmediate.append(static_cast<char>(0xE0));
+        ackImmediate.append(static_cast<char>(0x00));
+        m_socket->write(ackImmediate);
+        m_socket->flush();
+    }
+    appendToLog("已发送应答: E0 00", false);
+
     m_pendingExceptionMessages.clear(); // 一条指令只弹一次窗，先清空本指令的异常列表
 
     // 定义托盘信息结构
@@ -3590,13 +3600,6 @@ void tcpClient::processHexData(const QByteArray &data)
     if (ui->stackedWidget->currentIndex() == 4 && m_projectGroupDisplayShift == "current") {
         updateProjectGroupStatistics();
     }
-
-    // 收到正确数据后立即返回E0 00
-    QByteArray ack;
-    ack.append(static_cast<char>(0xE0));
-    ack.append(static_cast<char>(0x00));
-    m_socket->write(ack);
-    appendToLog("已发送应答: E0 00", false);
 
     // 一条指令只弹一次窗，包含本指令所有异常信息
     if (!m_pendingExceptionMessages.isEmpty()) {
