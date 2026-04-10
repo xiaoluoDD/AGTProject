@@ -407,6 +407,8 @@ tcpClient::tcpClient(QWidget *parent)
     , emptyTrayInTableWidget(nullptr)
     , emptyTrayOutTableWidget(nullptr)
     , assemblyIndicatorTable(nullptr)
+    , checkBoxExceptionPopup(nullptr)
+    , m_enableExceptionPopup(true)
     , m_plannedCount(100)
     , m_actualCount(89)
     , m_delayedCount(0)
@@ -1952,12 +1954,19 @@ void tcpClient::setupUI()
     pushButtonSaveShiftConfig->setText("保存设置");
     pushButtonSaveShiftConfig->setObjectName("pushButtonSaveShiftConfig");
     shiftConfigLayout->addWidget(pushButtonSaveShiftConfig, 2, 0, 1, 5);
+
+    // 异常弹窗提示开关
+    checkBoxExceptionPopup = new QCheckBox(groupBoxShiftConfig);
+    checkBoxExceptionPopup->setText("异常记录弹窗提示");
+    checkBoxExceptionPopup->setChecked(m_enableExceptionPopup);
+    shiftConfigLayout->addWidget(checkBoxExceptionPopup, 3, 0, 1, 5);
     
     // 将班次设置插入到ED软件连接设置之后
     ui->verticalLayout_2->insertWidget(3, groupBoxShiftConfig);
     
     // 连接班次设置按钮信号槽
     connect(pushButtonSaveShiftConfig, &QPushButton::clicked, this, &tcpClient::onSaveShiftConfigClicked);
+    connect(checkBoxExceptionPopup, &QCheckBox::toggled, this, &tcpClient::onExceptionPopupSwitchToggled);
     
     // 加载数据库配置到界面
     loadDatabaseConfig();
@@ -3602,7 +3611,7 @@ void tcpClient::processHexData(const QByteArray &data)
     }
 
     // 一条指令只弹一次窗，包含本指令所有异常信息
-    if (!m_pendingExceptionMessages.isEmpty()) {
+    if (m_enableExceptionPopup && !m_pendingExceptionMessages.isEmpty()) {
         QMessageBox::warning(this, "异常提示", m_pendingExceptionMessages.join("\n\n"));
     }
 }
@@ -7847,10 +7856,22 @@ void tcpClient::loadConnectionConfig()
             if (port > 0 && lineEditEdSoftwarePort) {
                 lineEditEdSoftwarePort->setText(QString::number(port));
             }
+        } else if (configType == "exception_popup") {
+            m_enableExceptionPopup = (port != 0);
+            if (checkBoxExceptionPopup) {
+                checkBoxExceptionPopup->setChecked(m_enableExceptionPopup);
+            }
         }
     }
     
     qDebug() << "连接配置已从数据库加载";
+}
+
+void tcpClient::onExceptionPopupSwitchToggled(bool checked)
+{
+    m_enableExceptionPopup = checked;
+    saveConnectionConfig("exception_popup", checked ? "enabled" : "disabled", checked ? 1 : 0);
+    appendToLog(QString("异常弹窗提示已%1").arg(checked ? "开启" : "关闭"), false);
 }
 
 /**

@@ -20,6 +20,7 @@
 #include <QVector>
 #include <QGroupBox>
 #include <QLineEdit>
+#include <QCheckBox>
 #include <QTableWidget>
 #include <QInputDialog>
 #include <QDate>
@@ -189,6 +190,7 @@ private slots:
     void onEdSoftwareConnectClicked(); ///< ED软件连接按钮点击处理
     void onEdSoftwareDisconnectClicked(); ///< ED软件断开按钮点击处理
     void onSaveEdSoftwareConnectionConfigClicked(); ///< 保存ED软件连接配置按钮点击处理
+    void onExceptionPopupSwitchToggled(bool checked); ///< 异常弹窗提示开关切换处理
     void onEdSoftwareSocketConnected(); ///< ED软件Socket连接成功处理
     void onEdSoftwareSocketDisconnected(); ///< ED软件Socket断开连接处理
     void onEdSoftwareSocketError(QAbstractSocket::SocketError error); ///< ED软件Socket错误处理
@@ -414,6 +416,7 @@ private:
     QTimeEdit* timeEditNightShiftStart; ///< 夜班开始时间输入框
     QTimeEdit* timeEditNightShiftEnd; ///< 夜班结束时间输入框
     QPushButton* pushButtonSaveShiftConfig; ///< 保存班次设置按钮
+    QCheckBox* checkBoxExceptionPopup; ///< 异常弹窗提示开关
     QString m_password;           ///< 存储的密码
     bool m_isPasswordSet;         ///< 密码是否已设置
     QDate m_lastCurrentShiftTableClearDate; ///< 上次清空当前班次表格的日期
@@ -478,6 +481,7 @@ private:
     QTimer *m_emptyEntranceLongPressTimer; ///< 空滑槽入口标签长按3秒定时器
 
     QStringList m_pendingExceptionMessages; ///< 当前指令待弹窗的异常信息列表（一条指令只弹一次窗）
+    bool m_enableExceptionPopup; ///< 是否启用异常弹窗提示
 
     // 数据库配置
     QString m_dbHost;             ///< 数据库主机地址
