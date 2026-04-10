@@ -7984,7 +7984,7 @@ void tcpClient::onServerSocketConnected()
     
     // 启动可视化数据发送定时器
     m_visualizationDataTimer->start();
-    appendToLog("数据发送定时器已启动（每3秒触发一次，1秒间隔上报AGT搬运、工程组和异常记录数据）", false);
+    appendToLog("数据发送定时器已启动（每3秒触发一次，1秒间隔上报AGT搬运和工程组数据）", false);
     
     // 立即发送一次AGT搬运数据
     sendVisualizationDataToServer();
@@ -11466,8 +11466,7 @@ void tcpClient::sendProjectGroupDataToServer()
         qWarning() << "发送工程组数据失败";
     }
     
-    // 启动异常数据发送定时器（1秒后发送异常记录）
-    m_exceptionDataTimer->start();
+    // 不再向服务端发送异常记录数据，避免大包频繁上送占用带宽
 }
 
 /**
