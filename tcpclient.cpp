@@ -1,4 +1,4 @@
-#include "tcpclient.h"
+﻿#include "tcpclient.h"
 #include "./ui_tcpclient.h"
 #include <QMessageBox>
 #include <QDateTime>
@@ -2365,10 +2365,25 @@ void tcpClient::setupTable()
  */
 void tcpClient::setupVehicleBindingTable()
 {
-    // 设置表格列数和标题
-    ui->tableWidgetVehicleBinding->setColumnCount(4);
+    // 车型绑定由服务端下发，界面仅展示，隐藏手工维护区域
+    if (ui->groupBoxVehicleBindingInput) {
+        ui->groupBoxVehicleBindingInput->setVisible(false);
+    }
+    if (ui->pushButtonDeleteVehicle) {
+        ui->pushButtonDeleteVehicle->setVisible(false);
+    }
+    if (ui->pushButtonClearVehicleTable) {
+        ui->pushButtonClearVehicleTable->setVisible(false);
+    }
+    if (ui->horizontalLayout_9) {
+        ui->horizontalLayout_9->setContentsMargins(0, 0, 0, 0);
+        ui->horizontalLayout_9->setSpacing(0);
+    }
+
+    // 设置表格列数和标题（序号、装配编号、车型代码、车型名称、数量）
+    ui->tableWidgetVehicleBinding->setColumnCount(5);
     QStringList headers;
-    headers << "序号" << "车型代码" << "车型名称" << "数量";
+    headers << "序号" << "装配编号" << "车型代码" << "车型名称" << "数量";
     ui->tableWidgetVehicleBinding->setHorizontalHeaderLabels(headers);
 
     // 设置表格属性
@@ -2376,19 +2391,17 @@ void tcpClient::setupVehicleBindingTable()
     ui->tableWidgetVehicleBinding->setSelectionBehavior(QAbstractItemView::SelectRows);
     ui->tableWidgetVehicleBinding->setSortingEnabled(true);
 
-    // 设置车型绑定表格为不可编辑
+    // 只读展示，数据由服务端同步
     ui->tableWidgetVehicleBinding->setEditTriggers(QAbstractItemView::NoEditTriggers);
 
-    // 设置列宽 - 序号列固定宽度，其他列自适应
+    // 序号、装配编号固定宽度，其余列自适应
     ui->tableWidgetVehicleBinding->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Fixed);
     ui->tableWidgetVehicleBinding->setColumnWidth(0, 60);
-    for (int i = 1; i < 4; ++i) {
+    ui->tableWidgetVehicleBinding->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Fixed);
+    ui->tableWidgetVehicleBinding->setColumnWidth(1, 100);
+    for (int i = 2; i < 5; ++i) {
         ui->tableWidgetVehicleBinding->horizontalHeader()->setSectionResizeMode(i, QHeaderView::Stretch);
     }
-
-    // 连接数据变化信号，当用户编辑车型信息时自动保存
-    connect(ui->tableWidgetVehicleBinding, &QTableWidget::itemChanged,
-            this, &tcpClient::onVehicleBindingItemChanged);
 }
 
 /**
@@ -3507,9 +3520,9 @@ void tcpClient::processHexData(const QByteArray &data)
 
             for (int row = 0; row < ui->tableWidgetVehicleBinding->rowCount(); ++row) {
                 // 绑定表中的车型代码是10进制格式，直接比较
-                QTableWidgetItem* codeItem = ui->tableWidgetVehicleBinding->item(row, 1);
-                QTableWidgetItem* nameItem = ui->tableWidgetVehicleBinding->item(row, 2);
-                QTableWidgetItem* countItem = ui->tableWidgetVehicleBinding->item(row, 3);
+                QTableWidgetItem* codeItem = ui->tableWidgetVehicleBinding->item(row, 2);
+                QTableWidgetItem* nameItem = ui->tableWidgetVehicleBinding->item(row, 3);
+                QTableWidgetItem* countItem = ui->tableWidgetVehicleBinding->item(row, 4);
                 
                 // 检查表格项是否存在
                 if (!codeItem || !nameItem || !countItem) {
@@ -3659,9 +3672,9 @@ void tcpClient::addDataToTable(int status1, unsigned int value1, unsigned int va
     QString vehicleCode4, vehicleName4; int count4 = 0;
     // 滑槽1/2车型查找（第5字节）- 在车型代码列（列1）中查找
     for (int row = 0; row < ui->tableWidgetVehicleBinding->rowCount(); ++row) {
-        QTableWidgetItem* codeItem = ui->tableWidgetVehicleBinding->item(row, 1);
-        QTableWidgetItem* nameItem = ui->tableWidgetVehicleBinding->item(row, 2);
-        QTableWidgetItem* countItem = ui->tableWidgetVehicleBinding->item(row, 3);
+        QTableWidgetItem* codeItem = ui->tableWidgetVehicleBinding->item(row, 2);
+        QTableWidgetItem* nameItem = ui->tableWidgetVehicleBinding->item(row, 3);
+        QTableWidgetItem* countItem = ui->tableWidgetVehicleBinding->item(row, 4);
         
         // 检查表格项是否存在
         if (!codeItem || !nameItem || !countItem) {
@@ -3918,7 +3931,7 @@ void tcpClient::onAddVehicleClicked()
 
     // 检查是否已存在相同的车型代码
     for (int row = 0; row < ui->tableWidgetVehicleBinding->rowCount(); ++row) {
-        QString existingCode = ui->tableWidgetVehicleBinding->item(row, 1)->text();
+        QString existingCode = ui->tableWidgetVehicleBinding->item(row, 2)->text();
         if (existingCode == vehicleCode) {
             appendToLog("错误: 车型代码已存在", true);
             return;
@@ -3931,15 +3944,18 @@ void tcpClient::onAddVehicleClicked()
     QTableWidgetItem* item0 = new QTableWidgetItem(QString::number(row + 1));
     item0->setTextAlignment(Qt::AlignCenter);
     ui->tableWidgetVehicleBinding->setItem(row, 0, item0);
+    QTableWidgetItem* itemAssembly = new QTableWidgetItem(QString());
+    itemAssembly->setTextAlignment(Qt::AlignCenter);
+    ui->tableWidgetVehicleBinding->setItem(row, 1, itemAssembly);
     QTableWidgetItem* item1 = new QTableWidgetItem(vehicleCode);
     item1->setTextAlignment(Qt::AlignCenter);
-    ui->tableWidgetVehicleBinding->setItem(row, 1, item1);
+    ui->tableWidgetVehicleBinding->setItem(row, 2, item1);
     QTableWidgetItem* item2 = new QTableWidgetItem(vehicleName);
     item2->setTextAlignment(Qt::AlignCenter);
-    ui->tableWidgetVehicleBinding->setItem(row, 2, item2);
+    ui->tableWidgetVehicleBinding->setItem(row, 3, item2);
     QTableWidgetItem* item3 = new QTableWidgetItem(QString::number(count));
     item3->setTextAlignment(Qt::AlignCenter);
-    ui->tableWidgetVehicleBinding->setItem(row, 3, item3);
+    ui->tableWidgetVehicleBinding->setItem(row, 4, item3);
     // 同步插入数据库
     insertModelBinding(vehicleCode, vehicleName, count);
 
@@ -3976,8 +3992,8 @@ void tcpClient::onDeleteVehicleClicked()
     std::sort(rowsToDelete.begin(), rowsToDelete.end(), std::greater<int>());
 
     for (int row : rowsToDelete) {
-        QString vehicleCode = ui->tableWidgetVehicleBinding->item(row, 1)->text();
-        QString vehicleName = ui->tableWidgetVehicleBinding->item(row, 2)->text();
+        QString vehicleCode = ui->tableWidgetVehicleBinding->item(row, 2)->text();
+        QString vehicleName = ui->tableWidgetVehicleBinding->item(row, 3)->text();
         ui->tableWidgetVehicleBinding->removeRow(row);
         appendToLog(QString("已删除车型: %1").arg(vehicleName));
         // 同步删除数据库
@@ -4039,7 +4055,7 @@ void tcpClient::onExportVehicleTableClicked()
     QTextStream out(&file);
 
     // 写入表头
-    out << "序号,车型代码,车型名称,数量\n";
+    out << "序号,装配编号,车型代码,车型名称,数量\n";
 
     // 写入数据
     for (int row = 0; row < ui->tableWidgetVehicleBinding->rowCount(); ++row) {
@@ -4080,9 +4096,9 @@ void tcpClient::onVehicleBindingItemChanged(QTableWidgetItem *item)
 
     // 获取该行的完整信息，添加安全检查
     // 确保所有必需的列都已创建
-    QTableWidgetItem* codeItem = ui->tableWidgetVehicleBinding->item(row, 1);
-    QTableWidgetItem* nameItem = ui->tableWidgetVehicleBinding->item(row, 2);
-    QTableWidgetItem* countItem = ui->tableWidgetVehicleBinding->item(row, 3);
+    QTableWidgetItem* codeItem = ui->tableWidgetVehicleBinding->item(row, 2);
+    QTableWidgetItem* nameItem = ui->tableWidgetVehicleBinding->item(row, 3);
+    QTableWidgetItem* countItem = ui->tableWidgetVehicleBinding->item(row, 4);
 
     if (!codeItem || !nameItem || !countItem) {
         // 如果某些列还没有创建，说明可能正在加载数据，忽略此次变化
@@ -4095,7 +4111,7 @@ void tcpClient::onVehicleBindingItemChanged(QTableWidgetItem *item)
     QString vehicleCount = countItem->text();
 
     // 验证输入
-    if (col == 3) { // 数量列
+    if (col == 4) { // 数量列
         bool ok;
         int count = newValue.toInt(&ok);
         if (!ok || count <= 0) {
@@ -4106,13 +4122,13 @@ void tcpClient::onVehicleBindingItemChanged(QTableWidgetItem *item)
         }
     }
 
-    if (col == 1 && newValue.isEmpty()) { // 车型代码列
+    if (col == 2 && newValue.isEmpty()) { // 车型代码列
         appendToLog("错误: 车型代码不能为空", true);
         item->setText(vehicleCode);
         return;
     }
 
-    if (col == 2 && newValue.isEmpty()) { // 车型名称列
+    if (col == 3 && newValue.isEmpty()) { // 车型名称列
         appendToLog("错误: 车型名称不能为空", true);
         item->setText(vehicleName);
         return;
@@ -4124,7 +4140,7 @@ void tcpClient::onVehicleBindingItemChanged(QTableWidgetItem *item)
     appendToLog(QString("已更新车型绑定信息: 行%1, 列%2, 新值: %3").arg(row + 1).arg(col + 1).arg(newValue));
     
     // 更新总成指示表（当车型名称或数量变化时）
-    if (col == 2 || col == 3) { // 车型名称列或数量列
+    if (col == 3 || col == 4) { // 车型名称列或数量列
         loadVehicleModelsToAssemblyIndicator();
     }
 }
@@ -4225,12 +4241,22 @@ void tcpClient::initDatabase() {
     // 车型绑定表
     if (query.exec("CREATE TABLE IF NOT EXISTS model_bindings ("
                    "id INT PRIMARY KEY AUTO_INCREMENT,"
+                   "assembly_number VARCHAR(255),"
                    "model_code VARCHAR(255),"
                    "model_name VARCHAR(255),"
                    "count INT)")) {
         qDebug() << "车型绑定表创建/检查成功";
     } else {
         qWarning() << "车型绑定表创建失败:" << query.lastError().text();
+    }
+    {
+        QSqlQuery alterAssembly;
+        if (!alterAssembly.exec("ALTER TABLE model_bindings ADD COLUMN assembly_number VARCHAR(255) NULL")) {
+            const QSqlError e = alterAssembly.lastError();
+            if (e.nativeErrorCode() != QLatin1String("1060")) {
+                qWarning() << "model_bindings 增加 assembly_number 列失败:" << e.text();
+            }
+        }
     }
 
     // 可视化记录表
@@ -4544,9 +4570,11 @@ void tcpClient::deleteDataRecord(int slotNo, const QString &status, const QStrin
     }
 }
 
-void tcpClient::insertModelBinding(const QString &modelCode, const QString &modelName, int count) {
+void tcpClient::insertModelBinding(const QString &modelCode, const QString &modelName, int count,
+                                   const QString &assemblyNumber) {
     QSqlQuery query;
-    query.prepare("INSERT INTO model_bindings (model_code, model_name, count) VALUES (?, ?, ?)");
+    query.prepare("INSERT INTO model_bindings (assembly_number, model_code, model_name, count) VALUES (?, ?, ?, ?)");
+    query.addBindValue(assemblyNumber);
     query.addBindValue(modelCode);
     query.addBindValue(modelName);
     query.addBindValue(count);
@@ -4562,23 +4590,25 @@ void tcpClient::updateModelBinding(const QString &oldModelCode, const QString &o
         return;
     }
 
-    QTableWidgetItem* item1 = ui->tableWidgetVehicleBinding->item(row, 1);
-    QTableWidgetItem* item2 = ui->tableWidgetVehicleBinding->item(row, 2);
-    QTableWidgetItem* item3 = ui->tableWidgetVehicleBinding->item(row, 3);
+    QTableWidgetItem* itemAssembly = ui->tableWidgetVehicleBinding->item(row, 1);
+    QTableWidgetItem* itemCode = ui->tableWidgetVehicleBinding->item(row, 2);
+    QTableWidgetItem* itemName = ui->tableWidgetVehicleBinding->item(row, 3);
+    QTableWidgetItem* itemCount = ui->tableWidgetVehicleBinding->item(row, 4);
 
-    if (!item1 || !item2 || !item3) {
+    if (!itemCode || !itemName || !itemCount) {
         qDebug() << "Table items not found for row:" << row;
         return;
     }
 
-    // 获取表格中的新值
-    QString newModelCode = item1->text();
-    QString newModelName = item2->text();
-    QString newCountStr = item3->text();
-    int newCount = newCountStr.toInt();
+    QString newAssemblyNumber = itemAssembly ? itemAssembly->text() : QString();
+    QString newModelCode = itemCode->text();
+    QString newModelName = itemName->text();
+    int newCount = itemCount->text().toInt();
 
     QSqlQuery query;
-    query.prepare("UPDATE model_bindings SET model_code = ?, model_name = ?, count = ? WHERE model_code = ? AND model_name = ? AND count = ?");
+    query.prepare("UPDATE model_bindings SET assembly_number = ?, model_code = ?, model_name = ?, count = ? "
+                  "WHERE model_code = ? AND model_name = ? AND count = ?");
+    query.addBindValue(newAssemblyNumber);
     query.addBindValue(newModelCode);
     query.addBindValue(newModelName);
     query.addBindValue(newCount);
@@ -4849,22 +4879,25 @@ void tcpClient::loadModelBindingsFromDb() {
     
     try {
         ui->tableWidgetVehicleBinding->setRowCount(0);
-        QSqlQuery query("SELECT model_code, model_name, count FROM model_bindings");
+        QSqlQuery query("SELECT assembly_number, model_code, model_name, count FROM model_bindings ORDER BY id");
         int row = 0;
         while (query.next()) {
             ui->tableWidgetVehicleBinding->insertRow(row);
             QTableWidgetItem* item0 = new QTableWidgetItem(QString::number(row + 1));
             item0->setTextAlignment(Qt::AlignCenter);
             ui->tableWidgetVehicleBinding->setItem(row, 0, item0);
-            QTableWidgetItem* item1 = new QTableWidgetItem(query.value(0).toString());
+            QTableWidgetItem* itemAssembly = new QTableWidgetItem(query.value(0).toString());
+            itemAssembly->setTextAlignment(Qt::AlignCenter);
+            ui->tableWidgetVehicleBinding->setItem(row, 1, itemAssembly);
+            QTableWidgetItem* item1 = new QTableWidgetItem(query.value(1).toString());
             item1->setTextAlignment(Qt::AlignCenter);
-            ui->tableWidgetVehicleBinding->setItem(row, 1, item1);
-            QTableWidgetItem* item2 = new QTableWidgetItem(query.value(1).toString());
+            ui->tableWidgetVehicleBinding->setItem(row, 2, item1);
+            QTableWidgetItem* item2 = new QTableWidgetItem(query.value(2).toString());
             item2->setTextAlignment(Qt::AlignCenter);
-            ui->tableWidgetVehicleBinding->setItem(row, 2, item2);
-            QTableWidgetItem* item3 = new QTableWidgetItem(query.value(2).toString());
+            ui->tableWidgetVehicleBinding->setItem(row, 3, item2);
+            QTableWidgetItem* item3 = new QTableWidgetItem(query.value(3).toString());
             item3->setTextAlignment(Qt::AlignCenter);
-            ui->tableWidgetVehicleBinding->setItem(row, 3, item3);
+            ui->tableWidgetVehicleBinding->setItem(row, 4, item3);
             ++row;
         }
     } catch (...) {
@@ -4895,8 +4928,8 @@ void tcpClient::loadVehicleModelsToAssemblyIndicator()
     
     // 从车型绑定表格读取数据
     for (int row = 0; row < ui->tableWidgetVehicleBinding->rowCount(); ++row) {
-        QTableWidgetItem* nameItem = ui->tableWidgetVehicleBinding->item(row, 2); // 车型名称
-        QTableWidgetItem* countItem = ui->tableWidgetVehicleBinding->item(row, 3); // 数量（收容数）
+        QTableWidgetItem* nameItem = ui->tableWidgetVehicleBinding->item(row, 3); // 车型名称
+        QTableWidgetItem* countItem = ui->tableWidgetVehicleBinding->item(row, 4); // 数量（收容数）
         
         if (!nameItem || !countItem) {
             continue;
@@ -8278,6 +8311,10 @@ bool tcpClient::processSingleJsonObject(const QString &jsonString, bool saveToTa
         // 处理生产数据上报
         return processProductionDataJson(obj, saveToTable);
     }
+
+    if (action == "insert" && table == "vehicle_parts" && type == "vehicleparts") {
+        return processVehiclePartsJson(obj);
+    }
     
     QString instructionType = obj.value("instructionType").toString();
     
@@ -8320,9 +8357,9 @@ bool tcpClient::processSingleJsonObject(const QString &jsonString, bool saveToTa
     if (status == "实托盘搬入" || status == "实托盘搬出") {
         // 实托盘需要从车型绑定表中获取数量
         for (int row = 0; row < ui->tableWidgetVehicleBinding->rowCount(); ++row) {
-            QTableWidgetItem* codeItem = ui->tableWidgetVehicleBinding->item(row, 1); // 车型代码列
+            QTableWidgetItem* codeItem = ui->tableWidgetVehicleBinding->item(row, 2); // 车型代码列
             if (codeItem && codeItem->text() == modelCode) {
-                QTableWidgetItem* countItem = ui->tableWidgetVehicleBinding->item(row, 2); // 数量列
+                QTableWidgetItem* countItem = ui->tableWidgetVehicleBinding->item(row, 4); // 数量列
                 if (countItem) {
                     count = countItem->text().toInt();
                     break;
@@ -8386,6 +8423,97 @@ bool tcpClient::processSingleJsonObject(const QString &jsonString, bool saveToTa
         appendToLog(QString("未处理的状态: %1").arg(status), false);
     }
     
+    return true;
+}
+
+/**
+ * @brief 处理服务端下发的车型绑定整包（vehicle_parts / vehicleparts）
+ * 全量替换：写入 databody 中全部记录，不在包内的旧记录删除
+ */
+bool tcpClient::processVehiclePartsJson(const QJsonObject &obj)
+{
+    const QJsonArray databody = obj.value("databody").toArray();
+    if (databody.isEmpty()) {
+        appendToLog("车型绑定数据 databody 为空", true);
+        return false;
+    }
+
+    QSqlDatabase db = QSqlDatabase::database();
+    if (!db.isOpen()) {
+        appendToLog("数据库未打开，无法同步车型绑定", true);
+        return false;
+    }
+
+    if (!db.transaction()) {
+        appendToLog(QString("开启车型绑定事务失败: %1").arg(db.lastError().text()), true);
+        return false;
+    }
+
+    QSqlQuery delQuery;
+    if (!delQuery.exec(QStringLiteral("DELETE FROM model_bindings"))) {
+        db.rollback();
+        appendToLog(QString("清空车型绑定失败: %1").arg(delQuery.lastError().text()), true);
+        return false;
+    }
+
+    QSqlQuery insQuery;
+    insQuery.prepare(QStringLiteral(
+        "INSERT INTO model_bindings (assembly_number, model_code, model_name, count) VALUES (?, ?, ?, ?)"));
+
+    int inserted = 0;
+    for (const QJsonValue &val : databody) {
+        if (!val.isObject()) {
+            continue;
+        }
+        const QJsonObject item = val.toObject();
+        const QString assemblyId = item.value(QStringLiteral("assembly_id")).toString().trimmed();
+        const QString vehicleCode = item.value(QStringLiteral("vehicle_code")).toString().trimmed();
+        const QString vehicleName = item.value(QStringLiteral("vehicle_name")).toString().trimmed();
+        const QString partName = item.value(QStringLiteral("part_name")).toString().trimmed();
+        const int storageQty = item.value(QStringLiteral("storage_quantity")).toInt(0);
+
+        if (vehicleCode.isEmpty()) {
+            qWarning() << "跳过无效车型绑定项: vehicle_code 为空";
+            continue;
+        }
+
+        const QString modelName = vehicleName + partName;
+
+        insQuery.addBindValue(assemblyId);
+        insQuery.addBindValue(vehicleCode);
+        insQuery.addBindValue(modelName);
+        insQuery.addBindValue(storageQty);
+        if (!insQuery.exec()) {
+            db.rollback();
+            appendToLog(QString("写入车型绑定失败（代码=%1，名称=%2）: %3")
+                            .arg(vehicleCode, modelName, insQuery.lastError().text()),
+                        true);
+            return false;
+        }
+        ++inserted;
+    }
+
+    if (inserted == 0) {
+        db.rollback();
+        appendToLog("车型绑定数据无有效记录，已取消同步", true);
+        return false;
+    }
+
+    if (!db.commit()) {
+        db.rollback();
+        appendToLog(QString("提交车型绑定事务失败: %1").arg(db.lastError().text()), true);
+        return false;
+    }
+
+    loadModelBindingsFromDb();
+    updateProjectGroupStatistics();
+
+    const QString ts = obj.value(QStringLiteral("timestamp")).toString();
+    if (ts.isEmpty()) {
+        appendToLog(QString("已同步服务端车型绑定，共 %1 条").arg(inserted), false);
+    } else {
+        appendToLog(QString("已同步服务端车型绑定（%1），共 %2 条").arg(ts).arg(inserted), false);
+    }
     return true;
 }
 

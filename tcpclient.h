@@ -246,7 +246,8 @@ private:
     void insertDataRecord(int slotNo, const QString &status, const QString &modelName, const QString &modelCode, int count, const QString &currentTime,
                           const QString &recordSource = QString(), int plcStripeBatch = -1); ///< recordSource 空=plc；ed=ED；plcStripeBatch>=0 写入库供重启后当前班次条纹着色
     void deleteDataRecord(int slotNo, const QString &status, const QString &modelName, const QString &modelCode, int count, const QString &currentTime);
-    void insertModelBinding(const QString &modelCode, const QString &modelName, int count);
+    void insertModelBinding(const QString &modelCode, const QString &modelName, int count,
+                            const QString &assemblyNumber = QString());
     void updateModelBinding(const QString &oldModelCode, const QString &oldModelName, int oldCount, int row);
     void deleteModelBinding(const QString &modelName);
     void clearModelBindings();
@@ -283,6 +284,7 @@ private:
     void processServerJsonData(const QByteArray &data, bool saveToTable = true); ///< 处理服务端JSON数据（支持多个连续的JSON对象）
     bool processSingleJsonObject(const QString &jsonString, bool saveToTable = true); ///< 处理单个JSON对象
     bool processProductionDataJson(const QJsonObject &obj, bool saveToTable = true); ///< 处理生产数据上报JSON
+    bool processVehiclePartsJson(const QJsonObject &obj); ///< 服务端整包同步车型绑定（vehicle_parts）
     bool processAssemblyInstructionJson(const QJsonObject &obj, bool saveToTable = true); ///< 总装指令：依车型+时间戳定位时段列，每条消息+1（忽略次数字段）
     bool processAssemblyPickupFullSyncJson(const QJsonObject &obj, bool saveToTable = true); ///< 处理总装引取全量同步（ED）
     bool isDateTimeInCurrentShiftWindow(const QDateTime &recordDateTime); ///< 时间是否落在当前班次窗口内
