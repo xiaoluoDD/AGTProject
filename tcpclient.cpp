@@ -8444,19 +8444,32 @@ bool tcpClient::processVehiclePartsJson(const QJsonObject &obj)
         return false;
     }
 
-    if (!db.transaction()) {
-        appendToLog(QString("开启车型绑定事务失败: %1").arg(db.lastError().text()), true);
-        return false;
+    bool useTransaction = false;
+    if (QSqlDriver *driver = db.driver()) {
+        if (driver->hasFeature(QSqlDriver::Transactions)) {
+            useTransaction = db.transaction();
+            if (!useTransaction) {
+                QString err = db.lastError().text();
+                if (err.isEmpty()) {
+                    err = QStringLiteral("驱动未返回详细原因，将不使用事务继续同步");
+                }
+                qDebug() << "车型绑定同步：开启事务失败，将不使用事务:" << err;
+            }
+        } else {
+            qDebug() << "车型绑定同步：数据库驱动不支持事务，将直接执行";
+        }
     }
 
-    QSqlQuery delQuery;
+    QSqlQuery delQuery(db);
     if (!delQuery.exec(QStringLiteral("DELETE FROM model_bindings"))) {
-        db.rollback();
+        if (useTransaction) {
+            db.rollback();
+        }
         appendToLog(QString("清空车型绑定失败: %1").arg(delQuery.lastError().text()), true);
         return false;
     }
 
-    QSqlQuery insQuery;
+    QSqlQuery insQuery(db);
     insQuery.prepare(QStringLiteral(
         "INSERT INTO model_bindings (assembly_number, model_code, model_name, count) VALUES (?, ?, ?, ?)"));
 
@@ -8484,7 +8497,9 @@ bool tcpClient::processVehiclePartsJson(const QJsonObject &obj)
         insQuery.addBindValue(modelName);
         insQuery.addBindValue(storageQty);
         if (!insQuery.exec()) {
-            db.rollback();
+            if (useTransaction) {
+                db.rollback();
+            }
             appendToLog(QString("写入车型绑定失败（代码=%1，名称=%2）: %3")
                             .arg(vehicleCode, modelName, insQuery.lastError().text()),
                         true);
@@ -8494,15 +8509,19 @@ bool tcpClient::processVehiclePartsJson(const QJsonObject &obj)
     }
 
     if (inserted == 0) {
-        db.rollback();
+        if (useTransaction) {
+            db.rollback();
+        }
         appendToLog("车型绑定数据无有效记录，已取消同步", true);
         return false;
     }
 
-    if (!db.commit()) {
-        db.rollback();
-        appendToLog(QString("提交车型绑定事务失败: %1").arg(db.lastError().text()), true);
-        return false;
+    if (useTransaction) {
+        if (!db.commit()) {
+            db.rollback();
+            appendToLog(QString("提交车型绑定事务失败: %1").arg(db.lastError().text()), true);
+            return false;
+        }
     }
 
     loadModelBindingsFromDb();
