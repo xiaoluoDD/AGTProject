@@ -23,6 +23,7 @@
 #include <QCheckBox>
 #include <QTableWidget>
 #include <QInputDialog>
+#include <QDialog>
 #include <QDate>
 #include <QTime>
 #include <QHeaderView>
@@ -105,6 +106,8 @@ private slots:
     void onProjectGroupPageClicked(); ///< 切换到工程组记录界面
     void onAssemblyIndicatorPageClicked(); ///< 切换到总成指示表界面
     void onProductionInstructionComparePageClicked(); ///< 切换到生产指示对比界面
+    void onProductionInstructionHistoryRecordClicked(); ///< 打开生产指示历史记录界面
+    void onProductionInstructionRealtimeRecordClicked(); ///< 打开生产指示实时记录界面
     void onVehicleBindingPageClicked(); ///< 切换到车型绑定界面
     void updateProjectGroupStatistics(); ///< 更新工程组统计表格
     void loadVehicleModelsToAssemblyIndicator(); ///< 加载绑定车型到总成指示表
@@ -220,8 +223,23 @@ private:
     void setupTable();            ///< 初始化表格
     void setupVehicleBindingTable(); ///< 初始化车型绑定表格
     void setupProductionInstructionComparePage(); ///< 初始化生产指示对比界面
+    void setupProductionInstructionRecordDialog(QDialog *&dialog, const QString &title); ///< 初始化数据记录占位界面
     void updateProductionInstructionServerConfirmButtons(); ///< 为左侧服务端表格每行刷新确认按钮
     void onProductionInstructionServerRowConfirmed(int row); ///< 左侧服务端车型行确认（预留）
+    void clearProductionInstructionServerTable(); ///< 清空左侧生产指示表格（保留序号与确认按钮）
+    bool appendProductionInstructionVehicleName(const QString &modelName); ///< 写入下一个空位
+    void handleModelBindingPalletCountChange(const QString &modelName, int oldCount, int newCount); ///< 托数变化写入生产指示
+    void syncModelBindingLastPalletCountsFromUi(); ///< 从车型绑定界面同步上次托数
+    bool areAllModelBindingPalletCountsZero() const; ///< 是否所有车型当前托数均为0
+    void saveProductionInstructionServerToDb(); ///< 保存生产指示（服务端）到数据库
+    void loadProductionInstructionServerFromDb(); ///< 从数据库加载生产指示（服务端）
+    void saveProductionInstructionPlcToDb(); ///< 保存空托盘车型（PLC）到数据库
+    void loadProductionInstructionPlcFromDb(); ///< 从数据库加载空托盘车型（PLC）
+    void saveProductionInstructionErrorsToDb(); ///< 保存报错记录到数据库
+    void loadProductionInstructionErrorsFromDb(); ///< 从数据库加载报错记录
+    void loadProductionInstructionFromDb(); ///< 加载生产指示对比三块表格
+    void appendProductionInstructionErrorRecord(int seqNo, const QString &errorTime,
+                                                const QString &errorMessage); ///< 追加报错记录并入库
     void updateConnectionStatus(bool connected); ///< 更新连接状态显示
     void appendToLog(const QString &message, bool isError = false); ///< 添加日志信息
     void applyModernStyle();      ///< 应用现代化样式
@@ -251,8 +269,10 @@ private:
                           const QString &recordSource = QString(), int plcStripeBatch = -1); ///< recordSource 空=plc；ed=ED；plcStripeBatch>=0 写入库供重启后当前班次条纹着色
     void deleteDataRecord(int slotNo, const QString &status, const QString &modelName, const QString &modelCode, int count, const QString &currentTime);
     void insertModelBinding(const QString &modelCode, const QString &modelName, int count,
-                            const QString &assemblyNumber = QString());
+                            const QString &assemblyNumber = QString(), int currentPalletCount = 0);
     void updateModelBinding(const QString &oldModelCode, const QString &oldModelName, int oldCount, int row);
+    void updateModelBindingCurrentPalletCount(const QString &modelName, int currentPalletCount,
+                                              bool updateProductionInstruction = true); ///< 按车型名称更新当前托数
     void deleteModelBinding(const QString &modelName);
     void clearModelBindings();
     void clearDataRecords();
@@ -289,6 +309,7 @@ private:
     bool processSingleJsonObject(const QString &jsonString, bool saveToTable = true); ///< 处理单个JSON对象
     bool processProductionDataJson(const QJsonObject &obj, bool saveToTable = true); ///< 处理生产数据上报JSON
     bool processVehiclePartsJson(const QJsonObject &obj); ///< 服务端整包同步车型绑定（vehicle_parts）
+    bool processAssemblyPlanJson(const QJsonObject &obj); ///< 服务端 assembly_plan：更新当前托数
     bool processAssemblyInstructionJson(const QJsonObject &obj, bool saveToTable = true); ///< 总装指令：依车型+时间戳定位时段列，每条消息+1（忽略次数字段）
     bool processAssemblyPickupFullSyncJson(const QJsonObject &obj, bool saveToTable = true); ///< 处理总装引取全量同步（ED）
     bool isDateTimeInCurrentShiftWindow(const QDateTime &recordDateTime); ///< 时间是否落在当前班次窗口内
@@ -387,9 +408,12 @@ private:
     QTableWidget* assemblyIndicatorTable; ///< 总成指示表表格
     QPushButton* pushButtonProductionInstructionComparePage; ///< 生产指示对比页面按钮
     QWidget* productionInstructionComparePage; ///< 生产指示对比页面
-    QTableWidget* m_productionInstructionServerTable; ///< 生产指示对比-左侧服务端车型（3列）
-    QTableWidget* m_productionInstructionPlcTable; ///< 生产指示对比-中间PLC空托盘车型（3列）
-    QTableWidget* m_productionInstructionErrorTable; ///< 生产指示对比-右侧报错记录
+    QTableWidget* m_productionInstructionServerTable; ///< 生产指示对比-左侧服务端（序号+3车型+确认）
+    QTableWidget* m_productionInstructionPlcTable; ///< 生产指示对比-中间PLC空托盘（序号+3车型）
+    QTableWidget* m_productionInstructionErrorTable; ///< 生产指示对比-右侧报错记录（序号+时间+信息）
+    QDialog* m_productionInstructionHistoryRecordDialog; ///< 生产指示对比-历史记录界面（预留）
+    QDialog* m_productionInstructionRealtimeRecordDialog; ///< 生产指示对比-实时记录界面（预留）
+    QMap<QString, int> m_modelBindingLastPalletCount; ///< 车型名称->上次当前托数（用于检测变化）
     QPushButton* pushButtonOvertimeTime; ///< 加班时间选择按钮
     QPushButton* pushButtonSaveAssemblyIndicator; ///< 保存总装指示表按钮
     QPushButton* pushButtonCurrentTable; ///< 当前表格按钮
