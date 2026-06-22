@@ -104,6 +104,7 @@ private slots:
     void onVisualizationPageClicked(); ///< 切换到可视化记录界面
     void onProjectGroupPageClicked(); ///< 切换到工程组记录界面
     void onAssemblyIndicatorPageClicked(); ///< 切换到总成指示表界面
+    void onProductionInstructionComparePageClicked(); ///< 切换到生产指示对比界面
     void onVehicleBindingPageClicked(); ///< 切换到车型绑定界面
     void updateProjectGroupStatistics(); ///< 更新工程组统计表格
     void loadVehicleModelsToAssemblyIndicator(); ///< 加载绑定车型到总成指示表
@@ -218,6 +219,9 @@ private:
     void setupUI();               ///< 初始化用户界面
     void setupTable();            ///< 初始化表格
     void setupVehicleBindingTable(); ///< 初始化车型绑定表格
+    void setupProductionInstructionComparePage(); ///< 初始化生产指示对比界面
+    void updateProductionInstructionServerConfirmButtons(); ///< 为左侧服务端表格每行刷新确认按钮
+    void onProductionInstructionServerRowConfirmed(int row); ///< 左侧服务端车型行确认（预留）
     void updateConnectionStatus(bool connected); ///< 更新连接状态显示
     void appendToLog(const QString &message, bool isError = false); ///< 添加日志信息
     void applyModernStyle();      ///< 应用现代化样式
@@ -381,6 +385,11 @@ private:
     QPushButton* pushButtonAssemblyIndicatorPage; ///< 总成指示表页面按钮
     QWidget* assemblyIndicatorPage; ///< 总成指示表页面
     QTableWidget* assemblyIndicatorTable; ///< 总成指示表表格
+    QPushButton* pushButtonProductionInstructionComparePage; ///< 生产指示对比页面按钮
+    QWidget* productionInstructionComparePage; ///< 生产指示对比页面
+    QTableWidget* m_productionInstructionServerTable; ///< 生产指示对比-左侧服务端车型（3列）
+    QTableWidget* m_productionInstructionPlcTable; ///< 生产指示对比-中间PLC空托盘车型（3列）
+    QTableWidget* m_productionInstructionErrorTable; ///< 生产指示对比-右侧报错记录
     QPushButton* pushButtonOvertimeTime; ///< 加班时间选择按钮
     QPushButton* pushButtonSaveAssemblyIndicator; ///< 保存总装指示表按钮
     QPushButton* pushButtonCurrentTable; ///< 当前表格按钮

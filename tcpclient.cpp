@@ -407,6 +407,11 @@ tcpClient::tcpClient(QWidget *parent)
     , emptyTrayInTableWidget(nullptr)
     , emptyTrayOutTableWidget(nullptr)
     , assemblyIndicatorTable(nullptr)
+    , pushButtonProductionInstructionComparePage(nullptr)
+    , productionInstructionComparePage(nullptr)
+    , m_productionInstructionServerTable(nullptr)
+    , m_productionInstructionPlcTable(nullptr)
+    , m_productionInstructionErrorTable(nullptr)
     , checkBoxExceptionPopup(nullptr)
     , m_enableExceptionPopup(true)
     , m_plannedCount(100)
@@ -767,6 +772,12 @@ void tcpClient::setupUI()
     
     // 将总成指示表按钮插入到工程组记录按钮之后（索引5）
     ui->horizontalLayout_4->insertWidget(5, pushButtonAssemblyIndicatorPage);
+
+    pushButtonProductionInstructionComparePage = new QPushButton(this);
+    pushButtonProductionInstructionComparePage->setText(QStringLiteral("生产指示对比"));
+    pushButtonProductionInstructionComparePage->setCheckable(true);
+    pushButtonProductionInstructionComparePage->setObjectName(QStringLiteral("pushButtonProductionInstructionComparePage"));
+    ui->horizontalLayout_4->insertWidget(6, pushButtonProductionInstructionComparePage);
     
     // 创建可视化记录页面
     visualizationPage = new QWidget();
@@ -1709,7 +1720,10 @@ void tcpClient::setupUI()
     
     // 将总成指示表页面插入到stackedWidget中（Index 5位置，在工程组记录之后）
     ui->stackedWidget->insertWidget(5, assemblyIndicatorPage);
-    
+
+    setupProductionInstructionComparePage();
+    ui->stackedWidget->insertWidget(6, productionInstructionComparePage);
+
     // 连接界面切换按钮信号槽
     connect(ui->pushButtonConnectionPage, &QPushButton::clicked, this, &tcpClient::onConnectionPageClicked);
     connect(pushButtonCurrentShiftTablePage, &QPushButton::clicked, this, &tcpClient::onCurrentShiftTablePageClicked);
@@ -1717,6 +1731,7 @@ void tcpClient::setupUI()
     connect(pushButtonVisualizationPage, &QPushButton::clicked, this, &tcpClient::onVisualizationPageClicked);
     connect(pushButtonProjectGroupPage, &QPushButton::clicked, this, &tcpClient::onProjectGroupPageClicked);
     connect(pushButtonAssemblyIndicatorPage, &QPushButton::clicked, this, &tcpClient::onAssemblyIndicatorPageClicked);
+    connect(pushButtonProductionInstructionComparePage, &QPushButton::clicked, this, &tcpClient::onProductionInstructionComparePageClicked);
     connect(ui->pushButtonVehicleBindingPage, &QPushButton::clicked, this, &tcpClient::onVehicleBindingPageClicked);
     connect(pushButtonOvertimeTime, &QPushButton::clicked, this, &tcpClient::onOvertimeTimeButtonClicked);
     if (pushButtonSaveAssemblyIndicator) {
@@ -1998,6 +2013,7 @@ void tcpClient::setupUI()
     pushButtonVisualizationPage->setChecked(false);
     pushButtonProjectGroupPage->setChecked(false);
     pushButtonAssemblyIndicatorPage->setChecked(false);
+    pushButtonProductionInstructionComparePage->setChecked(false);
     ui->pushButtonVehicleBindingPage->setChecked(false);
 
     // 显示并设置导出表格按钮
@@ -2196,7 +2212,8 @@ void tcpClient::applyBuiltinStyle()
         QPushButton#pushButtonConnectionPage,
         QPushButton#pushButtonTablePage,
         QPushButton#pushButtonVisualizationPage,
-        QPushButton#pushButtonVehicleBindingPage {
+        QPushButton#pushButtonVehicleBindingPage,
+        QPushButton#pushButtonProductionInstructionComparePage {
             background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1,
                                       stop: 0 #34495e, stop: 1 #2c3e50);
             border: none;
@@ -2212,6 +2229,7 @@ void tcpClient::applyBuiltinStyle()
         QPushButton#pushButtonVisualizationPage:hover,
         QPushButton#pushButtonProjectGroupPage:hover,
         QPushButton#pushButtonAssemblyIndicatorPage:hover,
+        QPushButton#pushButtonProductionInstructionComparePage:hover,
         QPushButton#pushButtonVehicleBindingPage:hover {
             background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1,
                                       stop: 0 #5d6d7e, stop: 1 #34495e);
@@ -2222,6 +2240,7 @@ void tcpClient::applyBuiltinStyle()
         QPushButton#pushButtonVisualizationPage:checked,
         QPushButton#pushButtonProjectGroupPage:checked,
         QPushButton#pushButtonAssemblyIndicatorPage:checked,
+        QPushButton#pushButtonProductionInstructionComparePage:checked,
         QPushButton#pushButtonVehicleBindingPage:checked {
             background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1,
                                       stop: 0 #3498db, stop: 1 #2980b9);
@@ -2405,6 +2424,135 @@ void tcpClient::setupVehicleBindingTable()
 }
 
 /**
+ * @brief 初始化生产指示对比界面（左：服务端车型，中：PLC空托盘车型，右：报错记录）
+ */
+void tcpClient::setupProductionInstructionComparePage()
+{
+    productionInstructionComparePage = new QWidget();
+    productionInstructionComparePage->setObjectName(QStringLiteral("productionInstructionComparePage"));
+
+    QHBoxLayout *mainLayout = new QHBoxLayout(productionInstructionComparePage);
+    mainLayout->setSpacing(12);
+    mainLayout->setContentsMargins(15, 15, 15, 15);
+
+    const int kProductionInstructionRowCount = 50;
+
+    auto initThreeColumnVehicleTable = [kProductionInstructionRowCount](QTableWidget **outTable, QWidget *parent) {
+        *outTable = new QTableWidget(parent);
+        (*outTable)->setColumnCount(3);
+        (*outTable)->setRowCount(kProductionInstructionRowCount);
+        QStringList headers;
+        headers << QStringLiteral("车型1") << QStringLiteral("车型2") << QStringLiteral("车型3");
+        (*outTable)->setHorizontalHeaderLabels(headers);
+        (*outTable)->verticalHeader()->setVisible(false);
+        (*outTable)->setAlternatingRowColors(true);
+        (*outTable)->setEditTriggers(QAbstractItemView::NoEditTriggers);
+        (*outTable)->setSelectionMode(QAbstractItemView::NoSelection);
+        (*outTable)->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+        (*outTable)->verticalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+        (*outTable)->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+        for (int row = 0; row < kProductionInstructionRowCount; ++row) {
+            for (int c = 0; c < 3; ++c) {
+                QTableWidgetItem *item = new QTableWidgetItem(QString());
+                item->setTextAlignment(Qt::AlignCenter);
+                (*outTable)->setItem(row, c, item);
+            }
+        }
+    };
+
+    QGroupBox *serverGroup = new QGroupBox(QStringLiteral("生产指示（服务端）"), productionInstructionComparePage);
+    QVBoxLayout *serverLayout = new QVBoxLayout(serverGroup);
+    m_productionInstructionServerTable = new QTableWidget(serverGroup);
+    m_productionInstructionServerTable->setColumnCount(4);
+    m_productionInstructionServerTable->setRowCount(kProductionInstructionRowCount);
+    m_productionInstructionServerTable->setHorizontalHeaderLabels(
+        QStringList() << QStringLiteral("车型1") << QStringLiteral("车型2") << QStringLiteral("车型3")
+                      << QStringLiteral("确认"));
+    m_productionInstructionServerTable->verticalHeader()->setVisible(false);
+    m_productionInstructionServerTable->setAlternatingRowColors(true);
+    m_productionInstructionServerTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_productionInstructionServerTable->setSelectionMode(QAbstractItemView::NoSelection);
+    m_productionInstructionServerTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+    m_productionInstructionServerTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+    m_productionInstructionServerTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
+    m_productionInstructionServerTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Fixed);
+    m_productionInstructionServerTable->setColumnWidth(3, 80);
+    m_productionInstructionServerTable->verticalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    m_productionInstructionServerTable->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    for (int row = 0; row < kProductionInstructionRowCount; ++row) {
+        for (int c = 0; c < 3; ++c) {
+            QTableWidgetItem *item = new QTableWidgetItem(QString());
+            item->setTextAlignment(Qt::AlignCenter);
+            m_productionInstructionServerTable->setItem(row, c, item);
+        }
+    }
+    updateProductionInstructionServerConfirmButtons();
+    serverLayout->addWidget(m_productionInstructionServerTable, 1);
+
+    QGroupBox *plcGroup = new QGroupBox(QStringLiteral("空托盘车型（PLC）"), productionInstructionComparePage);
+    QVBoxLayout *plcLayout = new QVBoxLayout(plcGroup);
+    initThreeColumnVehicleTable(&m_productionInstructionPlcTable, plcGroup);
+    plcLayout->addWidget(m_productionInstructionPlcTable, 1);
+
+    QGroupBox *errorGroup = new QGroupBox(QStringLiteral("报错记录"), productionInstructionComparePage);
+    QVBoxLayout *errorLayout = new QVBoxLayout(errorGroup);
+    m_productionInstructionErrorTable = new QTableWidget(errorGroup);
+    m_productionInstructionErrorTable->setColumnCount(2);
+    m_productionInstructionErrorTable->setHorizontalHeaderLabels(
+        QStringList() << QStringLiteral("时间") << QStringLiteral("报错信息"));
+    m_productionInstructionErrorTable->setAlternatingRowColors(true);
+    m_productionInstructionErrorTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_productionInstructionErrorTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_productionInstructionErrorTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    m_productionInstructionErrorTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+    m_productionInstructionErrorTable->setRowCount(0);
+    errorLayout->addWidget(m_productionInstructionErrorTable);
+
+    mainLayout->addWidget(serverGroup, 1);
+    mainLayout->addWidget(plcGroup, 1);
+    mainLayout->addWidget(errorGroup, 1);
+}
+
+void tcpClient::updateProductionInstructionServerConfirmButtons()
+{
+    if (!m_productionInstructionServerTable) {
+        return;
+    }
+    const int confirmCol = 3;
+    const int rowCount = m_productionInstructionServerTable->rowCount();
+    for (int row = 0; row < rowCount; ++row) {
+        if (m_productionInstructionServerTable->cellWidget(row, confirmCol)) {
+            continue;
+        }
+        QPushButton *confirmBtn = new QPushButton(QStringLiteral("确认"), m_productionInstructionServerTable);
+        confirmBtn->setMinimumHeight(28);
+        connect(confirmBtn, &QPushButton::clicked, this, [this, row]() {
+            onProductionInstructionServerRowConfirmed(row);
+        });
+        m_productionInstructionServerTable->setCellWidget(row, confirmCol, confirmBtn);
+    }
+}
+
+void tcpClient::onProductionInstructionServerRowConfirmed(int row)
+{
+    if (!m_productionInstructionServerTable || row < 0
+        || row >= m_productionInstructionServerTable->rowCount()) {
+        return;
+    }
+    QStringList names;
+    for (int c = 0; c < 3; ++c) {
+        QTableWidgetItem *item = m_productionInstructionServerTable->item(row, c);
+        names << (item ? item->text().trimmed() : QString());
+    }
+    appendToLog(QStringLiteral("生产指示对比：已确认第 %1 行（%2 / %3 / %4）")
+                    .arg(row + 1)
+                    .arg(names.value(0, QString()))
+                    .arg(names.value(1, QString()))
+                    .arg(names.value(2, QString())),
+                false);
+}
+
+/**
  * @brief 切换到连接界面
  */
 void tcpClient::onConnectionPageClicked()
@@ -2420,6 +2568,7 @@ void tcpClient::onConnectionPageClicked()
             pushButtonVisualizationPage->setChecked(false);
             pushButtonProjectGroupPage->setChecked(false);
             pushButtonAssemblyIndicatorPage->setChecked(false);
+            pushButtonProductionInstructionComparePage->setChecked(false);
             ui->pushButtonVehicleBindingPage->setChecked(false);
             // 然后设置正确的按钮为选中状态
             ui->pushButtonTablePage->setChecked(true);
@@ -2434,6 +2583,7 @@ void tcpClient::onConnectionPageClicked()
     pushButtonVisualizationPage->setChecked(false);
     pushButtonProjectGroupPage->setChecked(false);
     pushButtonAssemblyIndicatorPage->setChecked(false);
+    pushButtonProductionInstructionComparePage->setChecked(false);
     ui->pushButtonVehicleBindingPage->setChecked(false);
 }
 
@@ -2449,6 +2599,7 @@ void tcpClient::onCurrentShiftTablePageClicked()
     pushButtonVisualizationPage->setChecked(false);
     pushButtonProjectGroupPage->setChecked(false);
     pushButtonAssemblyIndicatorPage->setChecked(false);
+    pushButtonProductionInstructionComparePage->setChecked(false);
     ui->pushButtonVehicleBindingPage->setChecked(false);
 }
 
@@ -2464,6 +2615,7 @@ void tcpClient::onTablePageClicked()
     pushButtonVisualizationPage->setChecked(false);
     pushButtonProjectGroupPage->setChecked(false);
     pushButtonAssemblyIndicatorPage->setChecked(false);
+    pushButtonProductionInstructionComparePage->setChecked(false);
     ui->pushButtonVehicleBindingPage->setChecked(false);
 }
 
@@ -2479,6 +2631,7 @@ void tcpClient::onVisualizationPageClicked()
     pushButtonVisualizationPage->setChecked(true);
     pushButtonProjectGroupPage->setChecked(false);
     pushButtonAssemblyIndicatorPage->setChecked(false);
+    pushButtonProductionInstructionComparePage->setChecked(false);
     ui->pushButtonVehicleBindingPage->setChecked(false);
 }
 
@@ -2494,6 +2647,7 @@ void tcpClient::onProjectGroupPageClicked()
     pushButtonVisualizationPage->setChecked(false);
     pushButtonProjectGroupPage->setChecked(true);
     pushButtonAssemblyIndicatorPage->setChecked(false);
+    pushButtonProductionInstructionComparePage->setChecked(false);
     ui->pushButtonVehicleBindingPage->setChecked(false);
     
     // 更新班次按钮文本
@@ -2521,6 +2675,7 @@ void tcpClient::onAssemblyIndicatorPageClicked()
     pushButtonVisualizationPage->setChecked(false);
     pushButtonProjectGroupPage->setChecked(false);
     pushButtonAssemblyIndicatorPage->setChecked(true);
+    pushButtonProductionInstructionComparePage->setChecked(false);
     ui->pushButtonVehicleBindingPage->setChecked(false);
     
     // 如果当前选中的是当前表格按钮，自动加载当前表格数据
@@ -2530,6 +2685,22 @@ void tcpClient::onAssemblyIndicatorPageClicked()
         loadAssemblyIndicatorFromDb(currentDate, currentShift);
         syncStatisticsFromAssemblyIndicator();
     }
+}
+
+/**
+ * @brief 切换到生产指示对比界面
+ */
+void tcpClient::onProductionInstructionComparePageClicked()
+{
+    ui->stackedWidget->setCurrentIndex(6);
+    ui->pushButtonConnectionPage->setChecked(false);
+    pushButtonCurrentShiftTablePage->setChecked(false);
+    ui->pushButtonTablePage->setChecked(false);
+    pushButtonVisualizationPage->setChecked(false);
+    pushButtonProjectGroupPage->setChecked(false);
+    pushButtonAssemblyIndicatorPage->setChecked(false);
+    pushButtonProductionInstructionComparePage->setChecked(true);
+    ui->pushButtonVehicleBindingPage->setChecked(false);
 }
 
 /**
@@ -2548,6 +2719,7 @@ void tcpClient::onVehicleBindingPageClicked()
             pushButtonVisualizationPage->setChecked(false);
             pushButtonProjectGroupPage->setChecked(false);
             pushButtonAssemblyIndicatorPage->setChecked(false);
+            pushButtonProductionInstructionComparePage->setChecked(false);
             ui->pushButtonVehicleBindingPage->setChecked(false);
             // 恢复到数据表格页面
             ui->stackedWidget->setCurrentIndex(2);  // 索引从1变为2，因为插入了当前班次表格
@@ -2556,13 +2728,14 @@ void tcpClient::onVehicleBindingPageClicked()
         }
     }
     
-    ui->stackedWidget->setCurrentIndex(6);  // 更新索引：当前班次表格在Index 1，数据表格在Index 2，可视化记录在Index 3，工程组记录在Index 4，总成指示表在Index 5，车型绑定在Index 6
+    ui->stackedWidget->setCurrentIndex(7);  // 车型绑定在 Index 7（Index 6=生产指示对比）
     ui->pushButtonConnectionPage->setChecked(false);
     pushButtonCurrentShiftTablePage->setChecked(false);
     ui->pushButtonTablePage->setChecked(false);
     pushButtonVisualizationPage->setChecked(false);
     pushButtonProjectGroupPage->setChecked(false);
     pushButtonAssemblyIndicatorPage->setChecked(false);
+    pushButtonProductionInstructionComparePage->setChecked(false);
     ui->pushButtonVehicleBindingPage->setChecked(true);
 }
 
