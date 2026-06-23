@@ -28,6 +28,7 @@
 #include <QTime>
 #include <QHeaderView>
 #include <QPainter>
+#include <QSet>
 
 // 前向声明
 class QTableWidgetItem;
@@ -225,10 +226,16 @@ private:
     void setupProductionInstructionComparePage(); ///< 初始化生产指示对比界面
     void setupProductionInstructionRecordDialog(QDialog *&dialog, const QString &title); ///< 初始化数据记录占位界面
     void updateProductionInstructionServerConfirmButtons(); ///< 为左侧服务端表格每行刷新确认按钮
-    void onProductionInstructionServerRowConfirmed(int row); ///< 左侧服务端车型行确认（预留）
+    void onProductionInstructionServerRowConfirmed(int row); ///< 左侧服务端行确认（待对比）
+    void applyProductionInstructionServerRowStatus(int row); ///< 刷新单行确认/待对比显示
+    void refreshProductionInstructionServerRowStatuses(); ///< 刷新全部行确认/待对比显示
     void clearProductionInstructionServerTable(); ///< 清空左侧生产指示表格（保留序号与确认按钮）
     bool appendProductionInstructionVehicleName(const QString &modelName); ///< 写入下一个空位
-    void handleModelBindingPalletCountChange(const QString &modelName, int oldCount, int newCount); ///< 托数变化写入生产指示
+    void appendProductionInstructionRealtimeRecord(const QString &vehicleNames); ///< 写入实时记录（逗号分隔车型）
+    void ensureProductionInstructionRealtimeTable(); ///< 初始化实时记录表格
+    void setupProductionInstructionRealtimeRecordDialog(); ///< 初始化实时记录界面
+    QStringList handleModelBindingPalletCountChange(const QString &modelName, int oldCount, int newCount,
+                                                    bool writeRealtimeRecord = true); ///< 托数变化写入生产指示，返回本次写入的车型名列表
     void syncModelBindingLastPalletCountsFromUi(); ///< 从车型绑定界面同步上次托数
     bool areAllModelBindingPalletCountsZero() const; ///< 是否所有车型当前托数均为0
     void saveProductionInstructionServerToDb(); ///< 保存生产指示（服务端）到数据库
@@ -238,6 +245,9 @@ private:
     void saveProductionInstructionErrorsToDb(); ///< 保存报错记录到数据库
     void loadProductionInstructionErrorsFromDb(); ///< 从数据库加载报错记录
     void loadProductionInstructionFromDb(); ///< 加载生产指示对比三块表格
+    void loadProductionInstructionRealtimeFromDb(); ///< 从数据库加载实时记录
+    void insertProductionInstructionRealtimeRecordToDb(const QString &recordTime, const QString &vehicleNames,
+                                                       const QString &shiftType); ///< 追加实时记录到数据库
     void appendProductionInstructionErrorRecord(int seqNo, const QString &errorTime,
                                                 const QString &errorMessage); ///< 追加报错记录并入库
     void updateConnectionStatus(bool connected); ///< 更新连接状态显示
@@ -412,8 +422,10 @@ private:
     QTableWidget* m_productionInstructionPlcTable; ///< 生产指示对比-中间PLC空托盘（序号+3车型）
     QTableWidget* m_productionInstructionErrorTable; ///< 生产指示对比-右侧报错记录（序号+时间+信息）
     QDialog* m_productionInstructionHistoryRecordDialog; ///< 生产指示对比-历史记录界面（预留）
-    QDialog* m_productionInstructionRealtimeRecordDialog; ///< 生产指示对比-实时记录界面（预留）
+    QDialog* m_productionInstructionRealtimeRecordDialog; ///< 生产指示对比-实时记录界面
+    QTableWidget* m_productionInstructionRealtimeTable; ///< 生产指示对比-实时记录表格
     QMap<QString, int> m_modelBindingLastPalletCount; ///< 车型名称->上次当前托数（用于检测变化）
+    QSet<int> m_productionInstructionServerConfirmedRows; ///< 生产指示已确认待对比行（0-based）
     QPushButton* pushButtonOvertimeTime; ///< 加班时间选择按钮
     QPushButton* pushButtonSaveAssemblyIndicator; ///< 保存总装指示表按钮
     QPushButton* pushButtonCurrentTable; ///< 当前表格按钮
