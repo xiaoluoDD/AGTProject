@@ -239,8 +239,10 @@ private:
     void applyProductionInstructionServerRowStatus(int row); ///< 刷新单行确认/不可编辑显示
     void refreshProductionInstructionServerRowStatuses(); ///< 刷新全部行确认/不可编辑显示
     int moveProductionInstructionServerRowToPlc(int row); ///< 确认后将服务端行复制到PLC表首个空行，返回目标行（-1失败）
-    void applyProductionInstructionPlcRowStatus(int row); ///< 刷新PLC单行待对比显示
-    void refreshProductionInstructionPlcRowStatuses(); ///< 刷新PLC全部行待对比显示
+    void applyProductionInstructionPlcRowStatus(int row); ///< 刷新PLC单行待对比/匹配显示
+    void refreshProductionInstructionPlcRowStatuses(); ///< 刷新PLC全部行待对比/匹配显示
+    QString resolveVehicleNameByModelCode(unsigned int modelCode) const; ///< 车型代码转名称
+    void compareProductionInstructionPlcWithEmptyTrayIn(const QStringList &plcModelNames); ///< PLC空托盘搬入三车型对比
     void clearProductionInstructionServerTable(); ///< 清空左侧生产指示表格（保留序号与确认按钮）
     void clearProductionInstructionPlcTable(); ///< 清空PLC空托盘表格
     void archiveProductionInstructionServerTable(bool autoTriggered); ///< 保存历史并清空生产指示表
@@ -452,7 +454,9 @@ private:
     QTableWidget* m_productionInstructionRealtimeTable; ///< 生产指示对比-实时记录表格
     QMap<QString, int> m_modelBindingLastPalletCount; ///< 车型名称->上次当前托数（用于检测变化）
     QSet<int> m_productionInstructionServerConfirmedRows; ///< 生产指示已确认行（0-based，左侧灰色不可编辑）
-    QSet<int> m_productionInstructionPlcPendingCompareRows; ///< PLC待对比行（0-based，中间黄色）
+    QSet<int> m_productionInstructionPlcPendingCompareRows; ///< PLC待对比行（0-based，黄色）
+    QSet<int> m_productionInstructionPlcMatchSuccessRows; ///< PLC对比成功行（绿色）
+    QSet<int> m_productionInstructionPlcMatchFailedRows; ///< PLC对比失败行（红色）
     QMap<int, QString> m_productionInstructionServerRowTimes; ///< 生产指示行记录时间（最后收到车型时间）
     QMap<int, QString> m_productionInstructionPlcRowTimes; ///< PLC行记录时间（左侧确认时间）
     static constexpr int kProductionInstructionRowCount = 500; ///< 生产指示/PLC表格固定行数
