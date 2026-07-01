@@ -34,6 +34,8 @@
 class QTableWidgetItem;
 class QPushButton;
 class QTimeEdit;
+class QComboBox;
+class QDateEdit;
 
 /**
  * @brief 自定义QHeaderView类，支持二级表头
@@ -109,6 +111,10 @@ private slots:
     void onProductionInstructionComparePageClicked(); ///< 切换到生产指示对比界面
     void onProductionInstructionHistoryRecordClicked(); ///< 打开生产指示历史记录界面
     void onProductionInstructionRealtimeRecordClicked(); ///< 打开生产指示实时记录界面
+    void onProductionInstructionServerSaveToHistoryClicked(); ///< 生产指示保存到历史
+    void onProductionInstructionPlcSaveToHistoryClicked(); ///< 空托盘车型保存到历史
+    void onProductionInstructionErrorsSaveToHistoryClicked(); ///< 报错记录保存到历史
+    void onProductionInstructionHistoryViewClicked(); ///< 历史记录查看
     void onVehicleBindingPageClicked(); ///< 切换到车型绑定界面
     void updateProjectGroupStatistics(); ///< 更新工程组统计表格
     void loadVehicleModelsToAssemblyIndicator(); ///< 加载绑定车型到总成指示表
@@ -224,7 +230,8 @@ private:
     void setupTable();            ///< 初始化表格
     void setupVehicleBindingTable(); ///< 初始化车型绑定表格
     void setupProductionInstructionComparePage(); ///< 初始化生产指示对比界面
-    void setupProductionInstructionRecordDialog(QDialog *&dialog, const QString &title); ///< 初始化数据记录占位界面
+    void setupProductionInstructionHistoryRecordDialog(); ///< 初始化历史记录查看界面
+    void loadProductionInstructionHistoryRecords(); ///< 按类型与日期加载历史记录
     void updateProductionInstructionServerConfirmButtons(); ///< 为左侧服务端表格每行刷新确认按钮
     void onProductionInstructionServerRowConfirmed(int row); ///< 左侧服务端行确认（待对比）
     void onProductionInstructionServerCellDoubleClicked(int row, int column); ///< 未确认行双击修改车型
@@ -235,6 +242,16 @@ private:
     void applyProductionInstructionPlcRowStatus(int row); ///< 刷新PLC单行待对比显示
     void refreshProductionInstructionPlcRowStatuses(); ///< 刷新PLC全部行待对比显示
     void clearProductionInstructionServerTable(); ///< 清空左侧生产指示表格（保留序号与确认按钮）
+    void clearProductionInstructionPlcTable(); ///< 清空PLC空托盘表格
+    void archiveProductionInstructionServerTable(bool autoTriggered); ///< 保存历史并清空生产指示表
+    void archiveProductionInstructionPlcTable(bool autoTriggered); ///< 保存历史并清空PLC表
+    void archiveProductionInstructionErrorsTable(bool autoTriggered); ///< 保存历史并清空报错记录表
+    void saveProductionInstructionServerToHistory(); ///< 保存生产指示到历史记录
+    void saveProductionInstructionPlcToHistory(); ///< 保存PLC空托盘到历史记录
+    void saveProductionInstructionErrorsToHistory(); ///< 保存报错记录到历史记录
+    void clearProductionInstructionErrorTable(); ///< 清空报错记录表格
+    bool isProductionInstructionServerTableFull() const; ///< 生产指示表是否已无空位
+    bool isProductionInstructionPlcTableFull() const; ///< PLC表是否已无空行
     bool appendProductionInstructionVehicleName(const QString &modelName); ///< 写入下一个空位
     void appendProductionInstructionRealtimeRecord(const QString &vehicleNames); ///< 写入实时记录（逗号分隔车型）
     void ensureProductionInstructionRealtimeTable(); ///< 初始化实时记录表格
@@ -426,12 +443,19 @@ private:
     QTableWidget* m_productionInstructionServerTable; ///< 生产指示对比-左侧服务端（序号+3车型+确认）
     QTableWidget* m_productionInstructionPlcTable; ///< 生产指示对比-中间PLC空托盘（序号+3车型）
     QTableWidget* m_productionInstructionErrorTable; ///< 生产指示对比-右侧报错记录（序号+时间+信息）
-    QDialog* m_productionInstructionHistoryRecordDialog; ///< 生产指示对比-历史记录界面（预留）
+    QDialog* m_productionInstructionHistoryRecordDialog; ///< 生产指示对比-历史记录查看界面
+    QComboBox* m_productionInstructionHistoryTypeCombo; ///< 历史记录类型选择
+    QComboBox* m_productionInstructionHistoryDateModeCombo; ///< 历史记录日期模式（全部/指定日期）
+    QDateEdit* m_productionInstructionHistoryDateEdit; ///< 历史记录指定日期
+    QTableWidget* m_productionInstructionHistoryTable; ///< 历史记录结果表格
     QDialog* m_productionInstructionRealtimeRecordDialog; ///< 生产指示对比-实时记录界面
     QTableWidget* m_productionInstructionRealtimeTable; ///< 生产指示对比-实时记录表格
     QMap<QString, int> m_modelBindingLastPalletCount; ///< 车型名称->上次当前托数（用于检测变化）
     QSet<int> m_productionInstructionServerConfirmedRows; ///< 生产指示已确认行（0-based，左侧灰色不可编辑）
     QSet<int> m_productionInstructionPlcPendingCompareRows; ///< PLC待对比行（0-based，中间黄色）
+    QMap<int, QString> m_productionInstructionServerRowTimes; ///< 生产指示行记录时间（最后收到车型时间）
+    QMap<int, QString> m_productionInstructionPlcRowTimes; ///< PLC行记录时间（左侧确认时间）
+    static constexpr int kProductionInstructionRowCount = 500; ///< 生产指示/PLC表格固定行数
     QPushButton* pushButtonOvertimeTime; ///< 加班时间选择按钮
     QPushButton* pushButtonSaveAssemblyIndicator; ///< 保存总装指示表按钮
     QPushButton* pushButtonCurrentTable; ///< 当前表格按钮
