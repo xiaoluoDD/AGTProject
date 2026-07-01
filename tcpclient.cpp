@@ -416,7 +416,7 @@ tcpClient::tcpClient(QWidget *parent)
     , m_productionInstructionRealtimeRecordDialog(nullptr)
     , m_productionInstructionRealtimeTable(nullptr)
     , checkBoxExceptionPopup(nullptr)
-    , m_enableExceptionPopup(true)
+    , m_enableExceptionPopup(false)
     , m_plannedCount(100)
     , m_actualCount(89)
     , m_delayedCount(0)
@@ -11595,11 +11595,25 @@ void tcpClient::insertExceptionRecord(int slotNo, const QString &modelName, cons
     } else {
         qDebug() << QString("异常记录已插入: 滑槽号=%1, 车型=%2, 状态=%3, 异常信息=%4, 日期=%5")
                     .arg(slotNo).arg(modelName).arg(status).arg(exceptionInfo).arg(date);
-        
-        // 加入待弹窗列表，一条指令处理完后统一弹一次窗
-        QString msg = QString("【异常记录】\n滑槽号：%1\n车型名称：%2\n送入送出状态：%3\n异常信息：%4\n时间：%5")
-                          .arg(slotNo).arg(modelName).arg(status).arg(exceptionInfo).arg(date);
-        m_pendingExceptionMessages.append(msg);
+
+        appendToLog(QString("【异常记录】滑槽号=%1, 车型=%2, 状态=%3, %4, 时间=%5")
+                        .arg(slotNo)
+                        .arg(modelName)
+                        .arg(status)
+                        .arg(exceptionInfo)
+                        .arg(date),
+                    true);
+
+        if (m_enableExceptionPopup) {
+            const QString msg =
+                QString("【异常记录】\n滑槽号：%1\n车型名称：%2\n送入送出状态：%3\n异常信息：%4\n时间：%5")
+                    .arg(slotNo)
+                    .arg(modelName)
+                    .arg(status)
+                    .arg(exceptionInfo)
+                    .arg(date);
+            m_pendingExceptionMessages.append(msg);
+        }
         
         // 同时更新表格显示（仅当该记录属于当前班次时才显示）
         if (exceptionTableWidget) {
