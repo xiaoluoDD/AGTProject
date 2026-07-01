@@ -272,6 +272,9 @@ private:
     void loadProductionInstructionErrorsFromDb(); ///< 从数据库加载报错记录
     void loadProductionInstructionFromDb(); ///< 加载生产指示对比三块表格
     void loadProductionInstructionRealtimeFromDb(); ///< 从数据库加载实时记录
+    QString productionInstructionRealtimeShiftLabel(); ///< 实时记录使用的班次名称（夜班显示为晚班）
+    void clearProductionInstructionRealtimeRecords(); ///< 清空实时记录表格及数据库
+    void purgeNonCurrentShiftProductionInstructionRealtimeRecords(); ///< 删除非当前班次时间窗口内的实时记录
     void insertProductionInstructionRealtimeRecordToDb(const QString &recordTime, const QString &vehicleNames,
                                                        const QString &shiftType); ///< 追加实时记录到数据库
     void appendProductionInstructionErrorRecord(int seqNo, const QString &errorTime,

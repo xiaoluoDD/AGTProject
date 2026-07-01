@@ -3900,6 +3900,83 @@ void tcpClient::insertProductionInstructionRealtimeRecordToDb(const QString &rec
     }
 }
 
+QString tcpClient::productionInstructionRealtimeShiftLabel()
+{
+    QString shiftType = getCurrentShift();
+    if (shiftType == QStringLiteral("夜班")) {
+        shiftType = QStringLiteral("晚班");
+    }
+    return shiftType;
+}
+
+void tcpClient::clearProductionInstructionRealtimeRecords()
+{
+    ensureProductionInstructionRealtimeTable();
+    if (m_productionInstructionRealtimeTable) {
+        m_productionInstructionRealtimeTable->setRowCount(0);
+    }
+
+    QSqlDatabase db = QSqlDatabase::database();
+    if (!db.isOpen()) {
+        return;
+    }
+
+    QSqlQuery query(db);
+    if (!query.exec(QStringLiteral("DELETE FROM production_instruction_realtime"))) {
+        appendToLog(QStringLiteral("清空生产指示实时记录失败: %1").arg(query.lastError().text()), true);
+        return;
+    }
+
+    appendToLog(QStringLiteral("生产指示对比：已清空实时记录（%1）")
+                    .arg(productionInstructionRealtimeShiftLabel()),
+                false);
+}
+
+void tcpClient::purgeNonCurrentShiftProductionInstructionRealtimeRecords()
+{
+    QSqlDatabase db = QSqlDatabase::database();
+    if (!db.isOpen()) {
+        return;
+    }
+
+    QSqlQuery selectQuery(db);
+    if (!selectQuery.exec(QStringLiteral(
+            "SELECT id, record_time FROM production_instruction_realtime"))) {
+        qWarning() << "查询生产指示实时记录失败:" << selectQuery.lastError().text();
+        return;
+    }
+
+    QList<int> idsToDelete;
+    while (selectQuery.next()) {
+        const int id = selectQuery.value(0).toInt();
+        const QDateTime recordDateTime = QDateTime::fromString(
+            selectQuery.value(1).toString(), QStringLiteral("yyyy-MM-dd HH:mm:ss"));
+        if (!isDateTimeInCurrentShiftWindow(recordDateTime)) {
+            idsToDelete.append(id);
+        }
+    }
+
+    if (idsToDelete.isEmpty()) {
+        return;
+    }
+
+    QStringList placeholders;
+    placeholders.reserve(idsToDelete.size());
+    for (int i = 0; i < idsToDelete.size(); ++i) {
+        placeholders << QStringLiteral("?");
+    }
+
+    QSqlQuery deleteQuery(db);
+    deleteQuery.prepare(QStringLiteral("DELETE FROM production_instruction_realtime WHERE id IN (%1)")
+                          .arg(placeholders.join(QStringLiteral(","))));
+    for (int id : idsToDelete) {
+        deleteQuery.addBindValue(id);
+    }
+    if (!deleteQuery.exec()) {
+        qWarning() << "清理非当前班次实时记录失败:" << deleteQuery.lastError().text();
+    }
+}
+
 void tcpClient::loadProductionInstructionRealtimeFromDb()
 {
     ensureProductionInstructionRealtimeTable();
@@ -3909,16 +3986,25 @@ void tcpClient::loadProductionInstructionRealtimeFromDb()
         return;
     }
 
+    purgeNonCurrentShiftProductionInstructionRealtimeRecords();
+
     QSqlQuery query(db);
     if (!query.exec(QStringLiteral(
             "SELECT record_time, vehicle_names, shift_type "
-            "FROM production_instruction_realtime ORDER BY id DESC"))) {
+            "FROM production_instruction_realtime "
+            "ORDER BY id DESC"))) {
         qWarning() << "加载生产指示实时记录失败:" << query.lastError().text();
         return;
     }
 
     m_productionInstructionRealtimeTable->setRowCount(0);
     while (query.next()) {
+        const QDateTime recordDateTime = QDateTime::fromString(
+            query.value(0).toString(), QStringLiteral("yyyy-MM-dd HH:mm:ss"));
+        if (!isDateTimeInCurrentShiftWindow(recordDateTime)) {
+            continue;
+        }
+
         const int row = m_productionInstructionRealtimeTable->rowCount();
         m_productionInstructionRealtimeTable->insertRow(row);
 
@@ -3943,34 +4029,19 @@ void tcpClient::appendProductionInstructionRealtimeRecord(const QString &vehicle
     }
 
     ensureProductionInstructionRealtimeTable();
+    purgeNonCurrentShiftProductionInstructionRealtimeRecords();
 
     const QString recordTime = QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"));
-    QString shiftType = getCurrentShift();
-    if (shiftType == QStringLiteral("夜班")) {
-        shiftType = QStringLiteral("晚班");
-    }
-
-    const int row = 0;
-    m_productionInstructionRealtimeTable->insertRow(row);
-
-    QTableWidgetItem *timeItem = new QTableWidgetItem(recordTime);
-    timeItem->setTextAlignment(Qt::AlignCenter);
-    m_productionInstructionRealtimeTable->setItem(row, 0, timeItem);
-
-    QTableWidgetItem *vehicleItem = new QTableWidgetItem(vehicleNames);
-    vehicleItem->setTextAlignment(Qt::AlignCenter);
-    m_productionInstructionRealtimeTable->setItem(row, 1, vehicleItem);
-
-    QTableWidgetItem *shiftItem = new QTableWidgetItem(shiftType);
-    shiftItem->setTextAlignment(Qt::AlignCenter);
-    m_productionInstructionRealtimeTable->setItem(row, 2, shiftItem);
+    const QString shiftType = productionInstructionRealtimeShiftLabel();
 
     insertProductionInstructionRealtimeRecordToDb(recordTime, vehicleNames, shiftType);
+    loadProductionInstructionRealtimeFromDb();
 }
 
 void tcpClient::setupProductionInstructionRealtimeRecordDialog()
 {
     ensureProductionInstructionRealtimeTable();
+    loadProductionInstructionRealtimeFromDb();
 
     if (!m_productionInstructionRealtimeRecordDialog) {
         m_productionInstructionRealtimeRecordDialog = new QDialog(this);
@@ -13426,6 +13497,7 @@ void tcpClient::checkShiftChange()
         }
         
         // 重新加载异常记录（显示新班次的记录）
+        clearProductionInstructionRealtimeRecords();
         loadExceptionRecords();
     }
     // 检查是否是夜班开始时间
@@ -13539,6 +13611,7 @@ void tcpClient::checkShiftChange()
         }
         
         // 重新加载异常记录（显示新班次的记录）
+        clearProductionInstructionRealtimeRecords();
         loadExceptionRecords();
     }
 }
