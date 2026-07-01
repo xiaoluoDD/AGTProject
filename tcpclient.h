@@ -227,8 +227,13 @@ private:
     void setupProductionInstructionRecordDialog(QDialog *&dialog, const QString &title); ///< 初始化数据记录占位界面
     void updateProductionInstructionServerConfirmButtons(); ///< 为左侧服务端表格每行刷新确认按钮
     void onProductionInstructionServerRowConfirmed(int row); ///< 左侧服务端行确认（待对比）
-    void applyProductionInstructionServerRowStatus(int row); ///< 刷新单行确认/待对比显示
-    void refreshProductionInstructionServerRowStatuses(); ///< 刷新全部行确认/待对比显示
+    void onProductionInstructionServerCellDoubleClicked(int row, int column); ///< 未确认行双击修改车型
+    void onProductionInstructionPlcCellDoubleClicked(int row, int column); ///< PLC空托盘行双击修改车型
+    void applyProductionInstructionServerRowStatus(int row); ///< 刷新单行确认/不可编辑显示
+    void refreshProductionInstructionServerRowStatuses(); ///< 刷新全部行确认/不可编辑显示
+    int moveProductionInstructionServerRowToPlc(int row); ///< 确认后将服务端行复制到PLC表首个空行，返回目标行（-1失败）
+    void applyProductionInstructionPlcRowStatus(int row); ///< 刷新PLC单行待对比显示
+    void refreshProductionInstructionPlcRowStatuses(); ///< 刷新PLC全部行待对比显示
     void clearProductionInstructionServerTable(); ///< 清空左侧生产指示表格（保留序号与确认按钮）
     bool appendProductionInstructionVehicleName(const QString &modelName); ///< 写入下一个空位
     void appendProductionInstructionRealtimeRecord(const QString &vehicleNames); ///< 写入实时记录（逗号分隔车型）
@@ -425,7 +430,8 @@ private:
     QDialog* m_productionInstructionRealtimeRecordDialog; ///< 生产指示对比-实时记录界面
     QTableWidget* m_productionInstructionRealtimeTable; ///< 生产指示对比-实时记录表格
     QMap<QString, int> m_modelBindingLastPalletCount; ///< 车型名称->上次当前托数（用于检测变化）
-    QSet<int> m_productionInstructionServerConfirmedRows; ///< 生产指示已确认待对比行（0-based）
+    QSet<int> m_productionInstructionServerConfirmedRows; ///< 生产指示已确认行（0-based，左侧灰色不可编辑）
+    QSet<int> m_productionInstructionPlcPendingCompareRows; ///< PLC待对比行（0-based，中间黄色）
     QPushButton* pushButtonOvertimeTime; ///< 加班时间选择按钮
     QPushButton* pushButtonSaveAssemblyIndicator; ///< 保存总装指示表按钮
     QPushButton* pushButtonCurrentTable; ///< 当前表格按钮

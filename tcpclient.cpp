@@ -2510,11 +2510,15 @@ void tcpClient::setupProductionInstructionComparePage()
         }
     }
     updateProductionInstructionServerConfirmButtons();
+    connect(m_productionInstructionServerTable, &QTableWidget::cellDoubleClicked,
+            this, &tcpClient::onProductionInstructionServerCellDoubleClicked);
     serverLayout->addWidget(m_productionInstructionServerTable, 1);
 
     QGroupBox *plcGroup = new QGroupBox(QStringLiteral("空托盘车型（PLC）"), productionInstructionComparePage);
     QVBoxLayout *plcLayout = new QVBoxLayout(plcGroup);
     initThreeColumnVehicleTable(&m_productionInstructionPlcTable, plcGroup);
+    connect(m_productionInstructionPlcTable, &QTableWidget::cellDoubleClicked,
+            this, &tcpClient::onProductionInstructionPlcCellDoubleClicked);
     plcLayout->addWidget(m_productionInstructionPlcTable, 1);
 
     QGroupBox *errorGroup = new QGroupBox(QStringLiteral("报错记录"), productionInstructionComparePage);
@@ -2585,11 +2589,96 @@ void tcpClient::applyProductionInstructionServerRowStatus(int row)
         return;
     }
 
-    const bool pendingCompare = m_productionInstructionServerConfirmedRows.contains(row);
-    static const QColor kPendingCompareColor(255, 236, 139);
+    const bool confirmed = m_productionInstructionServerConfirmedRows.contains(row);
+    static const QColor kConfirmedGrayColor(217, 217, 217);
 
     for (int col = 1; col <= 3; ++col) {
         QTableWidgetItem *item = m_productionInstructionServerTable->item(row, col);
+        if (!item) {
+            continue;
+        }
+        if (confirmed) {
+            item->setBackground(QBrush(kConfirmedGrayColor));
+        } else {
+            item->setData(Qt::BackgroundRole, QVariant());
+        }
+    }
+
+    if (QPushButton *confirmBtn = qobject_cast<QPushButton *>(
+            m_productionInstructionServerTable->cellWidget(row, 4))) {
+        if (confirmed) {
+            confirmBtn->setText(QStringLiteral("已确认"));
+            confirmBtn->setEnabled(false);
+        } else {
+            confirmBtn->setText(QStringLiteral("确认"));
+            confirmBtn->setEnabled(true);
+        }
+    }
+}
+
+int tcpClient::moveProductionInstructionServerRowToPlc(int row)
+{
+    if (!m_productionInstructionServerTable || !m_productionInstructionPlcTable || row < 0
+        || row >= m_productionInstructionServerTable->rowCount()) {
+        return -1;
+    }
+
+    const int plcRowCount = m_productionInstructionPlcTable->rowCount();
+    if (plcRowCount <= 0) {
+        return -1;
+    }
+
+    auto plcRowHasData = [this](int plcRow) {
+        for (int col = 1; col <= 3; ++col) {
+            QTableWidgetItem *item = m_productionInstructionPlcTable->item(plcRow, col);
+            if (item && !item->text().trimmed().isEmpty()) {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    int targetRow = 0;
+    while (targetRow < plcRowCount && plcRowHasData(targetRow)) {
+        ++targetRow;
+    }
+    if (targetRow >= plcRowCount) {
+        appendToLog(QStringLiteral("生产指示对比：空托盘车型表格已满，无法写入序号 %1 的确认数据")
+                        .arg(row + 1),
+                    true);
+        return -1;
+    }
+
+    for (int col = 1; col <= 3; ++col) {
+        QTableWidgetItem *serverItem = m_productionInstructionServerTable->item(row, col);
+        const QString text = serverItem ? serverItem->text().trimmed() : QString();
+
+        QTableWidgetItem *plcItem = m_productionInstructionPlcTable->item(targetRow, col);
+        if (!plcItem) {
+            plcItem = new QTableWidgetItem();
+            plcItem->setTextAlignment(Qt::AlignCenter);
+            m_productionInstructionPlcTable->setItem(targetRow, col, plcItem);
+        }
+        plcItem->setText(text);
+    }
+
+    m_productionInstructionPlcPendingCompareRows.insert(targetRow);
+    applyProductionInstructionPlcRowStatus(targetRow);
+    return targetRow;
+}
+
+void tcpClient::applyProductionInstructionPlcRowStatus(int row)
+{
+    if (!m_productionInstructionPlcTable || row < 0
+        || row >= m_productionInstructionPlcTable->rowCount()) {
+        return;
+    }
+
+    const bool pendingCompare = m_productionInstructionPlcPendingCompareRows.contains(row);
+    static const QColor kPendingCompareColor(255, 236, 139);
+
+    for (int col = 1; col <= 3; ++col) {
+        QTableWidgetItem *item = m_productionInstructionPlcTable->item(row, col);
         if (!item) {
             continue;
         }
@@ -2599,16 +2688,15 @@ void tcpClient::applyProductionInstructionServerRowStatus(int row)
             item->setData(Qt::BackgroundRole, QVariant());
         }
     }
+}
 
-    if (QPushButton *confirmBtn = qobject_cast<QPushButton *>(
-            m_productionInstructionServerTable->cellWidget(row, 4))) {
-        if (pendingCompare) {
-            confirmBtn->setText(QStringLiteral("已确认"));
-            confirmBtn->setEnabled(false);
-        } else {
-            confirmBtn->setText(QStringLiteral("确认"));
-            confirmBtn->setEnabled(true);
-        }
+void tcpClient::refreshProductionInstructionPlcRowStatuses()
+{
+    if (!m_productionInstructionPlcTable) {
+        return;
+    }
+    for (int row = 0; row < m_productionInstructionPlcTable->rowCount(); ++row) {
+        applyProductionInstructionPlcRowStatus(row);
     }
 }
 
@@ -2661,15 +2749,216 @@ void tcpClient::onProductionInstructionServerRowConfirmed(int row)
     }
 
     m_productionInstructionServerConfirmedRows.insert(row);
+    const int plcTargetRow = moveProductionInstructionServerRowToPlc(row);
+    if (plcTargetRow < 0) {
+        m_productionInstructionServerConfirmedRows.remove(row);
+        applyProductionInstructionServerRowStatus(row);
+        saveProductionInstructionServerToDb();
+        return;
+    }
+
     applyProductionInstructionServerRowStatus(row);
     saveProductionInstructionServerToDb();
+    saveProductionInstructionPlcToDb();
 
-    appendToLog(QStringLiteral("生产指示对比：序号 %1 已确认待对比（%2 / %3 / %4）")
+    appendToLog(QStringLiteral("生产指示对比：序号 %1 已确认，已写入空托盘车型第 %2 行待对比（%3 / %4 / %5）")
                     .arg(sequenceNo)
+                    .arg(plcTargetRow + 1)
                     .arg(names.value(0, QString()))
                     .arg(names.value(1, QString()))
                     .arg(names.value(2, QString())),
                 false);
+}
+
+void tcpClient::onProductionInstructionServerCellDoubleClicked(int row, int column)
+{
+    if (!m_productionInstructionServerTable || row < 0
+        || row >= m_productionInstructionServerTable->rowCount()) {
+        return;
+    }
+
+    if (column < 1 || column > 3) {
+        return;
+    }
+
+    if (m_productionInstructionServerConfirmedRows.contains(row)) {
+        return;
+    }
+
+    QTableWidgetItem *cellItem = m_productionInstructionServerTable->item(row, column);
+    if (!cellItem) {
+        cellItem = new QTableWidgetItem(QString());
+        cellItem->setTextAlignment(Qt::AlignCenter);
+        m_productionInstructionServerTable->setItem(row, column, cellItem);
+    }
+
+    const QString oldModel = cellItem->text().trimmed();
+    const QStringList modelList = getVehicleModelList();
+
+    QDialog dialog(this);
+    dialog.setWindowTitle(QStringLiteral("修改生产指示车型"));
+    dialog.setMinimumWidth(320);
+
+    QVBoxLayout *layout = new QVBoxLayout(&dialog);
+    const QString columnName = QStringLiteral("车型%1").arg(column);
+    int seqNo = row + 1;
+    if (QTableWidgetItem *seqItem = m_productionInstructionServerTable->item(row, 0)) {
+        const int parsedSeq = seqItem->text().trimmed().toInt();
+        if (parsedSeq > 0) {
+            seqNo = parsedSeq;
+        }
+    }
+
+    QLabel *infoLabel = new QLabel(
+        QStringLiteral("序号 %1 %2，请选择车型或清空：").arg(seqNo).arg(columnName), &dialog);
+    layout->addWidget(infoLabel);
+
+    QComboBox *comboBox = new QComboBox(&dialog);
+    comboBox->setEditable(false);
+    comboBox->addItem(QStringLiteral("（清空）"), QString());
+
+    for (const QString &model : modelList) {
+        comboBox->addItem(model, model);
+    }
+
+    int currentIndex = 0;
+    if (!oldModel.isEmpty()) {
+        const int foundIndex = comboBox->findData(oldModel);
+        if (foundIndex >= 0) {
+            currentIndex = foundIndex;
+        } else {
+            comboBox->addItem(oldModel, oldModel);
+            currentIndex = comboBox->count() - 1;
+        }
+    }
+    comboBox->setCurrentIndex(currentIndex);
+    layout->addWidget(comboBox);
+
+    QDialogButtonBox *buttonBox =
+        new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    connect(buttonBox, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttonBox, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    layout->addWidget(buttonBox);
+
+    if (dialog.exec() != QDialog::Accepted) {
+        return;
+    }
+
+    const QString newModel = comboBox->currentData().toString().trimmed();
+    if (newModel == oldModel) {
+        return;
+    }
+
+    cellItem->setText(newModel);
+    saveProductionInstructionServerToDb();
+
+    const auto displayModel = [](const QString &model) {
+        return model.isEmpty() ? QStringLiteral("（空）") : model;
+    };
+    const QString errorMessage =
+        QStringLiteral("序号%1 %2：由 %3 修改为 %4")
+            .arg(seqNo)
+            .arg(columnName)
+            .arg(displayModel(oldModel))
+            .arg(displayModel(newModel));
+    const QString errorTime = QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"));
+    appendProductionInstructionErrorRecord(seqNo, errorTime, errorMessage);
+
+    appendToLog(QStringLiteral("生产指示对比：%1").arg(errorMessage), false);
+}
+
+void tcpClient::onProductionInstructionPlcCellDoubleClicked(int row, int column)
+{
+    if (!m_productionInstructionPlcTable || row < 0
+        || row >= m_productionInstructionPlcTable->rowCount()) {
+        return;
+    }
+
+    if (column < 1 || column > 3) {
+        return;
+    }
+
+    QTableWidgetItem *cellItem = m_productionInstructionPlcTable->item(row, column);
+    if (!cellItem) {
+        cellItem = new QTableWidgetItem(QString());
+        cellItem->setTextAlignment(Qt::AlignCenter);
+        m_productionInstructionPlcTable->setItem(row, column, cellItem);
+    }
+
+    const QString oldModel = cellItem->text().trimmed();
+    const QStringList modelList = getVehicleModelList();
+
+    QDialog dialog(this);
+    dialog.setWindowTitle(QStringLiteral("修改空托盘车型"));
+    dialog.setMinimumWidth(320);
+
+    QVBoxLayout *layout = new QVBoxLayout(&dialog);
+    const QString columnName = QStringLiteral("车型%1").arg(column);
+    int seqNo = row + 1;
+    if (QTableWidgetItem *seqItem = m_productionInstructionPlcTable->item(row, 0)) {
+        const int parsedSeq = seqItem->text().trimmed().toInt();
+        if (parsedSeq > 0) {
+            seqNo = parsedSeq;
+        }
+    }
+
+    QLabel *infoLabel = new QLabel(
+        QStringLiteral("空托盘 序号 %1 %2，请选择车型或清空：").arg(seqNo).arg(columnName), &dialog);
+    layout->addWidget(infoLabel);
+
+    QComboBox *comboBox = new QComboBox(&dialog);
+    comboBox->setEditable(false);
+    comboBox->addItem(QStringLiteral("（清空）"), QString());
+
+    for (const QString &model : modelList) {
+        comboBox->addItem(model, model);
+    }
+
+    int currentIndex = 0;
+    if (!oldModel.isEmpty()) {
+        const int foundIndex = comboBox->findData(oldModel);
+        if (foundIndex >= 0) {
+            currentIndex = foundIndex;
+        } else {
+            comboBox->addItem(oldModel, oldModel);
+            currentIndex = comboBox->count() - 1;
+        }
+    }
+    comboBox->setCurrentIndex(currentIndex);
+    layout->addWidget(comboBox);
+
+    QDialogButtonBox *buttonBox =
+        new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    connect(buttonBox, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttonBox, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    layout->addWidget(buttonBox);
+
+    if (dialog.exec() != QDialog::Accepted) {
+        return;
+    }
+
+    const QString newModel = comboBox->currentData().toString().trimmed();
+    if (newModel == oldModel) {
+        return;
+    }
+
+    cellItem->setText(newModel);
+    applyProductionInstructionPlcRowStatus(row);
+    saveProductionInstructionPlcToDb();
+
+    const auto displayModel = [](const QString &model) {
+        return model.isEmpty() ? QStringLiteral("（空）") : model;
+    };
+    const QString errorMessage =
+        QStringLiteral("空托盘 序号%1 %2：由 %3 修改为 %4")
+            .arg(seqNo)
+            .arg(columnName)
+            .arg(displayModel(oldModel))
+            .arg(displayModel(newModel));
+    const QString errorTime = QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"));
+    appendProductionInstructionErrorRecord(seqNo, errorTime, errorMessage);
+
+    appendToLog(QStringLiteral("生产指示对比：%1").arg(errorMessage), false);
 }
 
 void tcpClient::clearProductionInstructionServerTable()
@@ -2864,7 +3153,8 @@ void tcpClient::saveProductionInstructionPlcToDb()
 
     QSqlQuery insQuery(db);
     insQuery.prepare(QStringLiteral(
-        "INSERT INTO production_instruction_plc (seq_no, vehicle1, vehicle2, vehicle3) VALUES (?, ?, ?, ?)"));
+        "INSERT INTO production_instruction_plc (seq_no, vehicle1, vehicle2, vehicle3, pending_compare) "
+        "VALUES (?, ?, ?, ?, ?)"));
 
     const int rowCount = m_productionInstructionPlcTable->rowCount();
     for (int row = 0; row < rowCount; ++row) {
@@ -2877,6 +3167,7 @@ void tcpClient::saveProductionInstructionPlcToDb()
         insQuery.addBindValue(cellText(1));
         insQuery.addBindValue(cellText(2));
         insQuery.addBindValue(cellText(3));
+        insQuery.addBindValue(m_productionInstructionPlcPendingCompareRows.contains(row) ? 1 : 0);
         if (!insQuery.exec()) {
             appendToLog(QStringLiteral("保存生产指示PLC第 %1 行失败: %2")
                             .arg(row + 1)
@@ -2898,15 +3189,18 @@ void tcpClient::loadProductionInstructionPlcFromDb()
         return;
     }
 
+    m_productionInstructionPlcPendingCompareRows.clear();
+
     QSqlQuery query(db);
     if (!query.exec(QStringLiteral(
-            "SELECT seq_no, vehicle1, vehicle2, vehicle3 "
+            "SELECT seq_no, vehicle1, vehicle2, vehicle3, pending_compare "
             "FROM production_instruction_plc ORDER BY seq_no"))) {
         qWarning() << "加载生产指示PLC表失败:" << query.lastError().text();
         return;
     }
 
     if (!query.next()) {
+        refreshProductionInstructionPlcRowStatuses();
         return;
     }
 
@@ -2926,7 +3220,13 @@ void tcpClient::loadProductionInstructionPlcFromDb()
             }
             item->setText(query.value(col).toString());
         }
+
+        if (query.record().count() >= 5 && query.value(4).toInt() != 0) {
+            m_productionInstructionPlcPendingCompareRows.insert(row);
+        }
     } while (query.next());
+
+    refreshProductionInstructionPlcRowStatuses();
 }
 
 void tcpClient::saveProductionInstructionErrorsToDb()
@@ -5247,6 +5547,17 @@ void tcpClient::initDatabase() {
         qDebug() << "生产指示PLC表创建/检查成功";
     } else {
         qWarning() << "生产指示PLC表创建失败:" << query.lastError().text();
+    }
+    {
+        QSqlQuery alterPendingCompare;
+        if (!alterPendingCompare.exec(
+                "ALTER TABLE production_instruction_plc ADD COLUMN pending_compare TINYINT DEFAULT 0")) {
+            const QSqlError e = alterPendingCompare.lastError();
+            if (e.type() != QSqlError::StatementError
+                || !e.text().contains(QStringLiteral("Duplicate column"), Qt::CaseInsensitive)) {
+                qWarning() << "production_instruction_plc 增加 pending_compare 列失败:" << e.text();
+            }
+        }
     }
 
     // 生产指示对比-报错记录
