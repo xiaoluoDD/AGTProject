@@ -115,6 +115,7 @@ private slots:
     void onProductionInstructionPlcSaveToHistoryClicked(); ///< 空托盘车型保存到历史
     void onProductionInstructionErrorsSaveToHistoryClicked(); ///< 报错记录保存到历史
     void onProductionInstructionHistoryViewClicked(); ///< 历史记录查看
+    void onProductionInstructionHistoryDeleteClicked(); ///< 删除历史记录
     void onVehicleBindingPageClicked(); ///< 切换到车型绑定界面
     void updateProjectGroupStatistics(); ///< 更新工程组统计表格
     void loadVehicleModelsToAssemblyIndicator(); ///< 加载绑定车型到总成指示表
@@ -232,6 +233,7 @@ private:
     void setupProductionInstructionComparePage(); ///< 初始化生产指示对比界面
     void setupProductionInstructionHistoryRecordDialog(); ///< 初始化历史记录查看界面
     void loadProductionInstructionHistoryRecords(); ///< 按类型与日期加载历史记录
+    int deleteProductionInstructionHistoryByType(const QString &typeKey, const QDate &cutoffDate); ///< 按类型与截止日期删除历史记录，返回删除条数（失败返回-1）
     void updateProductionInstructionServerConfirmButtons(); ///< 为左侧服务端表格每行刷新确认按钮
     void onProductionInstructionServerRowConfirmed(int row); ///< 左侧服务端行确认（待对比）
     void onProductionInstructionServerCellDoubleClicked(int row, int column); ///< 未确认行双击修改车型

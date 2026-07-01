@@ -42,6 +42,7 @@
 #include <QComboBox>
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QCheckBox>
 #include <QDateEdit>
 #include <QColor>
 #include <QBrush>
@@ -4104,6 +4105,11 @@ void tcpClient::setupProductionInstructionHistoryRecordDialog()
     viewButton->setMinimumWidth(80);
     filterLayout->addWidget(viewButton);
 
+    QPushButton *deleteButton = new QPushButton(QStringLiteral("删除记录"),
+                                                m_productionInstructionHistoryRecordDialog);
+    deleteButton->setMinimumWidth(80);
+    filterLayout->addWidget(deleteButton);
+
     mainLayout->addLayout(filterLayout);
 
     m_productionInstructionHistoryTable = new QTableWidget(m_productionInstructionHistoryRecordDialog);
@@ -4124,6 +4130,8 @@ void tcpClient::setupProductionInstructionHistoryRecordDialog()
             });
     connect(viewButton, &QPushButton::clicked, this,
             &tcpClient::onProductionInstructionHistoryViewClicked);
+    connect(deleteButton, &QPushButton::clicked, this,
+            &tcpClient::onProductionInstructionHistoryDeleteClicked);
 }
 
 void tcpClient::loadProductionInstructionHistoryRecords()
@@ -4300,6 +4308,241 @@ void tcpClient::loadProductionInstructionHistoryRecords()
 
 void tcpClient::onProductionInstructionHistoryViewClicked()
 {
+    loadProductionInstructionHistoryRecords();
+}
+
+int tcpClient::deleteProductionInstructionHistoryByType(const QString &typeKey, const QDate &cutoffDate)
+{
+    QString tableName;
+    QString timeColumn;
+    if (typeKey == QStringLiteral("server")) {
+        tableName = QStringLiteral("production_instruction_server_history");
+        timeColumn = QStringLiteral("record_time");
+    } else if (typeKey == QStringLiteral("plc")) {
+        tableName = QStringLiteral("production_instruction_plc_history");
+        timeColumn = QStringLiteral("record_time");
+    } else if (typeKey == QStringLiteral("errors")) {
+        tableName = QStringLiteral("production_instruction_errors_history");
+        timeColumn = QStringLiteral("error_time");
+    } else {
+        return -1;
+    }
+
+    QSqlDatabase db = QSqlDatabase::database();
+    if (!db.isOpen()) {
+        return -1;
+    }
+
+    const QString dateStr = cutoffDate.toString(QStringLiteral("yyyy-MM-dd"));
+    const QString countSql =
+        QStringLiteral("SELECT COUNT(*) FROM %1 WHERE DATE(%2) <= ?").arg(tableName, timeColumn);
+    const QString deleteSql =
+        QStringLiteral("DELETE FROM %1 WHERE DATE(%2) <= ?").arg(tableName, timeColumn);
+
+    QSqlQuery countQuery(db);
+    countQuery.prepare(countSql);
+    countQuery.addBindValue(dateStr);
+    if (!countQuery.exec() || !countQuery.next()) {
+        return -1;
+    }
+
+    const int deleteCount = countQuery.value(0).toInt();
+    if (deleteCount == 0) {
+        return 0;
+    }
+
+    QSqlQuery deleteQuery(db);
+    deleteQuery.prepare(deleteSql);
+    deleteQuery.addBindValue(dateStr);
+    if (!deleteQuery.exec()) {
+        return -1;
+    }
+
+    return deleteCount;
+}
+
+void tcpClient::onProductionInstructionHistoryDeleteClicked()
+{
+    if (!showPasswordDialog(QStringLiteral("密码验证"),
+                            QStringLiteral("请输入密码以删除历史记录:"))) {
+        return;
+    }
+
+    QDialog dialog(this);
+    dialog.setWindowTitle(QStringLiteral("删除历史记录"));
+    dialog.setMinimumWidth(420);
+
+    QVBoxLayout *layout = new QVBoxLayout(&dialog);
+
+    QLabel *typeHint = new QLabel(QStringLiteral("请选择要删除的记录类型："), &dialog);
+    layout->addWidget(typeHint);
+
+    QCheckBox *selectAllCheckBox = new QCheckBox(QStringLiteral("全选"), &dialog);
+    QCheckBox *serverCheckBox =
+        new QCheckBox(QStringLiteral("生产指示"), &dialog);
+    QCheckBox *plcCheckBox =
+        new QCheckBox(QStringLiteral("空托盘车型"), &dialog);
+    QCheckBox *errorsCheckBox =
+        new QCheckBox(QStringLiteral("报错记录"), &dialog);
+
+    serverCheckBox->setChecked(true);
+    plcCheckBox->setChecked(true);
+    errorsCheckBox->setChecked(true);
+    selectAllCheckBox->setChecked(true);
+
+    layout->addWidget(selectAllCheckBox);
+    layout->addWidget(serverCheckBox);
+    layout->addWidget(plcCheckBox);
+    layout->addWidget(errorsCheckBox);
+
+    auto syncSelectAllState = [selectAllCheckBox, serverCheckBox, plcCheckBox, errorsCheckBox]() {
+        selectAllCheckBox->blockSignals(true);
+        selectAllCheckBox->setChecked(serverCheckBox->isChecked() && plcCheckBox->isChecked()
+                                      && errorsCheckBox->isChecked());
+        selectAllCheckBox->blockSignals(false);
+    };
+
+    QObject::connect(selectAllCheckBox, &QCheckBox::toggled, &dialog, [=](bool checked) {
+        serverCheckBox->setChecked(checked);
+        plcCheckBox->setChecked(checked);
+        errorsCheckBox->setChecked(checked);
+    });
+    QObject::connect(serverCheckBox, &QCheckBox::toggled, &dialog, syncSelectAllState);
+    QObject::connect(plcCheckBox, &QCheckBox::toggled, &dialog, syncSelectAllState);
+    QObject::connect(errorsCheckBox, &QCheckBox::toggled, &dialog, syncSelectAllState);
+
+    QLabel *dateHint =
+        new QLabel(QStringLiteral("选择日期（将删除该日期及之前的所有记录）："), &dialog);
+    layout->addWidget(dateHint);
+
+    QDateEdit *dateEdit = new QDateEdit(&dialog);
+    dateEdit->setCalendarPopup(true);
+    dateEdit->setDisplayFormat(QStringLiteral("yyyy-MM-dd"));
+    dateEdit->setDate(QDate::currentDate());
+    layout->addWidget(dateEdit);
+
+    QDialogButtonBox *buttonBox =
+        new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    connect(buttonBox, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttonBox, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    layout->addWidget(buttonBox);
+
+    if (dialog.exec() != QDialog::Accepted) {
+        return;
+    }
+
+    QSet<QString> selectedTypes;
+    if (serverCheckBox->isChecked()) {
+        selectedTypes.insert(QStringLiteral("server"));
+    }
+    if (plcCheckBox->isChecked()) {
+        selectedTypes.insert(QStringLiteral("plc"));
+    }
+    if (errorsCheckBox->isChecked()) {
+        selectedTypes.insert(QStringLiteral("errors"));
+    }
+
+    if (selectedTypes.isEmpty()) {
+        QMessageBox::warning(this, QStringLiteral("提示"), QStringLiteral("请至少选择一种记录类型。"));
+        return;
+    }
+
+    const QDate selectedDate = dateEdit->date();
+    const QString dateText = selectedDate.toString(QStringLiteral("yyyy-MM-dd"));
+
+    QStringList typeLabels;
+    if (selectedTypes.contains(QStringLiteral("server"))) {
+        typeLabels << QStringLiteral("生产指示");
+    }
+    if (selectedTypes.contains(QStringLiteral("plc"))) {
+        typeLabels << QStringLiteral("空托盘车型");
+    }
+    if (selectedTypes.contains(QStringLiteral("errors"))) {
+        typeLabels << QStringLiteral("报错记录");
+    }
+
+    const QMessageBox::StandardButton reply = QMessageBox::question(
+        this,
+        QStringLiteral("确认删除"),
+        QStringLiteral("确定要删除 %1 及之前的以下历史记录吗？\n\n%2\n\n此操作不可恢复！")
+            .arg(dateText, typeLabels.join(QStringLiteral("、"))),
+        QMessageBox::Yes | QMessageBox::No);
+
+    if (reply != QMessageBox::Yes) {
+        return;
+    }
+
+    QSqlDatabase db = QSqlDatabase::database();
+    if (!db.isOpen()) {
+        QMessageBox::critical(this, QStringLiteral("错误"),
+                              QStringLiteral("数据库未连接，无法删除历史记录。"));
+        return;
+    }
+
+    struct DeleteResult {
+        QString label;
+        int count = 0;
+        bool failed = false;
+    };
+
+    QVector<DeleteResult> results;
+    auto appendResult = [&results](const QString &label) {
+        DeleteResult result;
+        result.label = label;
+        results.append(result);
+        return &results.last();
+    };
+
+    if (selectedTypes.contains(QStringLiteral("server"))) {
+        DeleteResult *result = appendResult(QStringLiteral("生产指示"));
+        result->count = deleteProductionInstructionHistoryByType(QStringLiteral("server"), selectedDate);
+        result->failed = (result->count < 0);
+    }
+    if (selectedTypes.contains(QStringLiteral("plc"))) {
+        DeleteResult *result = appendResult(QStringLiteral("空托盘车型"));
+        result->count = deleteProductionInstructionHistoryByType(QStringLiteral("plc"), selectedDate);
+        result->failed = (result->count < 0);
+    }
+    if (selectedTypes.contains(QStringLiteral("errors"))) {
+        DeleteResult *result = appendResult(QStringLiteral("报错记录"));
+        result->count = deleteProductionInstructionHistoryByType(QStringLiteral("errors"), selectedDate);
+        result->failed = (result->count < 0);
+    }
+
+    QStringList summaryLines;
+    int totalDeleted = 0;
+    bool hasFailure = false;
+    for (const DeleteResult &result : results) {
+        if (result.failed) {
+            hasFailure = true;
+            summaryLines << QStringLiteral("%1：删除失败").arg(result.label);
+        } else if (result.count == 0) {
+            summaryLines << QStringLiteral("%1：无符合条件的记录").arg(result.label);
+        } else {
+            totalDeleted += result.count;
+            summaryLines << QStringLiteral("%1：已删除 %2 条").arg(result.label).arg(result.count);
+        }
+    }
+
+    if (hasFailure) {
+        QMessageBox::critical(this, QStringLiteral("错误"),
+                                QStringLiteral("部分历史记录删除失败，请查看日志。"));
+        appendToLog(QStringLiteral("生产指示对比：删除历史记录失败（%1）").arg(dateText), true);
+    } else if (totalDeleted == 0) {
+        QMessageBox::information(this, QStringLiteral("提示"),
+                                 QStringLiteral("没有找到 %1 及之前符合条件的记录。\n\n%2")
+                                     .arg(dateText, summaryLines.join(QStringLiteral("\n"))));
+    } else {
+        QMessageBox::information(this, QStringLiteral("完成"),
+                                 QStringLiteral("历史记录删除完成（%1 及之前）：\n\n%2")
+                                     .arg(dateText, summaryLines.join(QStringLiteral("\n"))));
+        appendToLog(QStringLiteral("生产指示对比：已删除 %1 及之前的历史记录，共 %2 条（%3）")
+                        .arg(dateText)
+                        .arg(totalDeleted)
+                        .arg(typeLabels.join(QStringLiteral("、"))),
+                    false);
+    }
+
     loadProductionInstructionHistoryRecords();
 }
 
