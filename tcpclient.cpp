@@ -2410,11 +2410,12 @@ void tcpClient::setupVehicleBindingTable()
         ui->horizontalLayout_9->setSpacing(0);
     }
 
-    // 设置表格列数和标题（序号、装配编号、车型代码、车型名称、数量、当前托数）
+    // 设置表格列数和标题（序号、装配编号[隐藏]、车型代码、车型名称、数量、当前托数）
     ui->tableWidgetVehicleBinding->setColumnCount(6);
     QStringList headers;
     headers << "序号" << "装配编号" << "车型代码" << "车型名称" << "数量" << "当前托数";
     ui->tableWidgetVehicleBinding->setHorizontalHeaderLabels(headers);
+    ui->tableWidgetVehicleBinding->setColumnHidden(1, true);
 
     // 设置表格属性
     ui->tableWidgetVehicleBinding->setAlternatingRowColors(true);
@@ -2424,11 +2425,9 @@ void tcpClient::setupVehicleBindingTable()
     // 只读展示，数据由服务端同步
     ui->tableWidgetVehicleBinding->setEditTriggers(QAbstractItemView::NoEditTriggers);
 
-    // 序号、装配编号固定宽度，其余列自适应
+    // 序号固定宽度，其余可见列自适应
     ui->tableWidgetVehicleBinding->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Fixed);
     ui->tableWidgetVehicleBinding->setColumnWidth(0, 60);
-    ui->tableWidgetVehicleBinding->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Fixed);
-    ui->tableWidgetVehicleBinding->setColumnWidth(1, 100);
     for (int i = 2; i < 6; ++i) {
         ui->tableWidgetVehicleBinding->horizontalHeader()->setSectionResizeMode(i, QHeaderView::Stretch);
     }
@@ -6352,12 +6351,13 @@ void tcpClient::onExportVehicleTableClicked()
     QTextStream out(&file);
 
     // 写入表头
-    out << "序号,装配编号,车型代码,车型名称,数量,当前托数\n";
+    out << "序号,车型代码,车型名称,数量,当前托数\n";
 
-    // 写入数据
+    // 写入数据（跳过隐藏的装配编号列）
     for (int row = 0; row < ui->tableWidgetVehicleBinding->rowCount(); ++row) {
         QStringList rowData;
-        for (int col = 0; col < ui->tableWidgetVehicleBinding->columnCount(); ++col) {
+        rowData << ui->tableWidgetVehicleBinding->item(row, 0)->text();
+        for (int col = 2; col < ui->tableWidgetVehicleBinding->columnCount(); ++col) {
             rowData << ui->tableWidgetVehicleBinding->item(row, col)->text();
         }
         out << rowData.join(",") << "\n";
@@ -7071,7 +7071,6 @@ void tcpClient::updateModelBinding(const QString &oldModelCode, const QString &o
         return;
     }
 
-    QTableWidgetItem* itemAssembly = ui->tableWidgetVehicleBinding->item(row, 1);
     QTableWidgetItem* itemCode = ui->tableWidgetVehicleBinding->item(row, 2);
     QTableWidgetItem* itemName = ui->tableWidgetVehicleBinding->item(row, 3);
     QTableWidgetItem* itemCount = ui->tableWidgetVehicleBinding->item(row, 4);
@@ -7082,17 +7081,15 @@ void tcpClient::updateModelBinding(const QString &oldModelCode, const QString &o
         return;
     }
 
-    QString newAssemblyNumber = itemAssembly ? itemAssembly->text() : QString();
     QString newModelCode = itemCode->text();
     QString newModelName = itemName->text();
     int newCount = itemCount->text().toInt();
     int newPalletCount = itemPalletCount ? itemPalletCount->text().toInt() : 0;
 
     QSqlQuery query;
-    query.prepare("UPDATE model_bindings SET assembly_number = ?, model_code = ?, model_name = ?, count = ?, "
+    query.prepare("UPDATE model_bindings SET model_code = ?, model_name = ?, count = ?, "
                   "current_pallet_count = ? "
                   "WHERE model_code = ? AND model_name = ? AND count = ?");
-    query.addBindValue(newAssemblyNumber);
     query.addBindValue(newModelCode);
     query.addBindValue(newModelName);
     query.addBindValue(newCount);
@@ -7428,7 +7425,7 @@ void tcpClient::loadModelBindingsFromDb() {
     
     try {
         ui->tableWidgetVehicleBinding->setRowCount(0);
-        QSqlQuery query("SELECT assembly_number, model_code, model_name, count, current_pallet_count "
+        QSqlQuery query("SELECT model_code, model_name, count, current_pallet_count "
                         "FROM model_bindings ORDER BY id");
         int row = 0;
         while (query.next()) {
@@ -7436,19 +7433,16 @@ void tcpClient::loadModelBindingsFromDb() {
             QTableWidgetItem* item0 = new QTableWidgetItem(QString::number(row + 1));
             item0->setTextAlignment(Qt::AlignCenter);
             ui->tableWidgetVehicleBinding->setItem(row, 0, item0);
-            QTableWidgetItem* itemAssembly = new QTableWidgetItem(query.value(0).toString());
-            itemAssembly->setTextAlignment(Qt::AlignCenter);
-            ui->tableWidgetVehicleBinding->setItem(row, 1, itemAssembly);
-            QTableWidgetItem* item1 = new QTableWidgetItem(query.value(1).toString());
+            QTableWidgetItem* item1 = new QTableWidgetItem(query.value(0).toString());
             item1->setTextAlignment(Qt::AlignCenter);
             ui->tableWidgetVehicleBinding->setItem(row, 2, item1);
-            QTableWidgetItem* item2 = new QTableWidgetItem(query.value(2).toString());
+            QTableWidgetItem* item2 = new QTableWidgetItem(query.value(1).toString());
             item2->setTextAlignment(Qt::AlignCenter);
             ui->tableWidgetVehicleBinding->setItem(row, 3, item2);
-            QTableWidgetItem* item3 = new QTableWidgetItem(query.value(3).toString());
+            QTableWidgetItem* item3 = new QTableWidgetItem(query.value(2).toString());
             item3->setTextAlignment(Qt::AlignCenter);
             ui->tableWidgetVehicleBinding->setItem(row, 4, item3);
-            QTableWidgetItem* itemPallet = new QTableWidgetItem(query.value(4).toString());
+            QTableWidgetItem* itemPallet = new QTableWidgetItem(query.value(3).toString());
             itemPallet->setTextAlignment(Qt::AlignCenter);
             ui->tableWidgetVehicleBinding->setItem(row, 5, itemPallet);
             ++row;
@@ -11024,12 +11018,11 @@ bool tcpClient::processVehiclePartsJson(const QJsonObject &obj)
     {
         QSqlQuery preserveQuery(db);
         if (preserveQuery.exec(QStringLiteral(
-                "SELECT model_code, assembly_number, current_pallet_count FROM model_bindings"))) {
+                "SELECT model_code, current_pallet_count FROM model_bindings"))) {
             while (preserveQuery.next()) {
                 const QString code = preserveQuery.value(0).toString();
-                const QString assembly = preserveQuery.value(1).toString();
-                const int palletCount = preserveQuery.value(2).toInt();
-                preservedPalletCounts[assembly + QChar('\x1e') + code] = palletCount;
+                const int palletCount = preserveQuery.value(1).toInt();
+                preservedPalletCounts[code] = palletCount;
             }
         }
     }
@@ -11052,7 +11045,6 @@ bool tcpClient::processVehiclePartsJson(const QJsonObject &obj)
             continue;
         }
         const QJsonObject item = val.toObject();
-        const QString assemblyId = item.value(QStringLiteral("assembly_id")).toString().trimmed();
         const QString vehicleCode = item.value(QStringLiteral("vehicle_code")).toString().trimmed();
         const QString vehicleName = item.value(QStringLiteral("vehicle_name")).toString().trimmed();
         const QString partName = item.value(QStringLiteral("part_name")).toString().trimmed();
@@ -11064,10 +11056,9 @@ bool tcpClient::processVehiclePartsJson(const QJsonObject &obj)
         }
 
         const QString modelName = vehicleName + partName;
-        const QString preserveKey = assemblyId + QChar('\x1e') + vehicleCode;
-        const int currentPalletCount = preservedPalletCounts.value(preserveKey, 0);
+        const int currentPalletCount = preservedPalletCounts.value(vehicleCode, 0);
 
-        insQuery.addBindValue(assemblyId);
+        insQuery.addBindValue(QString());
         insQuery.addBindValue(vehicleCode);
         insQuery.addBindValue(modelName);
         insQuery.addBindValue(storageQty);
