@@ -203,6 +203,7 @@ private slots:
     void onEdSoftwareDisconnectClicked(); ///< ED软件断开按钮点击处理
     void onSaveEdSoftwareConnectionConfigClicked(); ///< 保存ED软件连接配置按钮点击处理
     void onExceptionPopupSwitchToggled(bool checked); ///< 异常弹窗提示开关切换处理
+    void onProductionInstructionDoubleClickEditToggled(bool checked); ///< 生产指示双击修改车型开关切换处理
     void onEdSoftwareSocketConnected(); ///< ED软件Socket连接成功处理
     void onEdSoftwareSocketDisconnected(); ///< ED软件Socket断开连接处理
     void onEdSoftwareSocketError(QAbstractSocket::SocketError error); ///< ED软件Socket错误处理
@@ -240,9 +241,27 @@ private:
     void onProductionInstructionPlcCellDoubleClicked(int row, int column); ///< PLC空托盘行双击修改车型
     void applyProductionInstructionServerRowStatus(int row); ///< 刷新单行确认/不可编辑显示
     void refreshProductionInstructionServerRowStatuses(); ///< 刷新全部行确认/不可编辑显示
-    int moveProductionInstructionServerRowToPlc(int row); ///< 确认后将服务端行复制到PLC表首个空行，返回目标行（-1失败）
+    int moveProductionInstructionServerRowToPlc(int row); ///< 确认后将服务端行复制到PLC表同序号行，返回目标行（-1失败）
     void applyProductionInstructionPlcRowStatus(int row); ///< 刷新PLC单行待对比/匹配显示
     void refreshProductionInstructionPlcRowStatuses(); ///< 刷新PLC全部行待对比/匹配显示
+    void clearProductionInstructionServerRow(int row); ///< 清空生产指示指定工作行
+    void clearProductionInstructionPlcWorkRow(int row); ///< 清空PLC指定工作行及对比状态
+    void saveProductionInstructionServerRowToHistory(int row); ///< 保存单行生产指示到历史
+    void saveProductionInstructionPlcRowToHistory(int row, int compareStatus); ///< 保存单行PLC到历史
+    void pushPlcRowToInTransitArea(int sourceRow); ///< 将工作行写入路上空托盘区（前7行）
+    void setProductionInstructionPlcInTransitCompareStatus(int row, int compareStatus); ///< 设置路上区对比颜色状态
+    void shiftProductionInstructionPlcInTransitCompareStatusesUp(); ///< 路上区满时上移对比状态
+    int productionInstructionPlcSourceCompareStatus(int sourceRow) const; ///< 读取工作行当前对比状态
+    void updateModelBindingFromAssemblyPlan(const QString &vehicleCode, const QString &assemblyNumber,
+                                            const QString &modelName, int planQty,
+                                            const QString &productionLine = QString()); ///< 按车型代码/产线更新绑定表
+    bool ensureCamryBindingRowExists(const QString &vehicleCode, const QString &modelName,
+                                     const QString &targetAssembly); ///< 确保凯美瑞1L/2L绑定行存在
+    void handleProductionInstructionCompareSuccess(int workRow); ///< 对比成功后入库、上移并移入路上区
+    void handleProductionInstructionCompareFailure(int workRow); ///< 对比失败后移入路上区，保留当前行
+    void shiftProductionInstructionServerRowsUp(int fromRow); ///< 工作区从指定行起上移一行
+    void shiftProductionInstructionPlcWorkRowsUp(int fromRow); ///< PLC工作区从指定行起上移一行
+    void refreshProductionInstructionServerConfirmButtonBindings(); ///< 刷新确认按钮与行号绑定
     QString resolveVehicleNameByModelCode(unsigned int modelCode) const; ///< 车型代码转名称
     void compareProductionInstructionPlcWithEmptyTrayIn(const QStringList &plcModelNames); ///< PLC空托盘搬入三车型对比
     void clearProductionInstructionServerTable(); ///< 清空左侧生产指示表格（保留序号与确认按钮）
@@ -250,6 +269,7 @@ private:
     void archiveProductionInstructionServerTable(bool autoTriggered); ///< 保存历史并清空生产指示表
     void archiveProductionInstructionPlcTable(bool autoTriggered); ///< 保存历史并清空PLC表
     void archiveProductionInstructionErrorsTable(bool autoTriggered); ///< 保存历史并清空报错记录表
+    void archiveReadyProductionInstructionRowsToHistory(); ///< 保存已确认且已对比的工作行到历史
     void saveProductionInstructionServerToHistory(); ///< 保存生产指示到历史记录
     void saveProductionInstructionPlcToHistory(); ///< 保存PLC空托盘到历史记录
     void saveProductionInstructionErrorsToHistory(); ///< 保存报错记录到历史记录
@@ -263,7 +283,8 @@ private:
     void setupProductionInstructionRealtimeRecordDialog(); ///< 初始化实时记录界面
     QStringList handleModelBindingPalletCountChange(const QString &modelName, int oldCount, int newCount,
                                                     bool writeRealtimeRecord = true,
-                                                    const QString &productionLine = QString()); ///< 托数变化写入生产指示，返回本次写入的车型名列表
+                                                    const QString &productionLine = QString(),
+                                                    bool appendToProductionInstructionTable = true); ///< 托数变化写入生产指示，返回本次写入的车型名列表
     void syncModelBindingLastPalletCountsFromUi(); ///< 从车型绑定界面同步上次托数
     bool areAllModelBindingPalletCountsZero() const; ///< 是否所有车型当前托数均为0
     void saveProductionInstructionServerToDb(); ///< 保存生产指示（服务端）到数据库
@@ -452,6 +473,7 @@ private:
     QTableWidget* m_productionInstructionServerTable; ///< 生产指示对比-左侧服务端（序号+3车型+确认）
     QTableWidget* m_productionInstructionPlcTable; ///< 生产指示对比-中间PLC空托盘（序号+3车型）
     QTableWidget* m_productionInstructionErrorTable; ///< 生产指示对比-右侧报错记录（序号+时间+信息）
+    QPushButton* m_productionInstructionPlcSaveToHistoryButton; ///< 空托盘保存到历史（已禁用）
     QDialog* m_productionInstructionHistoryRecordDialog; ///< 生产指示对比-历史记录查看界面
     QComboBox* m_productionInstructionHistoryTypeCombo; ///< 历史记录类型选择
     QComboBox* m_productionInstructionHistoryDateModeCombo; ///< 历史记录日期模式（全部/指定日期）
@@ -459,7 +481,8 @@ private:
     QTableWidget* m_productionInstructionHistoryTable; ///< 历史记录结果表格
     QDialog* m_productionInstructionRealtimeRecordDialog; ///< 生产指示对比-实时记录界面
     QTableWidget* m_productionInstructionRealtimeTable; ///< 生产指示对比-实时记录表格
-    QMap<QString, int> m_modelBindingLastPalletCount; ///< 车型名称->上次当前托数（用于检测变化）
+    QMap<QString, int> m_modelBindingLastPalletCount; ///< 车型代码->上次当前托数（手动改托数等）
+    QMap<QString, int> m_assemblyPlanLastPlanQtyByLine; ///< 车型代码|产线->上次 assembly_plan plan_qty
     QSet<int> m_productionInstructionServerConfirmedRows; ///< 生产指示已确认行（0-based，左侧灰色不可编辑）
     QSet<int> m_productionInstructionPlcPendingCompareRows; ///< PLC待对比行（0-based，黄色）
     QSet<int> m_productionInstructionPlcMatchSuccessRows; ///< PLC对比成功行（绿色）
@@ -505,6 +528,7 @@ private:
     QTimeEdit* timeEditNightShiftEnd; ///< 夜班结束时间输入框
     QPushButton* pushButtonSaveShiftConfig; ///< 保存班次设置按钮
     QCheckBox* checkBoxExceptionPopup; ///< 异常弹窗提示开关
+    QCheckBox* checkBoxProductionInstructionDoubleClickEdit; ///< 允许双击修改生产指示车型开关
     QString m_password;           ///< 存储的密码
     bool m_isPasswordSet;         ///< 密码是否已设置
     QDate m_lastCurrentShiftTableClearDate; ///< 上次清空当前班次表格的日期
@@ -570,6 +594,7 @@ private:
 
     QStringList m_pendingExceptionMessages; ///< 当前指令待弹窗的异常信息列表（一条指令只弹一次窗）
     bool m_enableExceptionPopup; ///< 是否启用异常弹窗提示
+    bool m_allowProductionInstructionDoubleClickEdit; ///< 是否允许双击修改生产指示/空托盘车型
 
     // 数据库配置
     QString m_dbHost;             ///< 数据库主机地址
