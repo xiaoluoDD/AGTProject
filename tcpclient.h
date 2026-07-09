@@ -256,12 +256,14 @@ private:
     void clearProductionInstructionErrorTable(); ///< 清空报错记录表格
     bool isProductionInstructionServerTableFull() const; ///< 生产指示表是否已无空位
     bool isProductionInstructionPlcTableFull() const; ///< PLC表是否已无空行
-    bool appendProductionInstructionVehicleName(const QString &modelName); ///< 写入下一个空位
+    bool appendProductionInstructionVehicleName(const QString &modelName,
+                                                const QString &productionLine = QString()); ///< 写入下一个空位
     void appendProductionInstructionRealtimeRecord(const QString &vehicleNames); ///< 写入实时记录（逗号分隔车型）
     void ensureProductionInstructionRealtimeTable(); ///< 初始化实时记录表格
     void setupProductionInstructionRealtimeRecordDialog(); ///< 初始化实时记录界面
     QStringList handleModelBindingPalletCountChange(const QString &modelName, int oldCount, int newCount,
-                                                    bool writeRealtimeRecord = true); ///< 托数变化写入生产指示，返回本次写入的车型名列表
+                                                    bool writeRealtimeRecord = true,
+                                                    const QString &productionLine = QString()); ///< 托数变化写入生产指示，返回本次写入的车型名列表
     void syncModelBindingLastPalletCountsFromUi(); ///< 从车型绑定界面同步上次托数
     bool areAllModelBindingPalletCountsZero() const; ///< 是否所有车型当前托数均为0
     void saveProductionInstructionServerToDb(); ///< 保存生产指示（服务端）到数据库
