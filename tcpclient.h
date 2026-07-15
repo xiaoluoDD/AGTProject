@@ -571,6 +571,7 @@ private:
     int m_section3ActualCount;     ///< 第三节便次实际次数
     int m_section4ActualCount;     ///< 第四节便次实际次数
     int m_mealActualCount;         ///< 吃饭时间实际次数（11:30-12:15/21:15-22:00 收到数据时累加）
+    int m_overtimeActualCount;     ///< 加班时间实际次数（加班时段内每条PLC指令+1）
     int m_totalCount;              ///< 总数便次数值
     QString m_currentDisplayShift; ///< 当前显示的班次（"current"表示当前班次，"previous"表示前一个班次）
     QString m_projectGroupDisplayShift; ///< 工程组记录界面显示的班次（"current"表示当前班次，"previous"表示前一个班次）
@@ -584,6 +585,7 @@ private:
     int m_displayedSection3ActualCount;
     int m_displayedSection4ActualCount;
     int m_displayedMealActualCount;     ///< 显示的吃饭时间实际便次（前班次用）
+    int m_displayedOvertimeActualCount; ///< 显示的加班时间实际便次（前班次用）
 
     // 实托盘批次处理相关
     int m_plcShiftTableStripeEpoch; ///< PLC 每条报文（processHexData / addDataToTable 一次调用）递增，当前班次表同报文多行同色

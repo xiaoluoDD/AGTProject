@@ -503,11 +503,13 @@ tcpClient::tcpClient(QWidget *parent)
     , m_section3ActualCount(0)
     , m_section4ActualCount(0)
     , m_mealActualCount(0)
+    , m_overtimeActualCount(0)
     , m_displayedSection1ActualCount(0)
     , m_displayedSection2ActualCount(0)
     , m_displayedSection3ActualCount(0)
     , m_displayedSection4ActualCount(0)
     , m_displayedMealActualCount(0)
+    , m_displayedOvertimeActualCount(0)
     , m_plcShiftTableStripeEpoch(0)
     , m_realTrayBatchCount(0)
     , m_emptyTrayBatchCount(0)
@@ -9611,7 +9613,8 @@ static int parseTimeRangeMinutes(const QString &rangeText)
 
 /**
  * @brief 统计表某行对应的计划用时（分钟）
- * 第一节/第二节/第三节/第四节：仅累计对应工作时间段，段间休息10分钟不计入
+ * 第一节/第三节：工作时段 + 段间休息10分钟（休息算到前一节）
+ * 第二节/第四节：仅工作时段
  * 吃饭：不计计划
  * 加班：取选择的加班小时数换算分钟
  */
@@ -9644,13 +9647,13 @@ int tcpClient::getStatisticsRowPlanMinutes(int rowIndex) const
 
     QVector<int> cols;
     switch (rowIndex) {
-    case 0: // 第一节：7:30-8:30 + 8:30-9:30（休息10分钟不计）
+    case 0: // 第一节：7:30-8:30 + 8:30-9:30 + 休息10分钟（算进前一节）
         cols << 6 << 10;
         break;
     case 1: // 第二节：9:40-10:40 + 10:40-11:30
         cols << 14 << 18;
         break;
-    case 3: // 第三节：12:15-13:15 + 13:15-14:15（休息10分钟不计）
+    case 3: // 第三节：12:15-13:15 + 13:15-14:15 + 休息10分钟（算进前一节）
         cols << 23 << 27;
         break;
     case 4: // 第四节：14:25-15:25 + 15:25-16:15
@@ -9663,6 +9666,10 @@ int tcpClient::getStatisticsRowPlanMinutes(int rowIndex) const
     int minutes = 0;
     for (int col : cols) {
         minutes += parseTimeRangeMinutes(firstLine(col));
+    }
+    // 段间休息10分钟计入前一节（第一节、第三节）
+    if (rowIndex == 0 || rowIndex == 3) {
+        minutes += 10;
     }
     return minutes;
 }
@@ -9926,13 +9933,14 @@ int tcpClient::getPlanSumForOvertimeLastColumn() const
 
 /**
  * @brief 根据总成指示表时间列索引返回便次节
- * 列布局：6-13=第一节，14-21=第二节，22=休息，23-30=第三节，31-38=第四节，39+且一级表头>=9=加班
- * @return 1=第一节, 2=第二节, 3=第三节, 4=第四节, 0=吃饭/休息, 5=加班, -1=无效列
+ * 列布局：6-13=第一节，14-21=第二节，22=吃饭/休息列，23-30=第三节，31-38=第四节，39+且一级表头>=9=加班
+ * 段间休息时段：getColumnForCurrentTime 会回退到前一时段最后一列，从而计入前一节
+ * @return 1=第一节, 2=第二节, 3=第三节, 4=第四节, 0=吃饭, 5=加班, -1=无效列
  */
 int tcpClient::getSectionFromTimeColumn(int colIndex) const
 {
     if (!assemblyIndicatorTable || colIndex < 6) return -1;
-    if (colIndex == 22) return 0; // 吃饭/休息
+    if (colIndex == 22) return 0; // 吃饭列
     if (colIndex >= 6 && colIndex <= 13) return 1;   // 第一节（对应120列所在时间段）
     if (colIndex >= 14 && colIndex <= 21) return 2;  // 第二节（对应230列）
     if (colIndex >= 23 && colIndex <= 30) return 3;  // 第三节（对应350列）
@@ -9997,6 +10005,7 @@ void tcpClient::updateStatisticsTableDisplay()
     const int planSeg4 = getPlanCountBySectionMinutes(4);
     const int planOvertime = getPlanCountBySectionMinutes(5);
     int mealActual = (m_currentDisplayShift == "current") ? m_mealActualCount : m_displayedMealActualCount;
+    int overtimeActual = (m_currentDisplayShift == "current") ? m_overtimeActualCount : m_displayedOvertimeActualCount;
     int s1 = (m_currentDisplayShift == "current") ? m_section1ActualCount : m_displayedSection1ActualCount;
     int s2 = (m_currentDisplayShift == "current") ? m_section2ActualCount : m_displayedSection2ActualCount;
     int s3 = (m_currentDisplayShift == "current") ? m_section3ActualCount : m_displayedSection3ActualCount;
@@ -10027,14 +10036,14 @@ void tcpClient::updateStatisticsTableDisplay()
     setActualIfReached(2, QString::number(mealActual));
     setActualIfReached(3, QString::number(s3));
     setActualIfReached(4, QString::number(s4));
-    setActualIfReached(5, planOvertime > 0 ? "0" : ""); // 加班实际暂不统计，有加班时显示0
+    setActualIfReached(5, planOvertime > 0 ? QString::number(overtimeActual) : "");
     // 差异列（第3列）：未到时间不显示
     setDiffIfReached(0, QString::number(s1 - planSeg1));
     setDiffIfReached(1, QString::number(s2 - planSeg2));
     setDiffIfReached(2, "");
     setDiffIfReached(3, QString::number(s3 - planSeg3));
     setDiffIfReached(4, QString::number(s4 - planSeg4));
-    setDiffIfReached(5, planOvertime > 0 ? "0" : "");
+    setDiffIfReached(5, planOvertime > 0 ? QString::number(overtimeActual - planOvertime) : "");
 }
 
 /**
@@ -13789,6 +13798,7 @@ void tcpClient::saveStatisticsInfo()
     saveOne(QStringLiteral("section3_actual"), m_section3ActualCount, QStringLiteral("保存第三节实际便次失败: "));
     saveOne(QStringLiteral("section4_actual"), m_section4ActualCount, QStringLiteral("保存第四节实际便次失败: "));
     saveOne(QStringLiteral("meal_actual"), m_mealActualCount, QStringLiteral("保存吃饭实际便次失败: "));
+    saveOne(QStringLiteral("overtime_actual"), m_overtimeActualCount, QStringLiteral("保存加班实际便次失败: "));
 
     qDebug() << "统计信息已保存到数据库";
 }
@@ -13871,6 +13881,9 @@ void tcpClient::loadStatisticsInfo()
         } else if (statType == "meal_actual") {
             hasSectionActualKeys = true;
             m_mealActualCount = countValue;
+        } else if (statType == "overtime_actual") {
+            hasSectionActualKeys = true;
+            m_overtimeActualCount = countValue;
         }
     }
 
@@ -13878,6 +13891,7 @@ void tcpClient::loadStatisticsInfo()
     if (!hasSectionActualKeys && legacyActualCount > 0) {
         m_section1ActualCount = m_section2ActualCount = m_section3ActualCount = 0;
         m_mealActualCount = 0;
+        m_overtimeActualCount = 0;
         m_section4ActualCount = legacyActualCount;
     }
 
@@ -13889,6 +13903,7 @@ void tcpClient::loadStatisticsInfo()
         m_displayedSection3ActualCount = m_section3ActualCount;
         m_displayedSection4ActualCount = m_section4ActualCount;
         m_displayedMealActualCount = m_mealActualCount;
+        m_displayedOvertimeActualCount = m_overtimeActualCount;
         m_displayedActualCount = m_actualCount;
     }
 
@@ -13904,7 +13919,8 @@ void tcpClient::loadStatisticsInfo()
              << "s2=" << m_section2ActualCount
              << "s3=" << m_section3ActualCount
              << "s4=" << m_section4ActualCount
-             << "meal=" << m_mealActualCount;
+             << "meal=" << m_mealActualCount
+             << "ot=" << m_overtimeActualCount;
 }
 
 /**
@@ -14222,12 +14238,14 @@ void tcpClient::checkShiftChange()
         // 保存当前实际便次到数据库（前一个班次记录）
         saveShiftRecord(previousShift);
         
-        // 清零四节实际便次及吃饭时间，开始记录新班次数据
+        // 清零四节实际便次及吃饭/加班时间，开始记录新班次数据
         m_section1ActualCount = m_section2ActualCount = m_section3ActualCount = m_section4ActualCount = 0;
         m_mealActualCount = 0;
+        m_overtimeActualCount = 0;
         m_actualCount = 0;
         m_displayedSection1ActualCount = m_displayedSection2ActualCount = m_displayedSection3ActualCount = m_displayedSection4ActualCount = 0;
         m_displayedMealActualCount = 0;
+        m_displayedOvertimeActualCount = 0;
         m_displayedActualCount = 0;
         if (m_currentDisplayShift == "current" && actualCountLabel) {
             actualCountLabel->setText(QString("第二节便次：%1便").arg(m_actualCount));
@@ -14327,12 +14345,14 @@ void tcpClient::checkShiftChange()
         // 保存当前实际便次到数据库（前一个班次记录）
         saveShiftRecord(previousShift);
         
-        // 清零四节实际便次及吃饭时间，开始记录新班次数据
+        // 清零四节实际便次及吃饭/加班时间，开始记录新班次数据
         m_section1ActualCount = m_section2ActualCount = m_section3ActualCount = m_section4ActualCount = 0;
         m_mealActualCount = 0;
+        m_overtimeActualCount = 0;
         m_actualCount = 0;
         m_displayedSection1ActualCount = m_displayedSection2ActualCount = m_displayedSection3ActualCount = m_displayedSection4ActualCount = 0;
         m_displayedMealActualCount = 0;
+        m_displayedOvertimeActualCount = 0;
         m_displayedActualCount = 0;
         if (m_currentDisplayShift == "current" && actualCountLabel) {
             actualCountLabel->setText(QString("第二节便次：%1便").arg(m_actualCount));
@@ -15447,6 +15467,7 @@ void tcpClient::loadPreviousShiftStatistics()
     m_displayedSection3ActualCount = 0;
     m_displayedSection4ActualCount = 0;
     m_displayedMealActualCount = 0;
+    m_displayedOvertimeActualCount = 0;
     m_displayedPlannedCount = m_plannedCount;
     m_displayedDelayedCount = m_delayedCount;
     m_displayedSection4Count = m_section4Count;
@@ -15481,6 +15502,7 @@ void tcpClient::restoreCurrentShiftDisplay()
         m_displayedSection3ActualCount = m_section3ActualCount;
         m_displayedSection4ActualCount = m_section4ActualCount;
         m_displayedMealActualCount = m_mealActualCount;
+        m_displayedOvertimeActualCount = m_overtimeActualCount;
         m_displayedDelayedCount = m_delayedCount;
         m_displayedSection4Count = m_section4Count;
         m_displayedTotalCount = m_totalCount;
@@ -18415,22 +18437,45 @@ void tcpClient::incrementStatisticsActualByOnePlcInstruction()
 {
     const QTime currentTime = QTime::currentTime();
     const QString currentShift = getCurrentShift();
+    // 吃饭时段：收到指令计入吃饭实际便次
     const bool inMealPeriod =
         (currentShift == QStringLiteral("白班") && currentTime >= QTime(11, 30) && currentTime < QTime(12, 15))
         || (currentShift == QStringLiteral("夜班") && currentTime >= QTime(21, 15) && currentTime < QTime(22, 0));
 
+    auto syncDisplayedAndSave = [this]() {
+        if (m_currentDisplayShift == QStringLiteral("current")) {
+            m_displayedSection1ActualCount = m_section1ActualCount;
+            m_displayedSection2ActualCount = m_section2ActualCount;
+            m_displayedSection3ActualCount = m_section3ActualCount;
+            m_displayedSection4ActualCount = m_section4ActualCount;
+            m_displayedMealActualCount = m_mealActualCount;
+            m_displayedOvertimeActualCount = m_overtimeActualCount;
+        }
+        m_actualCount = m_section1ActualCount + m_section2ActualCount + m_section3ActualCount
+                        + m_section4ActualCount;
+        updateStatisticsTableDisplay();
+        saveStatisticsInfo();
+    };
+
     if (inMealPeriod) {
         m_mealActualCount++;
-        if (m_currentDisplayShift == QStringLiteral("current")) {
-            m_displayedMealActualCount = m_mealActualCount;
-        }
-        updateStatisticsTableDisplay();
-        saveStatisticsInfo(); // 立即持久化，重启不丢失
+        syncDisplayedAndSave();
         return;
     }
 
     const int col = getColumnForCurrentTime();
-    const int section = getSectionFromTimeColumn(col);
+    int section = getSectionFromTimeColumn(col);
+    // 段间休息会回退到前一时段列（计入前一节）；吃饭列则计入吃饭
+    if (section == 0) {
+        m_mealActualCount++;
+        syncDisplayedAndSave();
+        return;
+    }
+    if (section == 5) {
+        m_overtimeActualCount++;
+        syncDisplayedAndSave();
+        return;
+    }
     if (section >= 1 && section <= 4) {
         if (section == 1) {
             m_section1ActualCount++;
@@ -18441,16 +18486,7 @@ void tcpClient::incrementStatisticsActualByOnePlcInstruction()
         } else {
             m_section4ActualCount++;
         }
-        m_actualCount = m_section1ActualCount + m_section2ActualCount + m_section3ActualCount
-                        + m_section4ActualCount;
-        if (m_currentDisplayShift == QStringLiteral("current")) {
-            m_displayedSection1ActualCount = m_section1ActualCount;
-            m_displayedSection2ActualCount = m_section2ActualCount;
-            m_displayedSection3ActualCount = m_section3ActualCount;
-            m_displayedSection4ActualCount = m_section4ActualCount;
-        }
-        updateStatisticsTableDisplay();
-        saveStatisticsInfo(); // 立即持久化，重启不丢失
+        syncDisplayedAndSave();
     }
 }
 
