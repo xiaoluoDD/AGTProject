@@ -36,6 +36,8 @@ class QPushButton;
 class QTimeEdit;
 class QComboBox;
 class QDateEdit;
+class QVBoxLayout;
+class QGridLayout;
 
 /**
  * @brief 自定义QHeaderView类，支持二级表头
@@ -106,7 +108,7 @@ private slots:
     void onCurrentShiftTablePageClicked(); ///< 切换到当前班次表格界面
     void onTablePageClicked();      ///< 切换到表格界面
     void onVisualizationPageClicked(); ///< 切换到可视化记录界面
-    void onProjectGroupPageClicked(); ///< 切换到工程组记录界面
+    void onProjectGroupPageClicked(); ///< 切换到各车型搬运数据界面
     void onAssemblyIndicatorPageClicked(); ///< 切换到总成指示表界面
     void onProductionInstructionComparePageClicked(); ///< 切换到生产指示对比界面
     void onProductionInstructionHistoryRecordClicked(); ///< 打开生产指示历史记录界面
@@ -117,7 +119,8 @@ private slots:
     void onProductionInstructionHistoryViewClicked(); ///< 历史记录查看
     void onProductionInstructionHistoryDeleteClicked(); ///< 删除历史记录
     void onVehicleBindingPageClicked(); ///< 切换到车型绑定界面
-    void updateProjectGroupStatistics(); ///< 更新工程组统计表格
+    void updateProjectGroupStatistics(); ///< 刷新各车型搬运数据（实托盘搬出 / 空托盘搬入）卡片
+    void rebuildProjectGroupCards(QGridLayout *layout, const QList<QPair<QString, int>> &items, const QString &unit); ///< 重建绿色卡片列表（每行3个）
     void loadVehicleModelsToAssemblyIndicator(); ///< 加载绑定车型到总成指示表
     void onOvertimeTimeButtonClicked(); ///< 加班时间选择按钮点击处理
     void addOvertimeColumns(double hours); ///< 添加加班时间列到总成指示表（插在合计列之前）
@@ -224,8 +227,8 @@ private slots:
     void onTraySlotLabelDoubleClicked(QLabel* label, bool isRealTray, int slotIndex); ///< 滑槽标签双击处理
     void onRealEntranceLongPressTimeout();  ///< 实滑槽「三车间滑槽出口」长按3秒超时：弹出清空确认
     void onEmptyEntranceLongPressTimeout(); ///< 空滑槽「三车间滑槽入口」长按3秒超时：弹出清空确认
-    void onProjectGroupShiftButtonClicked(); ///< 工程组记录界面班次按钮点击处理
-    void onProjectGroupShiftAutoReset(); ///< 工程组记录界面班次自动恢复处理
+    void onProjectGroupShiftButtonClicked(); ///< 各车型搬运数据界面班次按钮点击处理
+    void onProjectGroupShiftAutoReset(); ///< 各车型搬运数据界面班次自动恢复处理
 
 private:
     // UI和状态管理
@@ -462,10 +465,11 @@ private:
     QTableWidget* emptyTrayOutTableWidget; ///< 空托盘搬出表格
     QPushButton* pushButtonVisualizationPage; ///< 可视化记录页面按钮
     QWidget* visualizationPage; ///< 可视化记录页面
-    QPushButton* pushButtonProjectGroupPage; ///< 工程组记录页面按钮
-    QWidget* projectGroupPage; ///< 工程组记录页面
-    QTableWidget* projectGroupTable; ///< 工程组记录表格
-    QPushButton* projectGroupShiftButton; ///< 工程组统计区域班次显示按钮
+    QPushButton* pushButtonProjectGroupPage; ///< 各车型搬运数据页面按钮
+    QWidget* projectGroupPage; ///< 各车型搬运数据页面
+    QGridLayout* projectGroupRealOutCardsLayout; ///< 左侧实件（实托盘搬出）卡片网格（每行3个）
+    QGridLayout* projectGroupEmptyInCardsLayout; ///< 右侧空托盘搬入卡片网格（每行3个）
+    QPushButton* projectGroupShiftButton; ///< 各车型搬运数据班次显示按钮
     QPushButton* pushButtonAssemblyIndicatorPage; ///< 总成指示表页面按钮
     QWidget* assemblyIndicatorPage; ///< 总成指示表页面
     QTableWidget* assemblyIndicatorTable; ///< 总成指示表表格
@@ -574,7 +578,7 @@ private:
     int m_overtimeActualCount;     ///< 加班时间实际次数（加班时段内每条PLC指令+1）
     int m_totalCount;              ///< 总数便次数值
     QString m_currentDisplayShift; ///< 当前显示的班次（"current"表示当前班次，"previous"表示前一个班次）
-    QString m_projectGroupDisplayShift; ///< 工程组记录界面显示的班次（"current"表示当前班次，"previous"表示前一个班次）
+    QString m_projectGroupDisplayShift; ///< 各车型搬运数据界面显示的班次（"current"/"previous"）
     int m_displayedPlannedCount;   ///< 显示的第一节便次（可能是前一个班次的）
     int m_displayedActualCount;    ///< 显示的第二节便次（可能是前一个班次的）
     int m_displayedDelayedCount;   ///< 显示的第三节便次（可能是前一个班次的）

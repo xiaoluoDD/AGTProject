@@ -38,7 +38,8 @@
 #include <QGroupBox>
 #include <QLineEdit>
 #include <QLabel>
-#include <QSpacerItem>
+#include <QScrollArea>
+#include <QFrame>
 #include <QComboBox>
 #include <QDialog>
 #include <QDialogButtonBox>
@@ -468,6 +469,11 @@ tcpClient::tcpClient(QWidget *parent)
     , realTrayOutTableWidget(nullptr)
     , emptyTrayInTableWidget(nullptr)
     , emptyTrayOutTableWidget(nullptr)
+    , pushButtonProjectGroupPage(nullptr)
+    , projectGroupPage(nullptr)
+    , projectGroupRealOutCardsLayout(nullptr)
+    , projectGroupEmptyInCardsLayout(nullptr)
+    , projectGroupShiftButton(nullptr)
     , assemblyIndicatorTable(nullptr)
     , pushButtonProductionInstructionComparePage(nullptr)
     , productionInstructionComparePage(nullptr)
@@ -820,13 +826,13 @@ void tcpClient::setupUI()
     // 将可视化记录按钮插入到数据表格和车型绑定按钮之间（索引3，因为插入了当前班次表格）
     ui->horizontalLayout_4->insertWidget(3, pushButtonVisualizationPage);
     
-    // 创建工程组记录页面和按钮
+    // 创建工程组/各车型搬运页面和按钮
     pushButtonProjectGroupPage = new QPushButton(this);
-    pushButtonProjectGroupPage->setText("工程组记录");
+    pushButtonProjectGroupPage->setText("各车型搬运数据");
     pushButtonProjectGroupPage->setCheckable(true);
     pushButtonProjectGroupPage->setObjectName("pushButtonProjectGroupPage");
     
-    // 将工程组记录按钮插入到可视化记录按钮之后（索引4，因为插入了当前班次表格）
+    // 将各车型搬运数据按钮插入到可视化记录按钮之后（索引4，因为插入了当前班次表格）
     ui->horizontalLayout_4->insertWidget(4, pushButtonProjectGroupPage);
     
     // 创建总成指示表页面和按钮
@@ -1011,67 +1017,82 @@ void tcpClient::setupUI()
     // 原来的车型绑定页面会变成Index 5
     ui->stackedWidget->insertWidget(3, visualizationPage);
     
-    // 创建工程组记录页面
+    // 创建各车型搬运数据页面
     projectGroupPage = new QWidget();
     projectGroupPage->setObjectName("projectGroupPage");
     QVBoxLayout* projectGroupLayout = new QVBoxLayout(projectGroupPage);
     projectGroupLayout->setObjectName("projectGroupLayout");
-    projectGroupLayout->setSpacing(10);
-    projectGroupLayout->setContentsMargins(15, 15, 15, 15);  // 减少页面边距，增加可用空间
-    
-    // 创建统计区域GroupBox，填充整个工程组记录界面
-    QGroupBox* projectGroupStatisticsBox = new QGroupBox(projectGroupPage);
-    projectGroupStatisticsBox->setTitle("工程组统计");
-    projectGroupStatisticsBox->setStyleSheet(
+    projectGroupLayout->setSpacing(12);
+    projectGroupLayout->setContentsMargins(15, 15, 15, 15);
+
+    const QString panelStyle =
         "QGroupBox {"
-        "font-size: 14pt;"
+        "font-size: 16pt;"
         "font-weight: bold;"
-        "border: 2px solid #d0d0d0;"
-        "border-radius: 8px;"
-        "margin-top: 10px;"
-        "padding-top: 15px;"
-        "padding-bottom: 15px;"
+        "color: #333333;"
+        "border: 1px solid #c8c8c8;"
+        "border-radius: 6px;"
+        "margin-top: 14px;"
+        "background-color: #f5f5f5;"
+        "padding-top: 18px;"
         "}"
         "QGroupBox::title {"
         "subcontrol-origin: margin;"
-        "left: 15px;"
-        "padding: 0 8px 0 8px;"
-        "}"
-    );
-    
-    QVBoxLayout* projectGroupStatisticsLayout = new QVBoxLayout(projectGroupStatisticsBox);
-    projectGroupStatisticsLayout->setSpacing(10);
-    projectGroupStatisticsLayout->setContentsMargins(15, 15, 15, 15);  // 减少边距，增加可用空间
-    
-    // 创建表格
-    projectGroupTable = new QTableWidget(projectGroupStatisticsBox);
-    projectGroupTable->setColumnCount(5);
-    QStringList headers;
-    headers << "车型名称" << "实托盘搬入" << "实托盘搬出" << "空托盘搬入" << "空托盘搬出";
-    projectGroupTable->setHorizontalHeaderLabels(headers);
-    projectGroupTable->setAlternatingRowColors(true);
-    projectGroupTable->setSelectionBehavior(QAbstractItemView::SelectRows);
-    projectGroupTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    projectGroupTable->horizontalHeader()->setStretchLastSection(true);
-    projectGroupTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
-    
-    // 让表格占据GroupBox内的所有可用空间
-    projectGroupStatisticsLayout->addWidget(projectGroupTable, 1);
-    
-    // 创建水平布局用于放置班次按钮（右下角）
+        "left: 16px;"
+        "padding: 0 8px;"
+        "}";
+
+    auto makeCardsPanel = [&panelStyle](QWidget *parent, const QString &title, QGridLayout **outCardsLayout) -> QGroupBox* {
+        QGroupBox *box = new QGroupBox(title, parent);
+        box->setStyleSheet(panelStyle);
+        QVBoxLayout *boxLayout = new QVBoxLayout(box);
+        boxLayout->setContentsMargins(12, 20, 12, 12);
+        boxLayout->setSpacing(0);
+
+        QScrollArea *scroll = new QScrollArea(box);
+        scroll->setWidgetResizable(true);
+        scroll->setFrameShape(QFrame::NoFrame);
+        scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        scroll->setStyleSheet("QScrollArea { background: transparent; border: none; }");
+
+        QWidget *cardsHost = new QWidget(scroll);
+        cardsHost->setStyleSheet("background: transparent;");
+        QGridLayout *cardsLayout = new QGridLayout(cardsHost);
+        cardsLayout->setContentsMargins(8, 8, 8, 8);
+        cardsLayout->setHorizontalSpacing(12);
+        cardsLayout->setVerticalSpacing(14);
+        cardsLayout->setAlignment(Qt::AlignTop);
+        scroll->setWidget(cardsHost);
+        boxLayout->addWidget(scroll, 1);
+
+        *outCardsLayout = cardsLayout;
+        return box;
+    };
+
+    QHBoxLayout *panelsLayout = new QHBoxLayout();
+    panelsLayout->setSpacing(16);
+    panelsLayout->setContentsMargins(0, 0, 0, 0);
+
+    projectGroupRealOutCardsLayout = nullptr;
+    projectGroupEmptyInCardsLayout = nullptr;
+    QGroupBox *realOutBox = makeCardsPanel(projectGroupPage, QStringLiteral("各部品实件搬运数据"), &projectGroupRealOutCardsLayout);
+    QGroupBox *emptyInBox = makeCardsPanel(projectGroupPage, QStringLiteral("各部品空托盘搬运数据"), &projectGroupEmptyInCardsLayout);
+    panelsLayout->addWidget(realOutBox, 1);
+    panelsLayout->addWidget(emptyInBox, 1);
+    projectGroupLayout->addLayout(panelsLayout, 1);
+
+    // 班次按钮（右下角）
     QHBoxLayout* shiftButtonLayout = new QHBoxLayout();
-    shiftButtonLayout->setContentsMargins(0, 5, 0, 5); // 顶部和底部都留5px间距
+    shiftButtonLayout->setContentsMargins(0, 5, 0, 5);
     shiftButtonLayout->setSpacing(0);
-    shiftButtonLayout->addStretch(); // 左侧弹性空间，使按钮靠右
-    
-    // 创建班次显示按钮
-    projectGroupShiftButton = new QPushButton(projectGroupStatisticsBox);
+    shiftButtonLayout->addStretch();
+
+    projectGroupShiftButton = new QPushButton(projectGroupPage);
     QString currentShift = getCurrentShift();
     projectGroupShiftButton->setText(currentShift);
-    projectGroupShiftButton->setMinimumSize(80, 35); // 增加高度以确保文字完整显示
-    projectGroupShiftButton->setMaximumHeight(35); // 增加最大高度
-    projectGroupShiftButton->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed); // 固定大小策略
-    projectGroupShiftButton->setVisible(true); // 确保按钮可见
+    projectGroupShiftButton->setMinimumSize(80, 35);
+    projectGroupShiftButton->setMaximumHeight(35);
+    projectGroupShiftButton->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
     projectGroupShiftButton->setStyleSheet(
         "QPushButton {"
         "font-size: 10pt;"
@@ -1093,27 +1114,16 @@ void tcpClient::setupUI()
         "}"
     );
     shiftButtonLayout->addWidget(projectGroupShiftButton);
-    
-    // 连接班次按钮点击信号
     connect(projectGroupShiftButton, &QPushButton::clicked, this, &tcpClient::onProjectGroupShiftButtonClicked);
-    
-    // 创建一个容器widget来包含按钮布局，确保按钮有固定高度
-    // 按钮实际高度 = 35px(内容) + 16px(上下padding) + 4px(上下border) = 55px
-    // 加上布局的上下边距各5px，容器高度至少需要65px
-    QWidget* shiftButtonWidget = new QWidget(projectGroupStatisticsBox);
+
+    QWidget* shiftButtonWidget = new QWidget(projectGroupPage);
     shiftButtonWidget->setLayout(shiftButtonLayout);
-    shiftButtonWidget->setMinimumHeight(60); // 增加容器高度以确保按钮完整显示，包括padding和border
+    shiftButtonWidget->setMinimumHeight(60);
     shiftButtonWidget->setMaximumHeight(60);
-    shiftButtonWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed); // 水平扩展，垂直固定
-    shiftButtonWidget->setVisible(true); // 确保容器可见
-    
-    // 添加按钮容器到布局（在表格下方）
-    projectGroupStatisticsLayout->addWidget(shiftButtonWidget, 0); // 不设置拉伸因子，保持固定高度，放在表格下方
-    
-    // 设置统计区域可以扩展，占据更多空间
-    projectGroupLayout->addWidget(projectGroupStatisticsBox, 1);  // 使用拉伸因子1，让GroupBox占据可用空间
-    
-    // 将工程组记录页面插入到stackedWidget中（Index 4位置，因为插入了当前班次表格）
+    shiftButtonWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    projectGroupLayout->addWidget(shiftButtonWidget, 0);
+
+    // 将各车型搬运数据页面插入到 stackedWidget（Index 4）
     ui->stackedWidget->insertWidget(4, projectGroupPage);
     
     // 创建总成指示表页面
@@ -5082,7 +5092,7 @@ void tcpClient::onVisualizationPageClicked()
 }
 
 /**
- * @brief 切换到工程组记录界面
+ * @brief 切换到各车型搬运数据界面
  */
 void tcpClient::onProjectGroupPageClicked()
 {
@@ -5105,7 +5115,7 @@ void tcpClient::onProjectGroupPageClicked()
     // 重置为显示当前班次
     m_projectGroupDisplayShift = "current";
     
-    // 更新工程组统计表格
+    // 刷新各车型搬运数据卡片
     updateProjectGroupStatistics();
 }
 
@@ -15005,112 +15015,94 @@ QJsonObject tcpClient::buildProjectGroupData()
 {
     QJsonObject root;
     root["action"] = "show";
-    root["type"] = "Project Group Statistics";
-    
-    // 检查数据库是否已打开
+    root["type"] = "Vehicle Transport Statistics";
+
     QSqlDatabase db = QSqlDatabase::database();
     if (!db.isOpen()) {
-        qDebug() << "数据库未打开，返回空的工程组数据";
+        qDebug() << "数据库未打开，返回空的各车型搬运数据";
         root["statistics"] = QJsonArray();
         return root;
     }
-    
-    // 获取所有车型名称（从车型绑定表）
+
     QSqlQuery query;
     query.prepare("SELECT DISTINCT model_name FROM model_bindings ORDER BY model_name");
-    
     if (!query.exec()) {
         qWarning() << "查询车型列表失败:" << query.lastError().text();
         root["statistics"] = QJsonArray();
         return root;
     }
-    
-    QMap<QString, QMap<QString, int>> statistics; // 车型名称 -> {操作类型 -> 数量}
-    
-    // 初始化所有车型的统计数据
+
+    QMap<QString, int> realOutCount;
+    QMap<QString, int> emptyInCount;
     while (query.next()) {
-        QString modelName = query.value(0).toString();
-        statistics[modelName]["实托盘搬入"] = 0;
-        statistics[modelName]["实托盘搬出"] = 0;
-        statistics[modelName]["空托盘搬入"] = 0;
-        statistics[modelName]["空托盘搬出"] = 0;
+        const QString modelName = query.value(0).toString().trimmed();
+        if (modelName.isEmpty()) {
+            continue;
+        }
+        realOutCount[modelName] = 0;
+        emptyInCount[modelName] = 0;
     }
-    
-    // 根据显示的班次决定统计哪个班次的数据（上报时使用当前班次，不使用前一个班次）
-    QString currentShift = getCurrentShift();
-    QDateTime now = QDateTime::currentDateTime();
-    
-    // 计算当前班次的时间范围
-    QDateTime shiftStartTime, shiftEndTime;
+
+    const QString currentShift = getCurrentShift();
+    const QDateTime now = QDateTime::currentDateTime();
+    QDateTime shiftStartTime;
+    QDateTime shiftEndTime;
     if (currentShift == "白班") {
-        // 白班：今天7:15 - 今天17:30
         shiftStartTime = QDateTime(now.date(), QTime(7, 15, 0));
         shiftEndTime = QDateTime(now.date(), QTime(17, 30, 0));
     } else {
-        // 夜班：昨天17:30 - 今天7:15
         shiftStartTime = QDateTime(now.date().addDays(-1), QTime(17, 30, 0));
         shiftEndTime = QDateTime(now.date(), QTime(7, 15, 0));
     }
-    
-    // 从数据记录表统计各车型的操作次数
-    query.prepare("SELECT model_name, status, time FROM data_records WHERE status IN ('实托盘搬入', '实托盘搬出', '空托盘搬入', '空托盘搬出')");
-    
+
+    query.prepare("SELECT model_name, status, time FROM data_records "
+                  "WHERE status IN ('实托盘搬出', '空托盘搬入')");
     if (!query.exec()) {
-        qWarning() << "查询统计数据失败:" << query.lastError().text();
+        qWarning() << "查询搬运统计数据失败:" << query.lastError().text();
         root["statistics"] = QJsonArray();
         return root;
     }
-    
+
     while (query.next()) {
-        QString modelName = query.value(0).toString();
-        QString status = query.value(1).toString();
-        QString timeStr = query.value(2).toString();
-        
-        // 解析时间字符串（格式：yyyy-MM-dd hh:mm:ss 或 yyyy-MM-dd HH:mm:ss）
+        const QString modelName = query.value(0).toString().trimmed();
+        const QString status = query.value(1).toString();
+        const QString timeStr = query.value(2).toString();
+
         QDateTime recordTime = QDateTime::fromString(timeStr, "yyyy-MM-dd HH:mm:ss");
         if (!recordTime.isValid()) {
-            // 尝试12小时制格式
             recordTime = QDateTime::fromString(timeStr, "yyyy-MM-dd hh:mm:ss");
         }
-        
         if (!recordTime.isValid()) {
-            qWarning() << "无法解析时间字符串:" << timeStr;
             continue;
         }
-        
-        // 判断记录是否属于当前班次
-        bool isInShift = false;
-        if (currentShift == "白班") {
-            // 白班：7:15 - 17:30（同一天）
-            isInShift = (recordTime >= shiftStartTime && recordTime < shiftEndTime);
-        } else {
-            // 夜班：17:30 - 次日7:15（跨天）
-            isInShift = (recordTime >= shiftStartTime && recordTime < shiftEndTime);
+
+        if (!(recordTime >= shiftStartTime && recordTime < shiftEndTime)) {
+            continue;
         }
-        
-        if (isInShift && statistics.contains(modelName)) {
-            statistics[modelName][status]++;
+        if (!realOutCount.contains(modelName)) {
+            continue;
+        }
+
+        if (status == QStringLiteral("实托盘搬出")) {
+            realOutCount[modelName]++;
+        } else if (status == QStringLiteral("空托盘搬入")) {
+            emptyInCount[modelName]++;
         }
     }
-    
-    // 构建统计数组
+
     QJsonArray statisticsArray;
-    QList<QString> modelNames = statistics.keys();
+    QList<QString> modelNames = realOutCount.keys();
     std::sort(modelNames.begin(), modelNames.end());
-    
-    for (const QString& modelName : modelNames) {
+    for (const QString &modelName : modelNames) {
         QJsonObject modelData;
         modelData["model_name"] = modelName;
-        modelData["real_tray_in"] = statistics[modelName]["实托盘搬入"];
-        modelData["real_tray_out"] = statistics[modelName]["实托盘搬出"];
-        modelData["empty_tray_in"] = statistics[modelName]["空托盘搬入"];
-        modelData["empty_tray_out"] = statistics[modelName]["空托盘搬出"];
+        modelData["real_tray_out"] = realOutCount.value(modelName);
+        modelData["empty_tray_in"] = emptyInCount.value(modelName);
         statisticsArray.append(modelData);
     }
-    
+
     root["statistics"] = statisticsArray;
-    root["shift"] = currentShift; // 添加当前班次信息
-    
+    root["shift"] = currentShift;
     return root;
 }
 
@@ -15525,153 +15517,157 @@ void tcpClient::restoreCurrentShiftDisplay()
 }
 
 /**
- * @brief 更新工程组统计表格
+ * @brief 重建各车型搬运绿色卡片
+ */
+void tcpClient::rebuildProjectGroupCards(QGridLayout *layout, const QList<QPair<QString, int>> &items, const QString &unit)
+{
+    if (!layout) {
+        return;
+    }
+
+    while (QLayoutItem *item = layout->takeAt(0)) {
+        if (QWidget *w = item->widget()) {
+            delete w;
+        }
+        delete item;
+    }
+
+    constexpr int kCols = 3;
+    for (int i = 0; i < items.size(); ++i) {
+        const auto &pair = items.at(i);
+        QLabel *card = new QLabel();
+        card->setAlignment(Qt::AlignCenter);
+        card->setWordWrap(true);
+        card->setText(QStringLiteral("%1\n%2%3").arg(pair.first).arg(pair.second).arg(unit));
+        card->setMinimumHeight(88);
+        card->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        card->setStyleSheet(
+            "QLabel {"
+            "background-color: #2E7D32;"
+            "color: white;"
+            "border-radius: 14px;"
+            "padding: 14px 12px;"
+            "font-size: 14pt;"
+            "font-weight: bold;"
+            "}");
+        layout->addWidget(card, i / kCols, i % kCols);
+    }
+
+    // 让三列等宽
+    for (int c = 0; c < kCols; ++c) {
+        layout->setColumnStretch(c, 1);
+    }
+}
+
+/**
+ * @brief 更新各车型搬运数据卡片（左侧实托盘搬出 / 右侧空托盘搬入）
  */
 void tcpClient::updateProjectGroupStatistics()
 {
-    if (!projectGroupTable) {
+    if (!projectGroupRealOutCardsLayout || !projectGroupEmptyInCardsLayout) {
         return;
     }
-    
-    // 检查数据库是否已打开
+
     QSqlDatabase db = QSqlDatabase::database();
     if (!db.isOpen()) {
-        qDebug() << "数据库未打开，跳过更新工程组统计";
+        qDebug() << "数据库未打开，跳过更新各车型搬运数据";
         return;
     }
-    
-    // 获取所有车型名称（从车型绑定表）
+
     QSqlQuery query;
     query.prepare("SELECT DISTINCT model_name FROM model_bindings ORDER BY model_name");
-    
     if (!query.exec()) {
         appendToLog(QString("查询车型列表失败: %1").arg(query.lastError().text()), true);
         qWarning() << "查询车型列表失败:" << query.lastError().text();
         return;
     }
-    
-    QMap<QString, QMap<QString, int>> statistics; // 车型名称 -> {操作类型 -> 数量}
-    
-    // 初始化所有车型的统计数据
+
+    QMap<QString, int> realOutCount;
+    QMap<QString, int> emptyInCount;
     while (query.next()) {
-        QString modelName = query.value(0).toString();
-        statistics[modelName]["实托盘搬入"] = 0;
-        statistics[modelName]["实托盘搬出"] = 0;
-        statistics[modelName]["空托盘搬入"] = 0;
-        statistics[modelName]["空托盘搬出"] = 0;
+        const QString modelName = query.value(0).toString().trimmed();
+        if (modelName.isEmpty()) {
+            continue;
+        }
+        realOutCount[modelName] = 0;
+        emptyInCount[modelName] = 0;
     }
-    
-    // 根据显示的班次决定统计哪个班次的数据
-    QString currentShift = getCurrentShift();
-    QString displayShift = m_projectGroupDisplayShift == "previous" ? 
-        ((currentShift == "白班") ? "夜班" : "白班") : currentShift;
-    
-    QDateTime now = QDateTime::currentDateTime();
-    
-    // 计算要显示的班次的时间范围
-    QDateTime shiftStartTime, shiftEndTime;
+
+    const QString currentShift = getCurrentShift();
+    const QString displayShift = m_projectGroupDisplayShift == "previous"
+        ? ((currentShift == "白班") ? "夜班" : "白班")
+        : currentShift;
+
+    const QDateTime now = QDateTime::currentDateTime();
+    QDateTime shiftStartTime;
+    QDateTime shiftEndTime;
     if (displayShift == "白班") {
-        // 白班：今天7:15 - 今天17:30
         shiftStartTime = QDateTime(now.date(), QTime(7, 15, 0));
         shiftEndTime = QDateTime(now.date(), QTime(17, 30, 0));
     } else {
-        // 夜班：昨天17:30 - 今天7:15
         shiftStartTime = QDateTime(now.date().addDays(-1), QTime(17, 30, 0));
         shiftEndTime = QDateTime(now.date(), QTime(7, 15, 0));
     }
-    
-    // 如果是显示前一个班次，需要调整时间范围到前一个班次
+
     if (m_projectGroupDisplayShift == "previous") {
         if (displayShift == "白班") {
-            // 前一个白班：昨天7:15 - 昨天17:30
             shiftStartTime = QDateTime(now.date().addDays(-1), QTime(7, 15, 0));
             shiftEndTime = QDateTime(now.date().addDays(-1), QTime(17, 30, 0));
         } else {
-            // 前一个夜班：前天17:30 - 昨天7:15
             shiftStartTime = QDateTime(now.date().addDays(-2), QTime(17, 30, 0));
             shiftEndTime = QDateTime(now.date().addDays(-1), QTime(7, 15, 0));
         }
     }
-    
-    // 从数据记录表统计各车型的操作次数
-    query.prepare("SELECT model_name, status, time FROM data_records WHERE status IN ('实托盘搬入', '实托盘搬出', '空托盘搬入', '空托盘搬出')");
-    
+
+    query.prepare("SELECT model_name, status, time FROM data_records "
+                  "WHERE status IN ('实托盘搬出', '空托盘搬入')");
     if (!query.exec()) {
-        appendToLog(QString("查询统计数据失败: %1").arg(query.lastError().text()), true);
-        qWarning() << "查询统计数据失败:" << query.lastError().text();
+        appendToLog(QString("查询搬运统计数据失败: %1").arg(query.lastError().text()), true);
+        qWarning() << "查询搬运统计数据失败:" << query.lastError().text();
         return;
     }
-    
+
     while (query.next()) {
-        QString modelName = query.value(0).toString();
-        QString status = query.value(1).toString();
-        QString timeStr = query.value(2).toString();
-        
-        // 解析时间字符串（格式：yyyy-MM-dd hh:mm:ss 或 yyyy-MM-dd HH:mm:ss）
+        const QString modelName = query.value(0).toString().trimmed();
+        const QString status = query.value(1).toString();
+        const QString timeStr = query.value(2).toString();
+
         QDateTime recordTime = QDateTime::fromString(timeStr, "yyyy-MM-dd HH:mm:ss");
         if (!recordTime.isValid()) {
-            // 尝试12小时制格式
             recordTime = QDateTime::fromString(timeStr, "yyyy-MM-dd hh:mm:ss");
         }
-        
         if (!recordTime.isValid()) {
-            qWarning() << "无法解析时间字符串:" << timeStr;
             continue;
         }
-        
-        // 判断记录是否属于要显示的班次
-        bool isInShift = false;
-        if (displayShift == "白班") {
-            // 白班：7:15 - 17:30（同一天）
-            isInShift = (recordTime >= shiftStartTime && recordTime < shiftEndTime);
-        } else {
-            // 夜班：17:30 - 次日7:15（跨天）
-            isInShift = (recordTime >= shiftStartTime && recordTime < shiftEndTime);
+
+        const bool isInShift = (recordTime >= shiftStartTime && recordTime < shiftEndTime);
+        if (!isInShift || !realOutCount.contains(modelName)) {
+            continue;
         }
-        
-        if (isInShift && statistics.contains(modelName)) {
-            statistics[modelName][status]++;
+
+        if (status == QStringLiteral("实托盘搬出")) {
+            realOutCount[modelName]++;
+        } else if (status == QStringLiteral("空托盘搬入")) {
+            emptyInCount[modelName]++;
         }
     }
-    
-    // 更新表格
-    projectGroupTable->setRowCount(statistics.size());
-    int row = 0;
-    
-    // 按车型名称排序
-    QList<QString> modelNames = statistics.keys();
+
+    QList<QString> modelNames = realOutCount.keys();
     std::sort(modelNames.begin(), modelNames.end());
-    
-    for (const QString& modelName : modelNames) {
-        // 车型名称
-        QTableWidgetItem* nameItem = new QTableWidgetItem(modelName);
-        nameItem->setTextAlignment(Qt::AlignCenter);
-        projectGroupTable->setItem(row, 0, nameItem);
-        
-        // 实托盘搬入
-        QTableWidgetItem* realInItem = new QTableWidgetItem(QString::number(statistics[modelName]["实托盘搬入"]));
-        realInItem->setTextAlignment(Qt::AlignCenter);
-        projectGroupTable->setItem(row, 1, realInItem);
-        
-        // 实托盘搬出
-        QTableWidgetItem* realOutItem = new QTableWidgetItem(QString::number(statistics[modelName]["实托盘搬出"]));
-        realOutItem->setTextAlignment(Qt::AlignCenter);
-        projectGroupTable->setItem(row, 2, realOutItem);
-        
-        // 空托盘搬入
-        QTableWidgetItem* emptyInItem = new QTableWidgetItem(QString::number(statistics[modelName]["空托盘搬入"]));
-        emptyInItem->setTextAlignment(Qt::AlignCenter);
-        projectGroupTable->setItem(row, 3, emptyInItem);
-        
-        // 空托盘搬出
-        QTableWidgetItem* emptyOutItem = new QTableWidgetItem(QString::number(statistics[modelName]["空托盘搬出"]));
-        emptyOutItem->setTextAlignment(Qt::AlignCenter);
-        projectGroupTable->setItem(row, 4, emptyOutItem);
-        
-        row++;
+
+    QList<QPair<QString, int>> realOutItems;
+    QList<QPair<QString, int>> emptyInItems;
+    realOutItems.reserve(modelNames.size());
+    emptyInItems.reserve(modelNames.size());
+    for (const QString &modelName : modelNames) {
+        realOutItems.append(qMakePair(modelName, realOutCount.value(modelName)));
+        emptyInItems.append(qMakePair(modelName, emptyInCount.value(modelName)));
     }
-    
-    qDebug() << QString("工程组统计表格已更新，共%1个车型").arg(statistics.size());
+
+    rebuildProjectGroupCards(projectGroupRealOutCardsLayout, realOutItems, QStringLiteral("台"));
+    rebuildProjectGroupCards(projectGroupEmptyInCardsLayout, emptyInItems, QStringLiteral("个"));
+
+    qDebug() << QString("各车型搬运数据已更新，共%1个车型").arg(modelNames.size());
 }
 
 /**
@@ -15696,7 +15692,7 @@ void tcpClient::onProjectGroupShiftButtonClicked()
         // 启动自动恢复定时器
         m_projectGroupShiftAutoResetTimer->start();
         
-        appendToLog(QString("工程组记录已切换到前一个班次（%1）数据").arg(previousShift), false);
+        appendToLog(QString("各车型搬运数据已切换到前一个班次（%1）").arg(previousShift), false);
     } else {
         // 切换回当前班次
         m_projectGroupDisplayShift = "current";
@@ -15710,10 +15706,9 @@ void tcpClient::onProjectGroupShiftButtonClicked()
         // 停止自动恢复定时器
         m_projectGroupShiftAutoResetTimer->stop();
         
-        // 更新统计表格
         updateProjectGroupStatistics();
         
-        appendToLog(QString("工程组记录已切换回当前班次（%1）数据").arg(currentShift), false);
+        appendToLog(QString("各车型搬运数据已切换回当前班次（%1）").arg(currentShift), false);
     }
 }
 
@@ -15735,7 +15730,7 @@ void tcpClient::onProjectGroupShiftAutoReset()
         // 更新统计表格
         updateProjectGroupStatistics();
         
-        appendToLog(QString("工程组记录已自动恢复为当前班次（%1）数据").arg(currentShift), false);
+        appendToLog(QString("各车型搬运数据已自动恢复为当前班次（%1）").arg(currentShift), false);
     }
 }
 
