@@ -1,4 +1,4 @@
-﻿#include "tcpclient.h"
+#include "tcpclient.h"
 #include "./ui_tcpclient.h"
 #include <QMessageBox>
 #include <QDateTime>
@@ -47,6 +47,7 @@
 #include <QColor>
 #include <QBrush>
 #include <QVector>
+#include <QRegularExpression>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonArray>
@@ -589,24 +590,12 @@ tcpClient::tcpClient(QWidget *parent)
         // 加载可视化记录（在数据库初始化完成后，且可视化页面已创建）
         // 使用延迟加载，确保UI完全初始化
         QTimer::singleShot(200, this, [this]() {
-            loadVisualizationRecords();
-            qDebug() << "loadVisualizationRecords completed";
-            
-            // 加载空托盘可视化记录
-            loadEmptyTrayVisualizationRecords();
-            qDebug() << "loadEmptyTrayVisualizationRecords completed";
-            
-            // 加载统计信息
+            // 路线部品/异常记录界面已移除，不再加载对应可视化与异常表
             loadStatisticsInfo();
             qDebug() << "loadStatisticsInfo completed";
-            
-            // 加载异常记录
-            loadExceptionRecords();
-            qDebug() << "loadExceptionRecords completed";
             // 加载总成指示表（含配置表产量/节拍并计算计划行），以便统计表计划便次有数据
             loadAssemblyIndicatorFromDb(QDate::currentDate(), getCurrentShift());
-            // 从总成指示表实际行同步四节实际便次到统计表（否则启动时统计表实际便次全为0）
-            syncStatisticsFromAssemblyIndicator();
+            // 实际便次以 loadStatisticsInfo 从 DB 恢复为准，不再用总成指示表覆盖
             updateStatisticsTableDisplay();
         });
 
@@ -820,9 +809,9 @@ void tcpClient::setupUI()
     // 将当前班次表格按钮插入到数据表格按钮之前（索引1）
     ui->horizontalLayout_4->insertWidget(1, pushButtonCurrentShiftTablePage);
     
-    // 创建可视化记录页面和按钮
+    // 创建便次统计信息页面和按钮
     pushButtonVisualizationPage = new QPushButton(this);
-    pushButtonVisualizationPage->setText("AGT搬运");
+    pushButtonVisualizationPage->setText("便次统计信息");
     pushButtonVisualizationPage->setCheckable(true);
     pushButtonVisualizationPage->setObjectName("pushButtonVisualizationPage");
     
@@ -853,372 +842,14 @@ void tcpClient::setupUI()
     pushButtonProductionInstructionComparePage->setObjectName(QStringLiteral("pushButtonProductionInstructionComparePage"));
     ui->horizontalLayout_4->insertWidget(6, pushButtonProductionInstructionComparePage);
     
-    // 创建可视化记录页面
+    // 创建便次统计信息页面（仅保留统计表格，占满整个界面）
     visualizationPage = new QWidget();
     visualizationPage->setObjectName("visualizationPage");
     QVBoxLayout* visualizationLayout = new QVBoxLayout(visualizationPage);
     visualizationLayout->setObjectName("visualizationLayout");
     visualizationLayout->setSpacing(15);
     visualizationLayout->setContentsMargins(20, 20, 20, 20);
-    
-    // 创建AGT路线部品GroupBox，用于嵌套实滑槽和空滑槽记录（整体高度减小约三分之一，槽位与字体同步缩小）
-    QGroupBox* agtRoutePartsGroupBox = new QGroupBox(visualizationPage);
-    agtRoutePartsGroupBox->setTitle("AGT路线部品");
-    agtRoutePartsGroupBox->setStyleSheet(
-        "QGroupBox {"
-        "font-size: 10pt;"
-        "font-weight: bold;"
-        "border: 2px solid #d0d0d0;"
-        "border-radius: 6px;"
-        "margin-top: 6px;"
-        "padding-top: 10px;"
-        "}"
-        "QGroupBox::title {"
-        "subcontrol-origin: margin;"
-        "subcontrol-position: top center;"
-        "padding: 0 6px 0 6px;"
-        "}"
-    );
-    
-    // 创建AGT路线部品内部的布局，用于居中显示实滑槽和空滑槽记录
-    QHBoxLayout* agtRoutePartsLayout = new QHBoxLayout(agtRoutePartsGroupBox);
-    agtRoutePartsLayout->setSpacing(13);
-    agtRoutePartsLayout->setContentsMargins(13, 13, 13, 13);
-    
-    // 创建横向布局，用于并排显示实滑槽和空滑槽记录
-    QHBoxLayout* horizontalTrayLayout = new QHBoxLayout();
-    horizontalTrayLayout->setSpacing(20);
-    horizontalTrayLayout->setContentsMargins(0, 0, 0, 0);
-    
-    // 创建实滑槽记录GroupBox（左侧，高度与字体缩小约三分之一）
-    QGroupBox* realTrayGroupBox = new QGroupBox(agtRoutePartsGroupBox);
-    realTrayGroupBox->setTitle("实滑槽记录");
-    realTrayGroupBox->setStyleSheet(
-        "QGroupBox {"
-        "font-size: 10pt;"
-        "font-weight: bold;"
-        "border: 2px solid #d0d0d0;"
-        "border-radius: 6px;"
-        "margin-top: 6px;"
-        "padding-top: 10px;"
-        "}"
-        "QGroupBox::title {"
-        "subcontrol-origin: margin;"
-        "left: 10px;"
-        "padding: 0 6px 0 6px;"
-        "}"
-    );
-    
-    // 使用网格布局，3列11行：入口（1行）+ 列标签（1行）+ 21个槽位（7行）+ 底部标签（1行）+ 出口（1行）
-    QGridLayout* realTrayLayout = new QGridLayout(realTrayGroupBox);
-    realTrayLayout->setSpacing(5);
-    realTrayLayout->setContentsMargins(10, 13, 10, 10);
-    m_realTrayLabels.clear();
-    
-    // 第0行：入口（居中，跨3列）
-    QLabel* entranceLabel = new QLabel(realTrayGroupBox);
-    entranceLabel->setAlignment(Qt::AlignCenter);
-    entranceLabel->setMinimumSize(133, 30);
-    entranceLabel->setStyleSheet(
-        "QLabel {"
-        "border: 2px solid #d0d0d0;"
-        "border-radius: 5px;"
-        "font-size: 8pt;"
-        "font-weight: bold;"
-        "padding: 3px;"
-        "}"
-    );
-    entranceLabel->setText("三车间滑槽出口");
-    m_realTrayLabels.append(entranceLabel);
-    realTrayLayout->addWidget(entranceLabel, 0, 0, 1, 3, Qt::AlignCenter);
-    entranceLabel->installEventFilter(this);
-    entranceLabel->setCursor(Qt::PointingHandCursor);
-    entranceLabel->setToolTip(QStringLiteral("长按3秒可清空实滑槽全部车型记录"));
-    
-    // 第1行：列标签（2101、2102、2103）
-    QStringList columnLabels = {"2101", "2102", "2103"};
-    for (int col = 0; col < 3; ++col) {
-        QLabel* columnLabel = new QLabel(realTrayGroupBox);
-        columnLabel->setAlignment(Qt::AlignCenter);
-        columnLabel->setFixedHeight(6);
-        columnLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-        columnLabel->setStyleSheet(
-            "QLabel {"
-            "border: none;"
-            "font-size: 6pt;"
-            "font-weight: normal;"
-            "padding: 0px;"
-            "background-color: transparent;"
-            "}"
-        );
-        columnLabel->setText(columnLabels[col]);
-        realTrayLayout->addWidget(columnLabel, 1, col);
-    }
-    
-    // 第2-8行：21个槽位（每行3个）
-    for (int row = 2; row <= 8; ++row) {
-        for (int col = 0; col < 3; ++col) {
-            int index = (row - 2) * 3 + col + 1; // 索引从1开始（跳过入口0）
-            QLabel* label = new QLabel(realTrayGroupBox);
-            label->setAlignment(Qt::AlignCenter);
-            label->setMinimumSize(67, 30);
-            label->setStyleSheet(
-                "QLabel {"
-                "border: 2px solid #d0d0d0;"
-                "border-radius: 5px;"
-                "font-size: 8pt;"
-                "font-weight: bold;"
-                "padding: 3px;"
-                "}"
-            );
-            label->setText("");  // 初始为空
-            label->installEventFilter(this); // 安装事件过滤器以支持双击
-            m_realTrayLabels.append(label);
-            realTrayLayout->addWidget(label, row, col);
-        }
-    }
-    
-    // 第9行：底部列标签（1001\n1101、1002\n1102、1003\n1103）
-    QStringList bottomColumnLabels = {"1001\n1101", "1002\n1102", "1003\n1103"};
-    for (int col = 0; col < 3; ++col) {
-        QLabel* bottomColumnLabel = new QLabel(realTrayGroupBox);
-        bottomColumnLabel->setAlignment(Qt::AlignCenter);
-        bottomColumnLabel->setFixedHeight(19);
-        bottomColumnLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-        bottomColumnLabel->setStyleSheet(
-            "QLabel {"
-            "border: none;"
-            "font-size: 6pt;"
-            "font-weight: normal;"
-            "padding: 0px;"
-            "background-color: transparent;"
-            "line-height: 1.0;"
-            "}"
-        );
-        bottomColumnLabel->setText(bottomColumnLabels[col]);
-        realTrayLayout->addWidget(bottomColumnLabel, 9, col);
-    }
-    
-    // 第10行：出口（居中，跨3列）
-    QLabel* exitLabel = new QLabel(realTrayGroupBox);
-    exitLabel->setAlignment(Qt::AlignCenter);
-    exitLabel->setMinimumSize(67, 30);
-    exitLabel->setStyleSheet(
-        "QLabel {"
-        "border: 2px solid #d0d0d0;"
-        "border-radius: 5px;"
-        "font-size: 8pt;"
-        "font-weight: bold;"
-        "padding: 3px;"
-        "}"
-    );
-    exitLabel->setText("二车间滑槽入口");
-    m_realTrayExitLabelText = "二车间滑槽入口"; // 保存初始文本
-    m_realTrayLabels.append(exitLabel);
-    realTrayLayout->addWidget(exitLabel, 10, 0, 1, 3, Qt::AlignCenter);
-    horizontalTrayLayout->addWidget(realTrayGroupBox, 1); // 添加拉伸因子，填充宽度
-    
-    // 创建空滑槽记录GroupBox（右侧，高度与字体缩小约三分之一）
-    QGroupBox* emptyTrayGroupBox = new QGroupBox(agtRoutePartsGroupBox);
-    emptyTrayGroupBox->setTitle("空滑槽记录");
-    emptyTrayGroupBox->setStyleSheet(
-        "QGroupBox {"
-        "font-size: 10pt;"
-        "font-weight: bold;"
-        "border: 2px solid #d0d0d0;"
-        "border-radius: 6px;"
-        "margin-top: 6px;"
-        "padding-top: 10px;"
-        "}"
-        "QGroupBox::title {"
-        "subcontrol-origin: margin;"
-        "left: 10px;"
-        "padding: 0 6px 0 6px;"
-        "}"
-    );
-    
-    // 使用网格布局，3列11行：入口（1行）+ 列标签（1行）+ 21个槽位（7行）+ 底部标签（1行）+ 出口（1行）
-    QGridLayout* emptyTrayLayout = new QGridLayout(emptyTrayGroupBox);
-    emptyTrayLayout->setSpacing(5);
-    emptyTrayLayout->setContentsMargins(10, 13, 10, 10);
-    m_emptyTrayLabels.clear();
-    
-    // 第0行：入口（居中，跨3列）
-    QLabel* emptyEntranceLabel = new QLabel(emptyTrayGroupBox);
-    emptyEntranceLabel->setAlignment(Qt::AlignCenter);
-    emptyEntranceLabel->setMinimumSize(133, 30);
-    emptyEntranceLabel->setStyleSheet(
-        "QLabel {"
-        "border: 2px solid #d0d0d0;"
-        "border-radius: 5px;"
-        "font-size: 8pt;"
-        "font-weight: bold;"
-        "padding: 3px;"
-        "}"
-    );
-    emptyEntranceLabel->setText("三车间滑槽入口");
-    m_emptyTrayLabels.append(emptyEntranceLabel);
-    emptyTrayLayout->addWidget(emptyEntranceLabel, 0, 0, 1, 3, Qt::AlignCenter);
-    emptyEntranceLabel->installEventFilter(this);
-    emptyEntranceLabel->setCursor(Qt::PointingHandCursor);
-    emptyEntranceLabel->setToolTip(QStringLiteral("长按3秒可清空空滑槽全部车型记录"));
-    
-    // 第1行：列标签（2003、2002、2001）
-    QStringList emptyColumnLabels = {"2003", "2002", "2001"};
-    for (int col = 0; col < 3; ++col) {
-        QLabel* emptyColumnLabel = new QLabel(emptyTrayGroupBox);
-        emptyColumnLabel->setAlignment(Qt::AlignCenter);
-        emptyColumnLabel->setFixedHeight(6);
-        emptyColumnLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-        emptyColumnLabel->setStyleSheet(
-            "QLabel {"
-            "border: none;"
-            "font-size: 6pt;"
-            "font-weight: normal;"
-            "padding: 0px;"
-            "background-color: transparent;"
-            "}"
-        );
-        emptyColumnLabel->setText(emptyColumnLabels[col]);
-        emptyTrayLayout->addWidget(emptyColumnLabel, 1, col);
-    }
-    
-    // 第2-8行：21个槽位（每行3个）
-    for (int row = 2; row <= 8; ++row) {
-        for (int col = 0; col < 3; ++col) {
-            int index = (row - 2) * 3 + col + 1; // 索引从1开始（跳过入口0）
-            QLabel* label = new QLabel(emptyTrayGroupBox);
-            label->setAlignment(Qt::AlignCenter);
-            label->setMinimumSize(67, 30);
-            label->setStyleSheet(
-                "QLabel {"
-                "border: 2px solid #d0d0d0;"
-                "border-radius: 5px;"
-                "font-size: 8pt;"
-                "font-weight: bold;"
-                "padding: 3px;"
-                "}"
-            );
-            label->setText("");  // 初始为空
-            label->installEventFilter(this); // 安装事件过滤器以支持双击
-            m_emptyTrayLabels.append(label);
-            emptyTrayLayout->addWidget(label, row, col);
-        }
-    }
-    
-    // 第9行：底部列标签（1001\n1101、1002\n1102、1003\n1103）
-    QStringList emptyBottomColumnLabels = {"1001\n1101", "1002\n1102", "1003\n1103"};
-    for (int col = 0; col < 3; ++col) {
-        QLabel* emptyBottomColumnLabel = new QLabel(emptyTrayGroupBox);
-        emptyBottomColumnLabel->setAlignment(Qt::AlignCenter);
-        emptyBottomColumnLabel->setFixedHeight(19);
-        emptyBottomColumnLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-        emptyBottomColumnLabel->setStyleSheet(
-            "QLabel {"
-            "border: none;"
-            "font-size: 6pt;"
-            "font-weight: normal;"
-            "padding: 0px;"
-            "background-color: transparent;"
-            "line-height: 1.0;"
-            "}"
-        );
-        emptyBottomColumnLabel->setText(emptyBottomColumnLabels[col]);
-        emptyTrayLayout->addWidget(emptyBottomColumnLabel, 9, col);
-    }
-    
-    // 第10行：出口（居中，跨3列）
-    QLabel* emptyExitLabel = new QLabel(emptyTrayGroupBox);
-    emptyExitLabel->setAlignment(Qt::AlignCenter);
-    emptyExitLabel->setMinimumSize(67, 30);
-    emptyExitLabel->setStyleSheet(
-        "QLabel {"
-        "border: 2px solid #d0d0d0;"
-        "border-radius: 5px;"
-        "font-size: 8pt;"
-        "font-weight: bold;"
-        "padding: 3px;"
-        "}"
-    );
-    emptyExitLabel->setText("二车间滑槽出口");
-    m_emptyTrayExitLabelText = "二车间滑槽出口"; // 保存初始文本
-    m_emptyTrayLabels.append(emptyExitLabel);
-    emptyTrayLayout->addWidget(emptyExitLabel, 10, 0, 1, 3, Qt::AlignCenter);
-    horizontalTrayLayout->addWidget(emptyTrayGroupBox, 1); // 添加拉伸因子，填充宽度
-    
-    // 将横向布局添加到AGT路线部品布局中，填充整个宽度
-    agtRoutePartsLayout->addLayout(horizontalTrayLayout);
-    
-    // 限制AGT路线部品整体最大高度（在之前基础上增加四分之一：320→400）
-    agtRoutePartsGroupBox->setMaximumHeight(400);
-    
-    // 将AGT路线部品GroupBox直接添加到主布局中，填充整个宽度和可用高度
-    visualizationLayout->addWidget(agtRoutePartsGroupBox, 0); // 拉伸因子0，不抢占多余高度，由内容与maxHeight决定
-    
-    // 创建底部区域（异常表格和统计信息）的水平布局
-    QHBoxLayout* bottomLayout = new QHBoxLayout();
-    bottomLayout->setSpacing(15);
-    bottomLayout->setContentsMargins(0, 0, 0, 0);
-    
-    // 创建异常表格区域（左侧）
-    QGroupBox* exceptionGroupBox = new QGroupBox(visualizationPage);
-    exceptionGroupBox->setTitle("异常记录");
-    exceptionGroupBox->setStyleSheet(
-        "QGroupBox {"
-        "font-size: 14pt;"
-        "font-weight: bold;"
-        "border: 2px solid #d0d0d0;"
-        "border-radius: 8px;"
-        "margin-top: 10px;"
-        "padding-top: 15px;"
-        "}"
-        "QGroupBox::title {"
-        "subcontrol-origin: margin;"
-        "left: 15px;"
-        "padding: 0 8px 0 8px;"
-        "}"
-    );
-    
-    QVBoxLayout* exceptionLayout = new QVBoxLayout(exceptionGroupBox);
-    exceptionLayout->setContentsMargins(10, 20, 10, 10);
-    
-    // 创建异常表格
-    exceptionTableWidget = new QTableWidget(exceptionGroupBox);
-    exceptionTableWidget->setColumnCount(5);
-    QStringList exceptionHeaders;
-    exceptionHeaders << "滑槽号" << "车型名称" << "送入送出状态" << "异常信息" << "日期";
-    exceptionTableWidget->setHorizontalHeaderLabels(exceptionHeaders);
-    exceptionTableWidget->setStyleSheet(
-        "QTableWidget {"
-        "font-size: 10pt;"
-        "gridline-color: #d0d0d0;"
-        "background-color: white;"
-        "alternate-background-color: #f5f5f5;"
-        "}"
-        "QTableWidget::item {"
-        "padding: 5px;"
-        "}"
-        "QHeaderView::section {"
-        "background-color: #e0e0e0;"
-        "padding: 5px;"
-        "font-weight: bold;"
-        "border: 1px solid #d0d0d0;"
-        "}"
-    );
-    exceptionTableWidget->setAlternatingRowColors(true);
-    exceptionTableWidget->setSelectionBehavior(QAbstractItemView::SelectRows);
-    exceptionTableWidget->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    exceptionTableWidget->horizontalHeader()->setStretchLastSection(true);
-    exceptionTableWidget->setColumnWidth(0, 80);   // 滑槽号
-    exceptionTableWidget->setColumnWidth(1, 120);  // 车型名称
-    exceptionTableWidget->setColumnWidth(2, 120); // 送入送出状态
-    exceptionTableWidget->setColumnWidth(3, 200); // 异常信息
-    exceptionTableWidget->setColumnWidth(4, 150); // 日期
-    exceptionLayout->addWidget(exceptionTableWidget);
-    
-    bottomLayout->addWidget(exceptionGroupBox, 1); // 异常表格占50%宽度
-    
-    // 创建统计区域（右侧，宽度减小）
+
     QGroupBox* statisticsGroupBox = new QGroupBox(visualizationPage);
     statisticsGroupBox->setTitle("统计信息");
     statisticsGroupBox->setStyleSheet(
@@ -1236,12 +867,11 @@ void tcpClient::setupUI()
         "padding: 0 8px 0 8px;"
         "}"
     );
-    
+
     QVBoxLayout* statisticsMainLayout = new QVBoxLayout(statisticsGroupBox);
     statisticsMainLayout->setSpacing(10);
     statisticsMainLayout->setContentsMargins(15, 20, 15, 15);
-    
-    // 统计信息：单一表格（第一列便次名+时间范围 | 计划便次 | 实际便次 | 差异）
+
     m_plannedCount = 100;
     m_displayedPlannedCount = m_plannedCount;
     m_actualCount = 89;
@@ -1256,18 +886,18 @@ void tcpClient::setupUI()
     statisticsTableWidget->setColumnCount(4);
     statisticsTableWidget->setRowCount(6);
     statisticsTableWidget->setHorizontalHeaderLabels(QStringList() << "" << "计划便次" << "实际便次" << "差异");
-    // 四列等宽：均分表格可用宽度
     for (int c = 0; c < 4; ++c) {
         statisticsTableWidget->horizontalHeader()->setSectionResizeMode(c, QHeaderView::Stretch);
     }
     statisticsTableWidget->verticalHeader()->setVisible(false);
+    statisticsTableWidget->verticalHeader()->setSectionResizeMode(QHeaderView::Stretch);
     statisticsTableWidget->setEditTriggers(QAbstractItemView::NoEditTriggers);
     statisticsTableWidget->setSelectionBehavior(QAbstractItemView::SelectItems);
     statisticsTableWidget->setStyleSheet(
-        "QTableWidget { font-size: 12pt; gridline-color: #d0d0d0; }"
-        "QHeaderView::section { font-weight: bold; padding: 8px; background-color: #f0f0f0; }"
+        "QTableWidget { font-size: 14pt; gridline-color: #d0d0d0; }"
+        "QHeaderView::section { font-weight: bold; padding: 10px; background-color: #f0f0f0; font-size: 13pt; }"
+        "QTableWidget::item { padding: 8px; }"
     );
-    // 行标签（第0列），已去除总数便次行
     const QStringList rowNames = QStringList() << "第一节便次" << "第二节便次" << "吃饭时间" << "第三节便次" << "第四节便次" << "加班时间";
     for (int r = 0; r < 6; ++r) {
         QTableWidgetItem* nameItem = new QTableWidgetItem(rowNames[r]);
@@ -1289,7 +919,7 @@ void tcpClient::setupUI()
     m_planTotal = m_plannedCount;
     statisticsTableWidget->installEventFilter(this);
     statisticsMainLayout->addWidget(statisticsTableWidget, 1);
-    
+
     shiftDisplayButton = new QPushButton(statisticsGroupBox);
     m_currentDisplayShift = "current";
     updateShiftDisplayButton();
@@ -1300,17 +930,14 @@ void tcpClient::setupUI()
     );
     connect(shiftDisplayButton, &QPushButton::clicked, this, &tcpClient::onShiftDisplayButtonClicked);
     statisticsMainLayout->addWidget(shiftDisplayButton);
-    
+
     updateStatisticsTableDisplay();
-    
-    bottomLayout->addWidget(statisticsGroupBox, 1); // 统计信息占50%宽度
-    
-    // 将底部区域添加到主布局中
-    visualizationLayout->addLayout(bottomLayout);
-    
-    // 注意：可视化记录的加载将在数据库初始化完成后进行
-    // 不在这里调用 loadVisualizationRecords()，避免数据库未初始化的问题
-    
+    visualizationLayout->addWidget(statisticsGroupBox, 1);
+
+    // AGT路线部品、异常记录界面已移除；滑槽车型上报暂用空数组
+
+    // 注意：统计信息加载在数据库初始化完成后进行
+
     // 创建当前班次表格页面（按状态分为4个表格）
     currentShiftTablePage = new QWidget();
     currentShiftTablePage->setObjectName("currentShiftTablePage");
@@ -5437,7 +5064,7 @@ void tcpClient::onTablePageClicked()
 }
 
 /**
- * @brief 切换到可视化记录界面
+ * @brief 切换到便次统计信息界面
  */
 void tcpClient::onVisualizationPageClicked()
 {
@@ -6367,6 +5994,8 @@ void tcpClient::processHexData(const QByteArray &data)
 
     m_pendingExceptionMessages.clear(); // 一条指令只弹一次窗，先清空本指令的异常列表
 
+    bool hadRealTrayOutInThisInstruction = false;
+
     // 定义托盘信息结构
     struct TrayInfo {
         int slotNo;           // 托盘号（1-6）
@@ -6613,26 +6242,29 @@ void tcpClient::processHexData(const QByteArray &data)
                 
                 appendToLog(QString("托盘%1数据已添加到表格 - %2, 车型: %3").arg(slotNoStr).arg(tray.statusStr).arg(vehicleName), false);
                 
-                // 如果是实托盘搬出，更新可视化界面
+                // 如果是实托盘搬出：更新可视化 / 总成指示表实际行；便次统计对本条PLC指令只计1次
                 // 根据字节位置确定放置位置：第5个字节->位置0，第6个字节->位置1，第7个字节->位置2
                 if (tray.isRealTray && tray.statusStr == "实托盘搬出" && !vehicleName.isEmpty()) {
                     // tray.slotNo是1-3，对应第5-7个字节，转换为位置索引0-2
                     int slotIndex = tray.slotNo - 1;
                     updateVisualization(vehicleName, true, slotIndex);
+                    updateAssemblyIndicatorActualRow(vehicleName);
+                    hadRealTrayOutInThisInstruction = true;
                 }
                 // 如果是空托盘搬入，处理空托盘搬入逻辑
                 // 根据字节位置确定检查位置：第8个字节（slotNo=4）->2103，对应右边槽位（位置2），第9个字节（slotNo=5）->2102，对应中间槽位（位置1），第10个字节（slotNo=6）->2101，对应左边槽位（位置0）
                 if (!tray.isRealTray && tray.statusStr == "空托盘搬入" && !vehicleName.isEmpty()) {
                     handleEmptyTrayIn(vehicleName, tray.slotNo);
                 }
-                // 如果是空托盘搬出，更新总成指示表的实际行
-                if (!tray.isRealTray && tray.statusStr == "空托盘搬出" && !vehicleName.isEmpty()) {
-                    updateAssemblyIndicatorActualRow(vehicleName);
-                }
             } else if (tray.modelCode != 0) {
                 appendToLog(QString("托盘%1的车型代码 %2 未在绑定表中找到").arg(tray.slotNo).arg(modelCodeStr), true);
             }
         }
+    }
+
+    // 本条 PLC 指令只要含实托盘搬出，实际便次只加 1（与同指令内车型数量无关）
+    if (hadRealTrayOutInThisInstruction) {
+        incrementStatisticsActualByOnePlcInstruction();
     }
 
     // 如果工程组页面可见且显示当前班次，更新工程组统计表格
@@ -9715,6 +9347,8 @@ void tcpClient::onEmptyEntranceLongPressTimeout()
 
 void tcpClient::clearAllRealTrayVisualizationSlots()
 {
+    return; // 路线部品界面已移除
+
     for (int i = 0; i < 21 && i < m_realTraySlots.size(); ++i) {
         m_realTraySlots[i] = QString();
     }
@@ -9742,6 +9376,7 @@ void tcpClient::clearAllRealTrayVisualizationSlots()
 
 void tcpClient::clearAllEmptyTrayVisualizationSlots()
 {
+    return; // 路线部品界面已移除
     for (int i = 0; i < 21 && i < m_emptyTraySlots.size(); ++i) {
         m_emptyTraySlots[i] = QString();
     }
@@ -9928,6 +9563,120 @@ QString tcpClient::getStatisticsRowTimeRange(int rowIndex) const
         return QString();
     }
     return parts.join(" ");
+}
+
+/**
+ * @brief 解析时间段分钟数（支持 H:MM-H:MM / HH:MM-HH:MM，含跨天）
+ */
+static int parseTimeRangeMinutes(const QString &rangeText)
+{
+    const QString cleaned = rangeText.trimmed();
+    if (cleaned.isEmpty() || cleaned.contains(QStringLiteral("休息"))) {
+        return 0;
+    }
+
+    // 加班表头可能为「加班 7:30-8:00」这类，取最后一段含 '-' 的部分
+    QString range = cleaned;
+    const QStringList tokens = cleaned.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
+    for (int i = tokens.size() - 1; i >= 0; --i) {
+        if (tokens.at(i).contains(QLatin1Char('-'))) {
+            range = tokens.at(i);
+            break;
+        }
+    }
+
+    const QStringList parts = range.split(QLatin1Char('-'));
+    if (parts.size() != 2) {
+        return 0;
+    }
+
+    QTime start = QTime::fromString(parts.at(0).trimmed(), QStringLiteral("H:mm"));
+    if (!start.isValid()) {
+        start = QTime::fromString(parts.at(0).trimmed(), QStringLiteral("HH:mm"));
+    }
+    QTime end = QTime::fromString(parts.at(1).trimmed(), QStringLiteral("H:mm"));
+    if (!end.isValid()) {
+        end = QTime::fromString(parts.at(1).trimmed(), QStringLiteral("HH:mm"));
+    }
+    if (!start.isValid() || !end.isValid()) {
+        return 0;
+    }
+
+    int secs = start.secsTo(end);
+    if (secs < 0) {
+        secs += 24 * 3600;
+    }
+    return secs / 60;
+}
+
+/**
+ * @brief 统计表某行对应的计划用时（分钟）
+ * 第一节/第二节/第三节/第四节：仅累计对应工作时间段，段间休息10分钟不计入
+ * 吃饭：不计计划
+ * 加班：取选择的加班小时数换算分钟
+ */
+int tcpClient::getStatisticsRowPlanMinutes(int rowIndex) const
+{
+    if (rowIndex == 2) {
+        return 0; // 吃饭时间不计计划便次
+    }
+    if (rowIndex == 5) {
+        if (m_overtimeHours <= 0) {
+            return 0;
+        }
+        return qRound(m_overtimeHours * 60.0);
+    }
+
+    if (!assemblyIndicatorTable || rowIndex < 0 || rowIndex > 4) {
+        return 0;
+    }
+    TwoLevelHeaderView *header =
+        dynamic_cast<TwoLevelHeaderView *>(assemblyIndicatorTable->horizontalHeader());
+    if (!header) {
+        return 0;
+    }
+
+    auto firstLine = [header](int col) -> QString {
+        QString full = header->getFirstLevelHeader(col);
+        const int idx = full.indexOf(QLatin1Char('\n'));
+        return idx >= 0 ? full.left(idx).trimmed() : full.trimmed();
+    };
+
+    QVector<int> cols;
+    switch (rowIndex) {
+    case 0: // 第一节：7:30-8:30 + 8:30-9:30（休息10分钟不计）
+        cols << 6 << 10;
+        break;
+    case 1: // 第二节：9:40-10:40 + 10:40-11:30
+        cols << 14 << 18;
+        break;
+    case 3: // 第三节：12:15-13:15 + 13:15-14:15（休息10分钟不计）
+        cols << 23 << 27;
+        break;
+    case 4: // 第四节：14:25-15:25 + 15:25-16:15
+        cols << 31 << 35;
+        break;
+    default:
+        return 0;
+    }
+
+    int minutes = 0;
+    for (int col : cols) {
+        minutes += parseTimeRangeMinutes(firstLine(col));
+    }
+    return minutes;
+}
+
+/**
+ * @brief 计划便次 = 该节分钟数 / 12，四舍五入
+ */
+int tcpClient::getPlanCountBySectionMinutes(int rowIndex) const
+{
+    const int minutes = getStatisticsRowPlanMinutes(rowIndex);
+    if (minutes <= 0) {
+        return 0;
+    }
+    return qRound(minutes / 12.0);
 }
 
 /**
@@ -10139,48 +9888,9 @@ int tcpClient::getColumnForCurrentTime()
  */
 void tcpClient::syncStatisticsFromAssemblyIndicator()
 {
-    if (!assemblyIndicatorTable) return;
-    int bestCol = getColumnForCurrentTime();
-    if (bestCol < 0) return;
-    // 各节结束列：120->13, 230->21, 350->30, 460->38
-    int col120 = -1, col230 = -1, col350 = -1, col460 = -1;
-    TwoLevelHeaderView* header = dynamic_cast<TwoLevelHeaderView*>(assemblyIndicatorTable->horizontalHeader());
-    if (header) {
-        int colCount = assemblyIndicatorTable->columnCount();
-        for (int c = 6; c < colCount - 1; ++c) {
-            if (c == 22) continue;
-            QString v = header->getSecondLevelHeader(c).trimmed();
-            if (v == "120") col120 = c;
-            else if (v == "230") col230 = c;
-            else if (v == "350") col350 = c;
-            else if (v == "460") col460 = c;
-        }
-    }
-    int eff1 = -1, eff2 = -1, eff3 = -1, eff4 = -1;
-    if (bestCol >= 6 && bestCol <= 13) eff1 = (col120 >= 0 && bestCol >= col120) ? col120 : bestCol;
-    else if (bestCol > 13) eff1 = col120;
-    if (bestCol >= 14 && bestCol <= 21) eff2 = (col230 >= 0 && bestCol >= col230) ? col230 : bestCol;
-    else if (bestCol > 21 && col230 >= 0) eff2 = col230;
-    if (bestCol >= 23 && bestCol <= 30) eff3 = (col350 >= 0 && bestCol >= col350) ? col350 : bestCol;
-    else if (bestCol > 30 && col350 >= 0) eff3 = col350;
-    if (bestCol >= 31 && bestCol <= 38) eff4 = (col460 >= 0 && bestCol >= col460) ? col460 : bestCol;
-    else if (bestCol > 38 && col460 >= 0) eff4 = col460;
-    int sum120 = (eff1 >= 0) ? getActualSumAtOrBeforeColumn(eff1) : 0;
-    int sum230 = (eff2 >= 0) ? getActualSumAtOrBeforeColumn(eff2) : 0;
-    int sum350 = (eff3 >= 0) ? getActualSumAtOrBeforeColumn(eff3) : 0;
-    int sum460 = (eff4 >= 0) ? getActualSumAtOrBeforeColumn(eff4) : 0;
-    // 便次为累计值（第二节=230列和），存储为增量以便 cum2=s1+s2, cum3=mealCum+s3 等
-    m_section1ActualCount = sum120;
-    m_section2ActualCount = sum230 - sum120;
-    m_section3ActualCount = sum350 - sum230;
-    m_section4ActualCount = sum460 - sum350;
-    m_actualCount = m_section1ActualCount + m_section2ActualCount + m_section3ActualCount + m_section4ActualCount;
-    m_displayedSection1ActualCount = m_section1ActualCount;
-    m_displayedSection2ActualCount = m_section2ActualCount;
-    m_displayedSection3ActualCount = m_section3ActualCount;
-    m_displayedSection4ActualCount = m_section4ActualCount;
-    m_mealActualCount = 0;
-    m_displayedMealActualCount = 0;
+    // 实际便次按「一条 PLC 搬运指令 +1」累计，并写入 statistics_info。
+    // 不再从总成指示表实际行汇总覆盖，否则会冲掉数据库中的真实分节统计。
+    updateStatisticsTableDisplay();
 }
 
 /**
@@ -10260,8 +9970,8 @@ bool tcpClient::hasReachedStatisticsRow(int rowIndex)
         return (shift == "白班" && t >= QTime(12, 15)) || (shift == "夜班" && (t >= QTime(22, 0) || t <= QTime(0, 0)));
     case 4: // 第四节：14:25(白) / 00:15(夜)
         return (shift == "白班" && t >= QTime(14, 25)) || (shift == "夜班" && t >= QTime(0, 15) && t < QTime(3, 0));
-    case 5: // 加班：有加班列时显示
-        return getPlanSumForOvertimeLastColumn() > 0;
+    case 5: // 加班：已选择加班时间时显示
+        return m_overtimeHours > 0;
     default:
         return false;
     }
@@ -10269,7 +9979,7 @@ bool tcpClient::hasReachedStatisticsRow(int rowIndex)
 
 /**
  * @brief 刷新统计表格所有单元格（第一列为便次名 | 计划便次 | 实际便次 | 差异）
- * 计划/实际均按「各便次独立值」显示，不再显示累计值。
+ * 计划便次按各节时间分钟数/12四舍五入；实际仍按各便次独立值显示。
  */
 void tcpClient::updateStatisticsTableDisplay()
 {
@@ -10280,17 +9990,12 @@ void tcpClient::updateStatisticsTableDisplay()
         if (QTableWidgetItem* item = statisticsTableWidget->item(r, 0))
             item->setText(rowNames[r]);
     }
-    // 计划便次列（第1列）：始终显示；吃饭为空；加班无加班时为空
-    int plan1 = getPlanSumForSecondLevelValue(120);
-    int plan2 = getPlanSumForSecondLevelValue(230);
-    int plan3 = getPlanSumForSecondLevelValue(350);
-    int plan4 = getPlanSumForSecondLevelValue(460);
-    int planOvertime = getPlanSumForOvertimeLastColumn();
-    // 二级表头 120/230/350/460 对应累计值，这里转换为各便次独立值
-    const int planSeg1 = plan1;
-    const int planSeg2 = plan2 - plan1;
-    const int planSeg3 = plan3 - plan2;
-    const int planSeg4 = plan4 - plan3;
+    // 计划便次列（第1列）：分钟数/12 四舍五入；吃饭为空；无加班时加班为空
+    const int planSeg1 = getPlanCountBySectionMinutes(0);
+    const int planSeg2 = getPlanCountBySectionMinutes(1);
+    const int planSeg3 = getPlanCountBySectionMinutes(3);
+    const int planSeg4 = getPlanCountBySectionMinutes(4);
+    const int planOvertime = getPlanCountBySectionMinutes(5);
     int mealActual = (m_currentDisplayShift == "current") ? m_mealActualCount : m_displayedMealActualCount;
     int s1 = (m_currentDisplayShift == "current") ? m_section1ActualCount : m_displayedSection1ActualCount;
     int s2 = (m_currentDisplayShift == "current") ? m_section2ActualCount : m_displayedSection2ActualCount;
@@ -10313,6 +10018,9 @@ void tcpClient::updateStatisticsTableDisplay()
     setPlan(3, QString::number(planSeg3));
     setPlan(4, QString::number(planSeg4));
     setPlan(5, planOvertime > 0 ? QString::number(planOvertime) : "");
+    // 同步第一节计划（兼容旧成员/上报字段命名）
+    m_plannedCount = planSeg1;
+    m_planTotal = planSeg1;
     // 实际便次列（第2列）：未到时间不显示；按各便次独立值显示
     setActualIfReached(0, QString::number(s1));
     setActualIfReached(1, QString::number(s2));
@@ -10872,6 +10580,11 @@ void tcpClient::onTestDatabaseConnectionClicked()
  */
 void tcpClient::updateVisualization(const QString &vehicleName, bool isRealTray, int slotIndex)
 {
+    Q_UNUSED(vehicleName);
+    Q_UNUSED(isRealTray);
+    Q_UNUSED(slotIndex);
+    return; // 路线部品界面已移除，暂不上报/维护滑槽车型
+
     if (!isRealTray) {
         return; // 目前只处理实托盘
     }
@@ -10981,6 +10694,8 @@ void tcpClient::updateVisualization(const QString &vehicleName, bool isRealTray,
  */
 void tcpClient::advanceVisualizationBy3()
 {
+    return; // 路线部品界面已移除
+
     // 从右向左推进3个位置，避免覆盖
     // 数组索引0-20对应21个槽位
     
@@ -11094,6 +10809,8 @@ void tcpClient::advanceVisualizationBy3()
  */
 void tcpClient::advanceVisualization()
 {
+    return; // 路线部品界面已移除
+
     // 从右向左推进，避免覆盖
     // 数组索引0是入口，索引1-19是滑槽位置，索引20是出口
     // 从最后一个槽（索引19）开始，依次向右移动到出口（索引20）
@@ -11138,6 +10855,8 @@ void tcpClient::advanceVisualization()
  */
 void tcpClient::saveVisualizationRecords()
 {
+    return; // 路线部品界面已移除
+
     // 检查数据库是否已打开
     QSqlDatabase db = QSqlDatabase::database();
     if (!db.isOpen()) {
@@ -11260,6 +10979,8 @@ void tcpClient::saveVisualizationRecords()
  */
 void tcpClient::loadVisualizationRecords()
 {
+    return; // 路线部品界面已移除
+
     // 检查数据库是否已打开
     QSqlDatabase db = QSqlDatabase::database();
     if (!db.isOpen()) {
@@ -11587,9 +11308,9 @@ void tcpClient::onServerSocketConnected()
     
     // 启动可视化数据发送定时器
     m_visualizationDataTimer->start();
-    appendToLog("数据发送定时器已启动（每3秒触发一次，1秒间隔上报AGT搬运和工程组数据）", false);
-    
-    // 立即发送一次AGT搬运数据
+        appendToLog("数据发送定时器已启动（每3秒触发一次，上报便次统计与工程组数据）", false);
+
+    // 立即发送一次便次统计数据
     sendVisualizationDataToServer();
     
     // 启动工程组数据发送定时器（3秒后发送）
@@ -13293,6 +13014,10 @@ void tcpClient::processServerJsonData(const QByteArray &data, bool saveToTable)
  */
 void tcpClient::handleRealTrayIn(const QString &modelName, int slotNumber)
 {
+    Q_UNUSED(modelName);
+    Q_UNUSED(slotNumber);
+    return; // 路线部品界面已移除，暂不匹配/维护滑槽车型
+
     QString trimmedModel = modelName.trimmed();
     
     // 如果指定了slotNumber，先从出口往前找，找到最靠近出口且有车型的一行（3个连续槽位）
@@ -13521,6 +13246,10 @@ void tcpClient::handleRealTrayIn(const QString &modelName, int slotNumber)
  */
 void tcpClient::handleEmptyTrayIn(const QString &modelName, int slotNo)
 {
+    Q_UNUSED(modelName);
+    Q_UNUSED(slotNo);
+    return; // 路线部品界面已移除，暂不匹配/维护滑槽车型
+
     QString trimmedModel = modelName.trimmed();
     
     // 如果指定了slotNo，使用新的逻辑
@@ -13677,6 +13406,10 @@ void tcpClient::handleEmptyTrayIn(const QString &modelName, int slotNo)
  */
 void tcpClient::handleEmptyTrayOut(const QString &modelName, int slotNumber)
 {
+    Q_UNUSED(modelName);
+    Q_UNUSED(slotNumber);
+    return; // 路线部品界面已移除，暂不维护空滑槽车型
+
     // 如果指定了slotNumber，使用新的逻辑
     if (slotNumber > 0) {
         // 确定slotNumber对应的位置（从下往上，从左往右：18、19、20）
@@ -13763,6 +13496,9 @@ void tcpClient::handleEmptyTrayOut(const QString &modelName, int slotNumber)
  */
 void tcpClient::advanceEmptyTrayVisualizationBy3(const QString &modelName)
 {
+    Q_UNUSED(modelName);
+    return; // 路线部品界面已移除
+
     // 从入口向出口方向推进3个位置（从左向右）
     // 数组索引0-20对应21个槽位，索引0是入口，索引20是出口
     
@@ -13878,6 +13614,8 @@ void tcpClient::advanceEmptyTrayVisualizationBy3(const QString &modelName)
  */
 void tcpClient::advanceEmptyTrayVisualization()
 {
+    return; // 路线部品界面已移除
+
     // 如果第一个槽位（索引0，最靠近入口）有内容，直接清空（不显示在出口标签）
     // 因为从下往上进入，最前面的会被推出，但不显示在出口标签
     if (m_emptyTraySlots.size() > 0 && !m_emptyTraySlots[0].isEmpty()) {
@@ -13912,6 +13650,8 @@ void tcpClient::advanceEmptyTrayVisualization()
  */
 void tcpClient::saveEmptyTrayVisualizationRecords()
 {
+    return; // 路线部品界面已移除
+
     // 检查数据库是否已打开
     QSqlDatabase db = QSqlDatabase::database();
     if (!db.isOpen()) {
@@ -13950,6 +13690,8 @@ void tcpClient::saveEmptyTrayVisualizationRecords()
  */
 void tcpClient::loadEmptyTrayVisualizationRecords()
 {
+    return; // 路线部品界面已移除
+
     // 检查数据库是否已打开
     QSqlDatabase db = QSqlDatabase::database();
     if (!db.isOpen()) {
@@ -14017,66 +13759,37 @@ void tcpClient::saveStatisticsInfo()
         qDebug() << "数据库未打开，跳过保存统计信息";
         return;
     }
-    
+
     QSqlQuery query;
-    QString currentTime = QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss");
-    
-    // 使用INSERT ... ON DUPLICATE KEY UPDATE来更新或插入
-    // 保存第一节便次（planned_count 兼容旧库）
-    query.prepare("INSERT INTO statistics_info (stat_type, count_value, update_time) VALUES (?, ?, ?) "
-                  "ON DUPLICATE KEY UPDATE count_value = ?, update_time = ?");
-    query.addBindValue("planned_count");
-    query.addBindValue(m_plannedCount);
-    query.addBindValue(currentTime);
-    query.addBindValue(m_plannedCount);
-    query.addBindValue(currentTime);
-    if (!query.exec()) {
-        appendToLog("保存第一节便次失败: " + query.lastError().text(), true);
-    }
-    // 保存第二节便次（actual_count 兼容旧库）
-    query.prepare("INSERT INTO statistics_info (stat_type, count_value, update_time) VALUES (?, ?, ?) "
-                  "ON DUPLICATE KEY UPDATE count_value = ?, update_time = ?");
-    query.addBindValue("actual_count");
-    query.addBindValue(m_actualCount);
-    query.addBindValue(currentTime);
-    query.addBindValue(m_actualCount);
-    query.addBindValue(currentTime);
-    if (!query.exec()) {
-        appendToLog("保存第二节便次失败: " + query.lastError().text(), true);
-    }
-    // 保存第三节便次（delayed_count 兼容旧库）
-    query.prepare("INSERT INTO statistics_info (stat_type, count_value, update_time) VALUES (?, ?, ?) "
-                  "ON DUPLICATE KEY UPDATE count_value = ?, update_time = ?");
-    query.addBindValue("delayed_count");
-    query.addBindValue(m_delayedCount);
-    query.addBindValue(currentTime);
-    query.addBindValue(m_delayedCount);
-    query.addBindValue(currentTime);
-    if (!query.exec()) {
-        appendToLog("保存第三节便次失败: " + query.lastError().text(), true);
-    }
-    // 保存第四节便次
-    query.prepare("INSERT INTO statistics_info (stat_type, count_value, update_time) VALUES (?, ?, ?) "
-                  "ON DUPLICATE KEY UPDATE count_value = ?, update_time = ?");
-    query.addBindValue("section4_count");
-    query.addBindValue(m_section4Count);
-    query.addBindValue(currentTime);
-    query.addBindValue(m_section4Count);
-    query.addBindValue(currentTime);
-    if (!query.exec()) {
-        appendToLog("保存第四节便次失败: " + query.lastError().text(), true);
-    }
-    // 保存总数便次
-    query.prepare("INSERT INTO statistics_info (stat_type, count_value, update_time) VALUES (?, ?, ?) "
-                  "ON DUPLICATE KEY UPDATE count_value = ?, update_time = ?");
-    query.addBindValue("total_count");
-    query.addBindValue(m_totalCount);
-    query.addBindValue(currentTime);
-    query.addBindValue(m_totalCount);
-    query.addBindValue(currentTime);
-    if (!query.exec()) {
-        appendToLog("保存总数便次失败: " + query.lastError().text(), true);
-    }
+    const QString currentTime = QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss");
+
+    auto saveOne = [&](const QString &statType, int value, const QString &failMsg) {
+        query.prepare("INSERT INTO statistics_info (stat_type, count_value, update_time) VALUES (?, ?, ?) "
+                      "ON DUPLICATE KEY UPDATE count_value = ?, update_time = ?");
+        query.addBindValue(statType);
+        query.addBindValue(value);
+        query.addBindValue(currentTime);
+        query.addBindValue(value);
+        query.addBindValue(currentTime);
+        if (!query.exec()) {
+            appendToLog(failMsg + query.lastError().text(), true);
+        }
+    };
+
+    // 兼容旧库的汇总字段
+    saveOne(QStringLiteral("planned_count"), m_plannedCount, QStringLiteral("保存第一节便次失败: "));
+    saveOne(QStringLiteral("actual_count"), m_actualCount, QStringLiteral("保存实际便次汇总失败: "));
+    saveOne(QStringLiteral("delayed_count"), m_delayedCount, QStringLiteral("保存第三节便次失败: "));
+    saveOne(QStringLiteral("section4_count"), m_section4Count, QStringLiteral("保存第四节便次失败: "));
+    saveOne(QStringLiteral("total_count"), m_totalCount, QStringLiteral("保存总数便次失败: "));
+
+    // 分节实际便次（重启后恢复用）
+    saveOne(QStringLiteral("section1_actual"), m_section1ActualCount, QStringLiteral("保存第一节实际便次失败: "));
+    saveOne(QStringLiteral("section2_actual"), m_section2ActualCount, QStringLiteral("保存第二节实际便次失败: "));
+    saveOne(QStringLiteral("section3_actual"), m_section3ActualCount, QStringLiteral("保存第三节实际便次失败: "));
+    saveOne(QStringLiteral("section4_actual"), m_section4ActualCount, QStringLiteral("保存第四节实际便次失败: "));
+    saveOne(QStringLiteral("meal_actual"), m_mealActualCount, QStringLiteral("保存吃饭实际便次失败: "));
+
     qDebug() << "统计信息已保存到数据库";
 }
 
@@ -14091,24 +13804,26 @@ void tcpClient::loadStatisticsInfo()
         qDebug() << "数据库未打开，跳过加载统计信息";
         return;
     }
-    
+
     // 检查统计表格是否已创建
     if (!statisticsTableWidget) {
         qDebug() << "统计信息表格未创建，跳过加载统计信息";
         return;
     }
-    
+
     QSqlQuery query("SELECT stat_type, count_value FROM statistics_info");
-    
     if (query.lastError().isValid()) {
         qDebug() << "查询统计信息失败:" << query.lastError().text();
         return;
     }
-    
+
+    bool hasSectionActualKeys = false;
+    int legacyActualCount = -1;
+
     while (query.next()) {
-        QString statType = query.value(0).toString();
-        int countValue = query.value(1).toInt();
-        
+        const QString statType = query.value(0).toString();
+        const int countValue = query.value(1).toInt();
+
         if (statType == "planned_count") {
             m_plannedCount = countValue;
             m_displayedPlannedCount = countValue;
@@ -14116,19 +13831,10 @@ void tcpClient::loadStatisticsInfo()
             if (m_currentDisplayShift == "current" && plannedCountLabel) {
                 plannedCountLabel->setText(QString("第一节便次：%1便").arg(m_plannedCount));
             }
-            updateStatisticsTableDisplay();
         } else if (statType == "actual_count") {
+            legacyActualCount = countValue;
             m_actualCount = countValue;
             m_displayedActualCount = countValue;
-            // 数据库仅保存总实际便次，兼容：将总数放入第四节累计（其余节为0）
-            m_section1ActualCount = m_section2ActualCount = m_section3ActualCount = 0;
-            m_section4ActualCount = countValue;
-            if (m_currentDisplayShift == "current") {
-                m_displayedSection1ActualCount = m_section1ActualCount;
-                m_displayedSection2ActualCount = m_section2ActualCount;
-                m_displayedSection3ActualCount = m_section3ActualCount;
-                m_displayedSection4ActualCount = m_section4ActualCount;
-            }
             if (m_currentDisplayShift == "current" && actualCountLabel) {
                 actualCountLabel->setText(QString("第二节便次：%1便").arg(m_actualCount));
             }
@@ -14141,22 +13847,64 @@ void tcpClient::loadStatisticsInfo()
         } else if (statType == "section4_count") {
             m_section4Count = countValue;
             m_displayedSection4Count = countValue;
-            if (section4CountLabel) section4CountLabel->setText(QString("第四节便次：%1便").arg(m_section4Count));
+            if (section4CountLabel) {
+                section4CountLabel->setText(QString("第四节便次：%1便").arg(m_section4Count));
+            }
         } else if (statType == "total_count") {
             m_totalCount = countValue;
             m_displayedTotalCount = countValue;
-            if (totalCountLabel) totalCountLabel->setText(QString("总数便次：%1便").arg(m_totalCount));
+            if (totalCountLabel) {
+                totalCountLabel->setText(QString("总数便次：%1便").arg(m_totalCount));
+            }
+        } else if (statType == "section1_actual") {
+            hasSectionActualKeys = true;
+            m_section1ActualCount = countValue;
+        } else if (statType == "section2_actual") {
+            hasSectionActualKeys = true;
+            m_section2ActualCount = countValue;
+        } else if (statType == "section3_actual") {
+            hasSectionActualKeys = true;
+            m_section3ActualCount = countValue;
+        } else if (statType == "section4_actual") {
+            hasSectionActualKeys = true;
+            m_section4ActualCount = countValue;
+        } else if (statType == "meal_actual") {
+            hasSectionActualKeys = true;
+            m_mealActualCount = countValue;
         }
     }
-    // 若未从库加载总数，则按四节之和更新
+
+    // 旧库只有汇总 actual_count：兼容放入第四节
+    if (!hasSectionActualKeys && legacyActualCount > 0) {
+        m_section1ActualCount = m_section2ActualCount = m_section3ActualCount = 0;
+        m_mealActualCount = 0;
+        m_section4ActualCount = legacyActualCount;
+    }
+
+    m_actualCount = m_section1ActualCount + m_section2ActualCount + m_section3ActualCount
+                    + m_section4ActualCount;
+    if (m_currentDisplayShift == "current") {
+        m_displayedSection1ActualCount = m_section1ActualCount;
+        m_displayedSection2ActualCount = m_section2ActualCount;
+        m_displayedSection3ActualCount = m_section3ActualCount;
+        m_displayedSection4ActualCount = m_section4ActualCount;
+        m_displayedMealActualCount = m_mealActualCount;
+        m_displayedActualCount = m_actualCount;
+    }
+
     updateTotalCountDisplay();
-    
-    // 更新班次显示按钮
+    updateStatisticsTableDisplay();
+
     if (shiftDisplayButton) {
         updateShiftDisplayButton();
     }
-    
-    qDebug() << "统计信息已从数据库加载";
+
+    qDebug() << "统计信息已从数据库加载"
+             << "s1=" << m_section1ActualCount
+             << "s2=" << m_section2ActualCount
+             << "s3=" << m_section3ActualCount
+             << "s4=" << m_section4ActualCount
+             << "meal=" << m_mealActualCount;
 }
 
 /**
@@ -14164,6 +13912,13 @@ void tcpClient::loadStatisticsInfo()
  */
 void tcpClient::insertExceptionRecord(int slotNo, const QString &modelName, const QString &status, const QString &exceptionInfo, const QString &date)
 {
+    Q_UNUSED(slotNo);
+    Q_UNUSED(modelName);
+    Q_UNUSED(status);
+    Q_UNUSED(exceptionInfo);
+    Q_UNUSED(date);
+    return; // 异常记录界面已移除
+
     // 检查数据库是否已打开
     QSqlDatabase db = QSqlDatabase::database();
     if (!db.isOpen()) {
@@ -14281,6 +14036,8 @@ void tcpClient::insertExceptionRecord(int slotNo, const QString &modelName, cons
  */
 void tcpClient::loadExceptionRecords()
 {
+    return; // 异常记录界面已移除
+
     // 检查数据库是否已打开
     QSqlDatabase db = QSqlDatabase::database();
     if (!db.isOpen()) {
@@ -15174,25 +14931,16 @@ QJsonObject tcpClient::buildVisualizationData()
     statistics["total_count"] = m_totalCount;      // 总数便次
     root["statistics"] = statistics;
     
-    // 实托盘槽位数组（21个槽位）
+    // 路线部品界面已移除：车型槽位暂上报空数组，后续再补
     QJsonArray realTraySlots;
-    for (int i = 0; i < 21 && i < m_realTraySlots.size(); ++i) {
-        realTraySlots.append(m_realTraySlots[i]);
-    }
-    // 如果数组不足21个，补充空字符串
-    while (realTraySlots.size() < 21) {
-        realTraySlots.append("");
+    for (int i = 0; i < 21; ++i) {
+        realTraySlots.append(QString());
     }
     root["real_tray_slots"] = realTraySlots;
-    
-    // 空托盘槽位数组（21个槽位）
+
     QJsonArray emptyTraySlots;
-    for (int i = 0; i < 21 && i < m_emptyTraySlots.size(); ++i) {
-        emptyTraySlots.append(m_emptyTraySlots[i]);
-    }
-    // 如果数组不足21个，补充空字符串
-    while (emptyTraySlots.size() < 21) {
-        emptyTraySlots.append("");
+    for (int i = 0; i < 21; ++i) {
+        emptyTraySlots.append(QString());
     }
     root["empty_tray_slots"] = emptyTraySlots;
     
@@ -15218,11 +14966,11 @@ void tcpClient::sendVisualizationDataToServer()
     // 发送数据
     qint64 bytesWritten = m_serverSocket->write(jsonBytes);
     if (bytesWritten > 0) {
-        qDebug() << "已发送AGT搬运数据到服务端，大小:" << bytesWritten << "字节";
+        qDebug() << "已发送便次统计数据到服务端，大小:" << bytesWritten << "字节";
         // 成功时不写入日志，减少日志量
     } else {
-        appendToLog("发送AGT搬运数据到服务端失败", true);
-        qWarning() << "发送AGT搬运数据失败";
+        appendToLog("发送便次统计数据到服务端失败", true);
+        qWarning() << "发送便次统计数据失败";
     }
     
     // 启动工程组数据发送定时器（1秒后发送）
@@ -15471,6 +15219,8 @@ QJsonObject tcpClient::buildExceptionData()
  */
 void tcpClient::sendExceptionDataToServer()
 {
+    return; // 异常记录界面已移除，不再上报
+
     // 检查服务端连接状态
     if (!m_serverSocket || m_serverSocket->state() != QAbstractSocket::ConnectedState) {
         qDebug() << "服务端未连接，跳过发送异常记录数据";
@@ -18659,7 +18409,53 @@ void tcpClient::loadAssemblyIndicatorHistoryFromDb(const QDate& date, const QStr
 }
 
 /**
- * @brief 更新总成指示表的实际行（空托盘搬出时调用）
+ * @brief 收到一条含实托盘搬出的 PLC 指令时，实际便次按当前时段 +1（每条指令只计 1 次，与车型数量无关）
+ */
+void tcpClient::incrementStatisticsActualByOnePlcInstruction()
+{
+    const QTime currentTime = QTime::currentTime();
+    const QString currentShift = getCurrentShift();
+    const bool inMealPeriod =
+        (currentShift == QStringLiteral("白班") && currentTime >= QTime(11, 30) && currentTime < QTime(12, 15))
+        || (currentShift == QStringLiteral("夜班") && currentTime >= QTime(21, 15) && currentTime < QTime(22, 0));
+
+    if (inMealPeriod) {
+        m_mealActualCount++;
+        if (m_currentDisplayShift == QStringLiteral("current")) {
+            m_displayedMealActualCount = m_mealActualCount;
+        }
+        updateStatisticsTableDisplay();
+        saveStatisticsInfo(); // 立即持久化，重启不丢失
+        return;
+    }
+
+    const int col = getColumnForCurrentTime();
+    const int section = getSectionFromTimeColumn(col);
+    if (section >= 1 && section <= 4) {
+        if (section == 1) {
+            m_section1ActualCount++;
+        } else if (section == 2) {
+            m_section2ActualCount++;
+        } else if (section == 3) {
+            m_section3ActualCount++;
+        } else {
+            m_section4ActualCount++;
+        }
+        m_actualCount = m_section1ActualCount + m_section2ActualCount + m_section3ActualCount
+                        + m_section4ActualCount;
+        if (m_currentDisplayShift == QStringLiteral("current")) {
+            m_displayedSection1ActualCount = m_section1ActualCount;
+            m_displayedSection2ActualCount = m_section2ActualCount;
+            m_displayedSection3ActualCount = m_section3ActualCount;
+            m_displayedSection4ActualCount = m_section4ActualCount;
+        }
+        updateStatisticsTableDisplay();
+        saveStatisticsInfo(); // 立即持久化，重启不丢失
+    }
+}
+
+/**
+ * @brief 更新总成指示表的实际行（实托盘搬出时调用）
  * @param vehicleName 车型名称
  */
 void tcpClient::updateAssemblyIndicatorActualRow(const QString& vehicleName)
@@ -18835,7 +18631,6 @@ void tcpClient::updateAssemblyIndicatorActualRow(const QString& vehicleName)
     }
 
     // 若不在任何已有时间段内，写入前一个时间段的最后一列
-    bool usedFallback = false;
     if (bestCol < 0) {
         int bestFallbackCol = -1;
         QTime bestEndTime; // 无效表示尚未找到
@@ -18882,7 +18677,6 @@ void tcpClient::updateAssemblyIndicatorActualRow(const QString& vehicleName)
         }
         if (bestFallbackCol >= 0) {
             bestCol = bestFallbackCol;
-            usedFallback = true;
             appendToLog(QString("总成指示表：车型%1的时间（%2）不在任何时间段内（班次：%3），已写入前一时段最后一列（列%4）")
                             .arg(vehicleName).arg(currentTime.toString("hh:mm")).arg(currentShift).arg(bestCol), false);
         }
@@ -18895,31 +18689,8 @@ void tcpClient::updateAssemblyIndicatorActualRow(const QString& vehicleName)
         }
     }
 
-    // 根据时间列确定便次节，累加对应节的实际便次（与总成指示表实际行同源：空托盘搬出）
-    bool inMealPeriod = (currentShift == "白班" && currentTime >= QTime(11, 30) && currentTime < QTime(12, 15))
-                     || (currentShift == "夜班" && currentTime >= QTime(21, 15) && currentTime < QTime(22, 0));
-    if (usedFallback && inMealPeriod) {
-        // 吃饭时段收到数据（写入前一时段最后一列），累加吃饭时间计数
-        m_mealActualCount++;
-        if (m_currentDisplayShift == "current") m_displayedMealActualCount = m_mealActualCount;
-        updateStatisticsTableDisplay();
-    } else {
-        int section = getSectionFromTimeColumn(bestCol);
-        if (section >= 1 && section <= 4) {
-            if (section == 1) m_section1ActualCount++;
-            else if (section == 2) m_section2ActualCount++;
-            else if (section == 3) m_section3ActualCount++;
-            else m_section4ActualCount++;
-            m_actualCount = m_section1ActualCount + m_section2ActualCount + m_section3ActualCount + m_section4ActualCount;
-            if (m_currentDisplayShift == "current") {
-                m_displayedSection1ActualCount = m_section1ActualCount;
-                m_displayedSection2ActualCount = m_section2ActualCount;
-                m_displayedSection3ActualCount = m_section3ActualCount;
-                m_displayedSection4ActualCount = m_section4ActualCount;
-            }
-            updateStatisticsTableDisplay();
-        }
-    }
+    // 便次统计改为：本条 PLC 指令统一 +1（见 incrementStatisticsActualByOnePlcInstruction）
+    // 此处仅按车型更新总成指示表实际行，不跟车型数累加便次
 
     // 只有在当前表格模式下才更新表格显示
     if (shouldUpdateDisplay) {

@@ -133,7 +133,8 @@ private slots:
     void exportAssemblyIndicatorTableToCSV(); ///< 导出总装指示表数据为CSV文件
     void exportAssemblyIndicatorTableToHTML(); ///< 导出总装指示表数据为Excel文件（.xls格式，支持单元格合并）
     void loadAssemblyIndicatorHistoryFromDb(const QDate& date, const QString& shiftType); ///< 从历史表加载总装指示表数据
-    void updateAssemblyIndicatorActualRow(const QString& vehicleName); ///< 更新总成指示表的实际行（实托盘搬出时调用）
+    void updateAssemblyIndicatorActualRow(const QString& vehicleName); ///< 更新总成指示表的实际行（实托盘搬出时调用，不累加便次统计）
+    void incrementStatisticsActualByOnePlcInstruction(); ///< 收到一条含实托盘搬出的PLC指令时，实际便次按当前时段+1（每条指令只计1次）
 
     // 连接管理槽函数
     void onConnectClicked();      ///< 连接按钮点击处理
@@ -550,12 +551,14 @@ private:
     QPushButton* shiftDisplayButton; ///< 班次显示按钮
     void updateStatisticsTableDisplay(); ///< 刷新统计表格所有单元格
     QString getStatisticsRowTimeRange(int rowIndex) const; ///< 根据总成指示表时间列返回统计表某行对应的时间范围（第一节/第二节/吃饭/第三节/第四节/加班）
+    int getStatisticsRowPlanMinutes(int rowIndex) const; ///< 统计表某行对应的计划用时（分钟）
     int getPlanSumForSecondLevelValue(int secondLevelValue) const; ///< 总成指示表时间列（二级表头值120/230/350/460）所有计划行的和
     int getActualSumForSecondLevelValue(int secondLevelValue) const; ///< 总成指示表时间列所有实际行的和（用于启动时从表格恢复统计）
     int getActualSumAtOrBeforeColumn(int col) const; ///< 实际行在指定列或往前第一个有数据列的和（列无数据时往前找）
     int getColumnForCurrentTime(); ///< 根据当前时间返回对应时间列索引（含fallback到前一时段最后一列）
     int getPlanSumForOvertimeLastColumn() const; ///< 加班时间列最后一列所有计划行的和（无加班返回0）
-    void syncStatisticsFromAssemblyIndicator(); ///< 从总成指示表实际行同步四节实际便次到统计表（启动时调用，加载到当前时间）
+    int getPlanCountBySectionMinutes(int rowIndex) const; ///< 计划便次=该节分钟数/12，四舍五入
+    void syncStatisticsFromAssemblyIndicator(); ///< 实际便次已改由 DB/PLC 指令累计，此函数仅刷新统计表显示
     int getSectionFromTimeColumn(int colIndex) const; ///< 根据总成指示表时间列索引返回便次节（1=第一节,2=第二节,3=第三节,4=第四节,0=吃饭/休息,5=加班）
     bool hasReachedStatisticsRow(int rowIndex); ///< 当前时间是否已到达统计表某行对应时段（未到则显示空）
     int m_planTotal;              ///< 计划便次（用于右侧表格及差异计算）
@@ -563,7 +566,7 @@ private:
     int m_actualCount;             ///< 第二节便次（保留兼容，总数=四节实际便次之和）
     int m_delayedCount;            ///< 第三节便次
     int m_section4Count;           ///< 第四节便次
-    int m_section1ActualCount;     ///< 第一节便次实际次数（仅空托盘搬出时按时间累加）
+    int m_section1ActualCount;     ///< 第一节便次实际次数（实托盘搬出时按时间累加）
     int m_section2ActualCount;     ///< 第二节便次实际次数
     int m_section3ActualCount;     ///< 第三节便次实际次数
     int m_section4ActualCount;     ///< 第四节便次实际次数
