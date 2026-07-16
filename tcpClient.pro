@@ -13,10 +13,14 @@ TARGET = AGTProject
 
 SOURCES += \
     main.cpp \
-    tcpclient.cpp
+    tcpclient.cpp \
+    dbworker.cpp \
+    dataprocessworker.cpp
 
 HEADERS += \
-    tcpclient.h
+    tcpclient.h \
+    dbworker.h \
+    dataprocessworker.h
 
 FORMS += \
     tcpclient.ui

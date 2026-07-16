@@ -4,6 +4,7 @@
 #include <QWidget>
 #include <QTcpSocket>
 #include <QTimer>
+#include <QThread>
 #include <QSqlDatabase>
 #include <QSqlQuery>
 #include <QSqlError>
@@ -13,6 +14,9 @@
 #include <QLoggingCategory>
 #include <QDir>
 #include <QFile>
+
+class DbWorker;
+class DataProcessWorker;
 #include <QTextStream>
 #include <QMutex>
 #include <QStandardPaths>
@@ -120,7 +124,7 @@ private slots:
     void onProductionInstructionHistoryDeleteClicked(); ///< 删除历史记录
     void onVehicleBindingPageClicked(); ///< 切换到车型绑定界面
     void updateProjectGroupStatistics(); ///< 刷新各车型搬运数据（实托盘搬出 / 空托盘搬入）卡片
-    void rebuildProjectGroupCards(QGridLayout *layout, const QList<QPair<QString, int>> &items, const QString &unit); ///< 重建绿色卡片列表（每行3个）
+    void rebuildProjectGroupCards(QGridLayout *layout, const QList<QPair<QString, int>> &items, const QString &unit); ///< 更新绿色卡片（同结构则改文字，否则重建）
     void loadVehicleModelsToAssemblyIndicator(); ///< 加载绑定车型到总成指示表
     void onOvertimeTimeButtonClicked(); ///< 加班时间选择按钮点击处理
     void addOvertimeColumns(double hours); ///< 添加加班时间列到总成指示表（插在合计列之前）
@@ -174,6 +178,10 @@ private slots:
     void onSocketDisconnected();  ///< Socket断开连接处理
     void onSocketError(QAbstractSocket::SocketError error); ///< Socket错误处理
     void onSocketReadyRead();     ///< Socket数据可读处理
+    void onApplyPlcPacket(const QByteArray &data, bool ackAlreadySent); ///< 串行调度：主线程执行一条 PLC 业务
+    void onApplyJsonObjects(const QStringList &jsonObjects, bool saveToTable, bool fromEdSoftware); ///< 串行调度：主线程处理已拆好的 JSON
+    void onDbWriteFailed(const QString &error); ///< DbWorker 写库失败回主线程打日志
+    void onDbWorkerOpened(bool ok, const QString &error); ///< DbWorker 连接打开结果
     void onConnectionTimeout();   ///< 连接超时处理
     void onPlcAutoReconnect();    ///< PLC自动重连处理
     void onCurrentShiftTableDailyClear(); ///< 当前班次表格每日清空处理（每天凌晨6点）
@@ -321,12 +329,21 @@ private:
                                                 const QString &errorMessage); ///< 追加报错记录并入库
     void updateConnectionStatus(bool connected); ///< 更新连接状态显示
     void appendToLog(const QString &message, bool isError = false); ///< 添加日志信息
+    void flushPendingLogs();      ///< 批量刷新界面日志（错误立即刷，普通日志合并）
+    void trimLogDocumentIfNeeded(); ///< 限制 textEditLog 行数，防止无限增长
     void applyModernStyle();      ///< 应用现代化样式
     void applyBuiltinStyle();     ///< 应用内置样式
 
     // 数据处理
     void sendData(const QByteArray &data); ///< 发送数据到服务器
-    void processHexData(const QByteArray &data); ///< 处理16进制数据
+    void processHexData(const QByteArray &data, bool ackAlreadySent = false); ///< 处理16进制数据；ackAlreadySent=true 时跳过写应答（已在 readyRead 发出）
+    void startDbWorker();         ///< 启动数据库写线程
+    void startDataProcessWorker(); ///< 启动 PLC 报文串行调度线程
+    void stopWorkerThreads();     ///< 安全停止工作线程
+    void deferredHeavyUiLoad();   ///< P3：窗口显示后分阶段加载重 UI 数据
+    void ensureDataRecordsLoaded(); ///< 按需加载数据表格
+    void ensureCurrentShiftRecordsLoaded(); ///< 按需加载当前班次表格
+    void ensureAssemblyIndicatorLoaded(); ///< 按需加载总成指示表
     void updateVisualization(const QString &vehicleName, bool isRealTray, int slotIndex = -1); ///< 更新可视化界面，slotIndex为-1时使用批次计数，0-2时直接指定位置
     void advanceVisualization(); ///< 推进可视化显示
     void advanceVisualizationBy3(); ///< 推进可视化显示3个位置
@@ -444,9 +461,16 @@ private:
     QTimer *m_serverConnectionTimer; ///< 服务端连接超时定时器
     QTimer *m_edSoftwareConnectionTimer; ///< ED软件连接超时定时器
     QTimer *m_shiftCheckTimer;   ///< 班次检查定时器（每分钟检查一次）
-    QTimer *m_visualizationDataTimer; ///< 可视化数据发送定时器（每3秒触发一次，立即发送AGT搬运数据，1秒后发送工程组数据，2秒后发送异常记录）
-    QTimer *m_projectGroupDataTimer; ///< 工程组数据发送定时器（单次触发，3秒后发送工程组数据）
-    QTimer *m_exceptionDataTimer; ///< 异常数据发送定时器（单次触发，发送工程组后3秒发送异常记录）
+    QTimer *m_visualizationDataTimer; ///< 可视化数据发送定时器（周期性发送便次统计，并链式触发工程组上报）
+    QTimer *m_projectGroupDataTimer; ///< 工程组数据发送定时器（单次触发）
+    QTimer *m_exceptionDataTimer; ///< 异常数据发送定时器（单次触发）
+    QTimer *m_logFlushTimer = nullptr; ///< 界面日志批量刷新定时器
+    QByteArray m_lastProjectGroupPayload; ///< 上次上报的工程组 JSON（无变化则跳过发送）
+    struct PendingLogLine {
+        QString text;
+        bool isError = false;
+    };
+    QList<PendingLogLine> m_pendingLogLines; ///< 待刷到 textEditLog 的日志
     QTimer *m_shiftDisplayAutoResetTimer; ///< 班次显示自动恢复定时器（1分钟后恢复）
     QTimer *m_plcAutoReconnectTimer; ///< PLC自动重连定时器（每3秒检测一次）
     QTimer *m_serverAutoReconnectTimer; ///< 服务端自动重连定时器（每3秒检测一次）
@@ -631,6 +655,17 @@ private:
     QString m_dbName;             ///< 数据库名称
     QString m_dbUsername;         ///< 数据库用户名
     QString m_dbPassword;         ///< 数据库密码
+
+    // P0：写库 / PLC 报文调度工作线程
+    QThread *m_dbThread = nullptr;
+    DbWorker *m_dbWorker = nullptr;
+    bool m_dbWorkerReady = false;
+    QThread *m_dataProcessThread = nullptr;
+    DataProcessWorker *m_dataProcessWorker = nullptr;
+    bool m_dataRecordsLoaded = false;          ///< 数据表格是否已加载
+    bool m_currentShiftRecordsLoaded = false;  ///< 当前班次表是否已加载
+    bool m_assemblyIndicatorLoaded = false;    ///< 总成指示表是否已加载
+    bool m_projectGroupStatsDirty = true;      ///< 工程组卡片待刷新（非当前页时置位）
 
     // 日志系统成员变量
     QString m_logDirectory;       ///< 日志目录路径

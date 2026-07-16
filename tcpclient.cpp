@@ -1,8 +1,11 @@
 #include "tcpclient.h"
 #include "./ui_tcpclient.h"
+#include "dbworker.h"
+#include "dataprocessworker.h"
 #include <QMessageBox>
 #include <QDateTime>
 #include <QTextCursor>
+#include <QTextDocument>
 #include <QHeaderView>
 #include <QFileDialog>
 #include <QTextStream>
@@ -20,7 +23,9 @@
 #include <QGuiApplication>
 #include <QFile>
 #include <QTimer>
+#include <QThread>
 #include <QDebug>
+#include <QMetaObject>
 #include <QInputDialog>
 #include <QCloseEvent>
 #include <QMouseEvent>
@@ -275,7 +280,7 @@ void TwoLevelHeaderView::paintEvent(QPaintEvent *e)
     
     // 绘制一级表头（跨越多个列）
     QPainter painter(viewport());
-    painter.setRenderHint(QPainter::Antialiasing);
+    painter.setRenderHint(QPainter::Antialiasing, false); // P3：表头文字无需抗锯齿，降低弱显卡绘制成本
     
     // 遍历所有一级表头组
     QSet<int> processedFirstLevels; // 记录已处理的一级表头
@@ -594,6 +599,9 @@ tcpClient::tcpClient(QWidget *parent)
         initDatabase();
         qDebug() << "initDatabase completed";
 
+        startDataProcessWorker();
+        qDebug() << "startDataProcessWorker completed";
+
         initPasswordTable();
         qDebug() << "initPasswordTable completed";
 
@@ -609,23 +617,9 @@ tcpClient::tcpClient(QWidget *parent)
         loadProductionInstructionFromDb();
         qDebug() << "loadProductionInstructionFromDb completed";
 
-        loadDataRecordsFromDb();
-        qDebug() << "loadDataRecordsFromDb completed";
-        
-        loadCurrentShiftRecordsFromDb();
-        qDebug() << "loadCurrentShiftRecordsFromDb completed";
-
-        // 加载可视化记录（在数据库初始化完成后，且可视化页面已创建）
-        // 使用延迟加载，确保UI完全初始化
-        QTimer::singleShot(200, this, [this]() {
-            // 路线部品/异常记录界面已移除，不再加载对应可视化与异常表
-            loadStatisticsInfo();
-            qDebug() << "loadStatisticsInfo completed";
-            // 加载总成指示表（含配置表产量/节拍并计算计划行），以便统计表计划便次有数据
-            loadAssemblyIndicatorFromDb(QDate::currentDate(), getCurrentShift());
-            // 实际便次以 loadStatisticsInfo 从 DB 恢复为准，不再用总成指示表覆盖
-            updateStatisticsTableDisplay();
-        });
+        // P3：重 UI 数据延后到窗口 show 后分阶段加载，避免构造阶段卡死
+        // （数据表 / 班次表 / 总成指示 / 统计）
+        QTimer::singleShot(0, this, &tcpClient::deferredHeavyUiLoad);
 
         // 加载连接配置
         loadConnectionConfig();
@@ -722,9 +716,9 @@ tcpClient::tcpClient(QWidget *parent)
         m_projectGroupShiftAutoResetTimer->setSingleShot(true);
         m_projectGroupShiftAutoResetTimer->setInterval(60000); // 60秒 = 1分钟
         
-        // 初始化可视化数据发送定时器（每3秒触发一次，立即发送AGT搬运数据，1秒后发送工程组数据，2秒后发送异常记录）
+        // 初始化可视化数据发送定时器（周期性发送便次统计，并链式触发工程组上报）
         connect(m_visualizationDataTimer, &QTimer::timeout, this, &tcpClient::sendVisualizationDataToServer);
-        m_visualizationDataTimer->setInterval(3000); // 3秒
+        m_visualizationDataTimer->setInterval(5000); // P2：3秒改为5秒，降低主线程周期性负载
         // 注意：定时器在服务端连接成功后才启动
         
         // 初始化工程组数据发送定时器（单次触发，1秒后发送工程组数据）
@@ -736,6 +730,12 @@ tcpClient::tcpClient(QWidget *parent)
         connect(m_exceptionDataTimer, &QTimer::timeout, this, &tcpClient::sendExceptionDataToServer);
         m_exceptionDataTimer->setSingleShot(true);
         m_exceptionDataTimer->setInterval(1000); // 1秒
+
+        // P2：界面日志批量刷新（普通日志合并，错误立即刷）
+        m_logFlushTimer = new QTimer(this);
+        m_logFlushTimer->setSingleShot(true);
+        m_logFlushTimer->setInterval(300);
+        connect(m_logFlushTimer, &QTimer::timeout, this, &tcpClient::flushPendingLogs);
         
         // 初始化可视化数组（21个槽位，3列7行，位置0-20）
         m_realTraySlots.resize(21);
@@ -785,6 +785,12 @@ tcpClient::tcpClient(QWidget *parent)
  */
 tcpClient::~tcpClient()
 {
+    // 先断开收包，避免析构过程中再投递到工作线程
+    if (m_socket) {
+        disconnect(m_socket, &QTcpSocket::readyRead, this, &tcpClient::onSocketReadyRead);
+    }
+    stopWorkerThreads();
+
     // 断开连接并清理资源
     if (m_socket->state() == QAbstractSocket::ConnectedState) {
         m_socket->disconnectFromHost();
@@ -5951,6 +5957,7 @@ void tcpClient::onCurrentShiftTablePageClicked()
     pushButtonAssemblyIndicatorPage->setChecked(false);
     pushButtonProductionInstructionComparePage->setChecked(false);
     ui->pushButtonVehicleBindingPage->setChecked(false);
+    ensureCurrentShiftRecordsLoaded();
 }
 
 /**
@@ -5967,6 +5974,7 @@ void tcpClient::onTablePageClicked()
     pushButtonAssemblyIndicatorPage->setChecked(false);
     pushButtonProductionInstructionComparePage->setChecked(false);
     ui->pushButtonVehicleBindingPage->setChecked(false);
+    ensureDataRecordsLoaded();
 }
 
 /**
@@ -6028,11 +6036,15 @@ void tcpClient::onAssemblyIndicatorPageClicked()
     pushButtonProductionInstructionComparePage->setChecked(false);
     ui->pushButtonVehicleBindingPage->setChecked(false);
     
-    // 如果当前选中的是当前表格按钮，自动加载当前表格数据
+    // P3：首次进入时按需加载；已加载且为当前表模式则刷新当前班次
     if (!m_isHistoryTableMode && assemblyIndicatorTable) {
-        QDate currentDate = QDate::currentDate();
-        QString currentShift = getCurrentShift();
-        loadAssemblyIndicatorFromDb(currentDate, currentShift);
+        if (!m_assemblyIndicatorLoaded) {
+            ensureAssemblyIndicatorLoaded();
+        } else {
+            QDate currentDate = QDate::currentDate();
+            QString currentShift = getCurrentShift();
+            loadAssemblyIndicatorFromDb(currentDate, currentShift);
+        }
         syncStatisticsFromAssemblyIndicator();
     }
 }
@@ -6623,7 +6635,82 @@ void tcpClient::onSocketError(QAbstractSocket::SocketError error)
 void tcpClient::onSocketReadyRead()
 {
     QByteArray data = m_socket->readAll();
-    processHexData(data);
+
+    // 校验通过则立即应答 PLC，再串行投递业务处理，避免处理过慢导致对端超时
+    bool ackAlreadySent = false;
+    if (data.size() == 78) {
+        const QByteArray header = data.left(4);
+        const QByteArray expectedHeader = QByteArray::fromHex("60004A00");
+        if (header == expectedHeader) {
+            if (m_socket && m_socket->state() == QAbstractSocket::ConnectedState) {
+                QByteArray ackImmediate;
+                ackImmediate.append(static_cast<char>(0xE0));
+                ackImmediate.append(static_cast<char>(0x00));
+                m_socket->write(ackImmediate);
+                m_socket->flush();
+            }
+            ackAlreadySent = true;
+        }
+    }
+
+    if (m_dataProcessWorker) {
+        QMetaObject::invokeMethod(m_dataProcessWorker, "submitPlcPacket", Qt::QueuedConnection,
+                                  Q_ARG(QByteArray, data),
+                                  Q_ARG(bool, ackAlreadySent));
+    } else {
+        processHexData(data, ackAlreadySent);
+    }
+}
+
+/**
+ * @brief 串行调度回调：在主线程执行一条 PLC 业务（与原先 processHexData 语义一致）
+ */
+void tcpClient::onApplyPlcPacket(const QByteArray &data, bool ackAlreadySent)
+{
+    processHexData(data, ackAlreadySent);
+    if (m_dataProcessWorker) {
+        QMetaObject::invokeMethod(m_dataProcessWorker, "plcApplyFinished", Qt::QueuedConnection);
+    }
+}
+
+/**
+ * @brief 串行调度回调：工作线程已完成 JSON 清洗/拆包，主线程跑原有业务
+ */
+void tcpClient::onApplyJsonObjects(const QStringList &jsonObjects, bool saveToTable, bool fromEdSoftware)
+{
+    int successCount = 0;
+    for (int i = 0; i < jsonObjects.size(); ++i) {
+        if (processSingleJsonObject(jsonObjects[i], saveToTable, fromEdSoftware)) {
+            ++successCount;
+        }
+    }
+    if (jsonObjects.size() > 1) {
+        appendToLog(QString("处理了 %1 个JSON对象，成功 %2 个").arg(jsonObjects.size()).arg(successCount), false);
+    }
+    if (m_dataProcessWorker) {
+        QMetaObject::invokeMethod(m_dataProcessWorker, "jsonApplyFinished", Qt::QueuedConnection);
+    }
+}
+
+/**
+ * @brief DbWorker 写库失败
+ */
+void tcpClient::onDbWriteFailed(const QString &error)
+{
+    appendToLog(QStringLiteral("插入数据记录失败: ") + error, true);
+}
+
+/**
+ * @brief DbWorker 连接打开结果
+ */
+void tcpClient::onDbWorkerOpened(bool ok, const QString &error)
+{
+    m_dbWorkerReady = ok;
+    if (ok) {
+        appendToLog(QStringLiteral("DbWorker 写库线程已就绪"), false);
+    } else {
+        appendToLog(QStringLiteral("DbWorker 打开失败，将回退同步写库: %1").arg(error), true);
+    }
 }
 
 /**
@@ -6797,46 +6884,99 @@ void tcpClient::updateConnectionStatus(bool connected)
 }
 
 /**
- * @brief 添加日志信息
+ * @brief 添加日志信息（P2：界面批量刷新；文件日志仍即时输出）
  * @param message 日志消息
  * @param isError 是否为错误信息
  */
 void tcpClient::appendToLog(const QString &message, bool isError)
 {
-    // 安全检查：确保UI组件已初始化
-    if (!ui || !ui->textEditLog) {
-        qDebug() << "UI not ready, skipping log:" << message;
-        return;
-    }
-
-    QString timestamp = QDateTime::currentDateTime().toString("hh:mm:ss.zzz");
-    QString logMessage = QString("[%1] %2").arg(timestamp).arg(message);
-
-    // 设置光标位置到末尾
-    QTextCursor cursor = ui->textEditLog->textCursor();
-    cursor.movePosition(QTextCursor::End);
-    ui->textEditLog->setTextCursor(cursor);
-
-    // 设置文本颜色
-    if (isError) {
-        ui->textEditLog->setTextColor(Qt::red);
-    } else {
-        ui->textEditLog->setTextColor(Qt::black);
-    }
-
-    ui->textEditLog->insertPlainText(logMessage + "\n");
-
-    // 自动滚动到底部
-    QTextCursor scrollCursor = ui->textEditLog->textCursor();
-    scrollCursor.movePosition(QTextCursor::End);
-    ui->textEditLog->setTextCursor(scrollCursor);
-
-    // 同时写入文件日志
+    // 文件/控制台日志保持即时，便于排查
     if (isError) {
         qWarning() << message;
     } else {
         qInfo() << message;
     }
+
+    if (!ui || !ui->textEditLog) {
+        qDebug() << "UI not ready, skipping log:" << message;
+        return;
+    }
+
+    const QString timestamp = QDateTime::currentDateTime().toString("hh:mm:ss.zzz");
+    PendingLogLine line;
+    line.text = QString("[%1] %2").arg(timestamp, message);
+    line.isError = isError;
+    m_pendingLogLines.append(line);
+
+    if (isError) {
+        // 错误立即刷到界面
+        if (m_logFlushTimer) {
+            m_logFlushTimer->stop();
+        }
+        flushPendingLogs();
+        return;
+    }
+
+    if (m_logFlushTimer && !m_logFlushTimer->isActive()) {
+        m_logFlushTimer->start();
+    }
+}
+
+/**
+ * @brief 批量把待显示日志写入 textEditLog
+ */
+void tcpClient::flushPendingLogs()
+{
+    if (!ui || !ui->textEditLog || m_pendingLogLines.isEmpty()) {
+        return;
+    }
+
+    ui->textEditLog->setUpdatesEnabled(false);
+    QTextCursor cursor = ui->textEditLog->textCursor();
+    cursor.movePosition(QTextCursor::End);
+    ui->textEditLog->setTextCursor(cursor);
+
+    for (const PendingLogLine &line : m_pendingLogLines) {
+        ui->textEditLog->setTextColor(line.isError ? Qt::red : Qt::black);
+        ui->textEditLog->insertPlainText(line.text + QLatin1Char('\n'));
+    }
+    m_pendingLogLines.clear();
+
+    QTextCursor scrollCursor = ui->textEditLog->textCursor();
+    scrollCursor.movePosition(QTextCursor::End);
+    ui->textEditLog->setTextCursor(scrollCursor);
+    ui->textEditLog->setUpdatesEnabled(true);
+
+    trimLogDocumentIfNeeded();
+}
+
+/**
+ * @brief 限制界面日志行数，避免长时间运行后 QTextEdit 越来越卡
+ */
+void tcpClient::trimLogDocumentIfNeeded()
+{
+    if (!ui || !ui->textEditLog) {
+        return;
+    }
+    constexpr int kMaxLogLines = 2000;
+    QTextDocument *doc = ui->textEditLog->document();
+    if (!doc) {
+        return;
+    }
+    const int blockCount = doc->blockCount();
+    if (blockCount <= kMaxLogLines) {
+        return;
+    }
+
+    QTextCursor cursor(doc);
+    cursor.movePosition(QTextCursor::Start);
+    cursor.beginEditBlock();
+    for (int i = 0; i < blockCount - kMaxLogLines; ++i) {
+        cursor.select(QTextCursor::BlockUnderCursor);
+        cursor.removeSelectedText();
+        cursor.deleteChar(); // 去掉换行
+    }
+    cursor.endEditBlock();
 }
 
 /**
@@ -6862,7 +7002,7 @@ void tcpClient::sendData(const QByteArray &data)
  * @brief 处理16进制数据
  * @param data 接收到的原始数据
  */
-void tcpClient::processHexData(const QByteArray &data)
+void tcpClient::processHexData(const QByteArray &data, bool ackAlreadySent)
 {
     qDebug() << "接收到数据，长度:" << data.size() << "字节";
 
@@ -6889,12 +7029,15 @@ void tcpClient::processHexData(const QByteArray &data)
     qDebug() << "数据格式验证通过，开始解析数据";
 
     // 校验通过后立即应答 PLC，再执行解析/落库/界面更新，避免耗时过长导致对端超时断线
-    if (m_socket && m_socket->state() == QAbstractSocket::ConnectedState) {
-        QByteArray ackImmediate;
-        ackImmediate.append(static_cast<char>(0xE0));
-        ackImmediate.append(static_cast<char>(0x00));
-        m_socket->write(ackImmediate);
-        m_socket->flush();
+    // ackAlreadySent=true 表示已在 onSocketReadyRead 中发出应答
+    if (!ackAlreadySent) {
+        if (m_socket && m_socket->state() == QAbstractSocket::ConnectedState) {
+            QByteArray ackImmediate;
+            ackImmediate.append(static_cast<char>(0xE0));
+            ackImmediate.append(static_cast<char>(0x00));
+            m_socket->write(ackImmediate);
+            m_socket->flush();
+        }
     }
     appendToLog("已发送应答: E0 00", false);
 
@@ -8272,6 +8415,7 @@ void tcpClient::initDatabase() {
     }
 
     qInfo() << "数据库初始化完成";
+    startDbWorker();
 }
 
 /**
@@ -8355,6 +8499,25 @@ void tcpClient::insertDataRecord(int slotNo, const QString &status, const QStrin
     const QString src = recordSource.isEmpty() ? QStringLiteral("plc") : recordSource;
     qDebug() << QString("insertDataRecord被调用: slotNo=%1, status=%2, modelName=%3, modelCode=%4, count=%5, time=%6, source=%7, stripe=%8")
                 .arg(slotNo).arg(status).arg(modelName).arg(modelCode).arg(count).arg(currentTime).arg(src).arg(plcStripeBatch);
+
+    // P0：写库线程就绪时异步插入，避免堵主线程；未就绪则回退同步写（与改造前一致）
+    if (m_dbWorkerReady && m_dbWorker) {
+        const bool invoked = QMetaObject::invokeMethod(
+            m_dbWorker, "insertDataRecord", Qt::QueuedConnection,
+            Q_ARG(int, slotNo),
+            Q_ARG(QString, status),
+            Q_ARG(QString, modelName),
+            Q_ARG(QString, modelCode),
+            Q_ARG(int, count),
+            Q_ARG(QString, currentTime),
+            Q_ARG(QString, src),
+            Q_ARG(int, plcStripeBatch));
+        if (invoked) {
+            return;
+        }
+        qWarning() << "insertDataRecord: 异步投递失败，回退同步写库";
+    }
+
     QSqlQuery query;
     query.prepare("INSERT INTO data_records (slot_no, status, model_name, model_code, count, time, record_source, plc_stripe_batch) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
     query.addBindValue(slotNo);
@@ -8368,6 +8531,127 @@ void tcpClient::insertDataRecord(int slotNo, const QString &status, const QStrin
     if (!query.exec()) {
         appendToLog("插入数据记录失败: " + query.lastError().text(), true);
     }
+}
+
+void tcpClient::startDbWorker()
+{
+    if (m_dbThread || m_dbWorker) {
+        return;
+    }
+
+    m_dbWorkerReady = false;
+    m_dbThread = new QThread();
+    m_dbWorker = new DbWorker();
+    m_dbWorker->moveToThread(m_dbThread);
+
+    connect(m_dbWorker, &DbWorker::databaseOpened, this, &tcpClient::onDbWorkerOpened, Qt::QueuedConnection);
+    connect(m_dbWorker, &DbWorker::writeFailed, this, &tcpClient::onDbWriteFailed, Qt::QueuedConnection);
+
+    m_dbThread->start();
+    QMetaObject::invokeMethod(m_dbWorker, "openDatabase", Qt::QueuedConnection,
+                              Q_ARG(QString, m_dbHost),
+                              Q_ARG(int, m_dbPort),
+                              Q_ARG(QString, m_dbName),
+                              Q_ARG(QString, m_dbUsername),
+                              Q_ARG(QString, m_dbPassword));
+}
+
+void tcpClient::startDataProcessWorker()
+{
+    if (m_dataProcessThread || m_dataProcessWorker) {
+        return;
+    }
+
+    m_dataProcessThread = new QThread();
+    m_dataProcessWorker = new DataProcessWorker();
+    m_dataProcessWorker->moveToThread(m_dataProcessThread);
+
+    connect(m_dataProcessWorker, &DataProcessWorker::applyPlcPacket,
+            this, &tcpClient::onApplyPlcPacket, Qt::QueuedConnection);
+    connect(m_dataProcessWorker, &DataProcessWorker::applyJsonObjects,
+            this, &tcpClient::onApplyJsonObjects, Qt::QueuedConnection);
+
+    m_dataProcessThread->start();
+}
+
+void tcpClient::stopWorkerThreads()
+{
+    m_dbWorkerReady = false;
+
+    if (m_dataProcessWorker) {
+        disconnect(m_dataProcessWorker, nullptr, this, nullptr);
+    }
+    if (m_dbWorker) {
+        disconnect(m_dbWorker, nullptr, this, nullptr);
+    }
+
+    if (m_dataProcessThread) {
+        m_dataProcessThread->quit();
+        m_dataProcessThread->wait(5000);
+        delete m_dataProcessWorker;
+        m_dataProcessWorker = nullptr;
+        delete m_dataProcessThread;
+        m_dataProcessThread = nullptr;
+    }
+
+    if (m_dbThread) {
+        if (m_dbWorker && m_dbThread->isRunning()) {
+            // 在工作线程内关闭连接，避免跨线程销毁 QSqlDatabase
+            QMetaObject::invokeMethod(m_dbWorker, "closeDatabase", Qt::BlockingQueuedConnection);
+        }
+        m_dbThread->quit();
+        m_dbThread->wait(5000);
+        delete m_dbWorker;
+        m_dbWorker = nullptr;
+        delete m_dbThread;
+        m_dbThread = nullptr;
+    }
+}
+
+/**
+ * @brief P3：窗口显示后分阶段加载重数据，缩短构造阻塞时间
+ */
+void tcpClient::deferredHeavyUiLoad()
+{
+    // 阶段1：当前班次表（PLC 写入后用户常看）
+    ensureCurrentShiftRecordsLoaded();
+
+    // 阶段2：统计便次（主界面可见信息）
+    QTimer::singleShot(50, this, [this]() {
+        loadStatisticsInfo();
+        updateStatisticsTableDisplay();
+        qDebug() << "deferredHeavyUiLoad: statistics loaded";
+    });
+
+    // 数据表格、总成指示：进入对应页面或业务需要时再加载（ensure*）
+    qDebug() << "deferredHeavyUiLoad: stage1 current-shift done; assembly/data-table lazy";
+}
+
+void tcpClient::ensureDataRecordsLoaded()
+{
+    if (m_dataRecordsLoaded) {
+        return;
+    }
+    loadDataRecordsFromDb();
+    m_dataRecordsLoaded = true;
+}
+
+void tcpClient::ensureCurrentShiftRecordsLoaded()
+{
+    if (m_currentShiftRecordsLoaded) {
+        return;
+    }
+    loadCurrentShiftRecordsFromDb();
+    m_currentShiftRecordsLoaded = true;
+}
+
+void tcpClient::ensureAssemblyIndicatorLoaded()
+{
+    if (m_assemblyIndicatorLoaded || !assemblyIndicatorTable) {
+        return;
+    }
+    loadAssemblyIndicatorFromDb(QDate::currentDate(), getCurrentShift());
+    m_assemblyIndicatorLoaded = true;
 }
 
 void tcpClient::deleteDataRecord(int slotNo, const QString &status, const QString &modelName, const QString &modelCode, int count, const QString &currentTime) {
@@ -8842,16 +9126,43 @@ void tcpClient::loadCurrentShiftRecordsFromDb()
         shiftEndTime = QDateTime(today.addDays(1), m_nightShiftEnd);
     }
     
-    // 从数据表格（data_records）加载数据
+    // 从数据表格按日期预过滤（避免全表），再用与原先相同的班次时间逻辑精确筛选
     QSqlQuery query;
-    query.prepare("SELECT slot_no, status, model_name, model_code, count, time, record_source, plc_stripe_batch FROM data_records ORDER BY time DESC");
-    
+    if (currentShift == QStringLiteral("白班")) {
+        query.prepare(QStringLiteral(
+            "SELECT slot_no, status, model_name, model_code, count, time, record_source, plc_stripe_batch "
+            "FROM data_records "
+            "WHERE time LIKE ? "
+            "AND (record_source IS NULL OR record_source = '' OR record_source = 'plc') "
+            "ORDER BY time DESC"));
+        query.addBindValue(today.toString(QStringLiteral("yyyy-MM-dd")) + QStringLiteral("%"));
+    } else {
+        query.prepare(QStringLiteral(
+            "SELECT slot_no, status, model_name, model_code, count, time, record_source, plc_stripe_batch "
+            "FROM data_records "
+            "WHERE (time LIKE ? OR time LIKE ?) "
+            "AND (record_source IS NULL OR record_source = '' OR record_source = 'plc') "
+            "ORDER BY time DESC"));
+        query.addBindValue(today.toString(QStringLiteral("yyyy-MM-dd")) + QStringLiteral("%"));
+        query.addBindValue(today.addDays(1).toString(QStringLiteral("yyyy-MM-dd")) + QStringLiteral("%"));
+    }
+
     if (!query.exec()) {
         appendToLog(QString("查询数据表格记录失败: %1").arg(query.lastError().text()), true);
         qWarning() << "查询数据表格记录失败:" << query.lastError().text();
         return;
     }
-    
+
+    const QList<QTableWidget*> shiftTables = {
+        realTrayInTableWidget, realTrayOutTableWidget,
+        emptyTrayInTableWidget, emptyTrayOutTableWidget
+    };
+    for (QTableWidget *t : shiftTables) {
+        if (t) {
+            t->setUpdatesEnabled(false);
+        }
+    }
+
     int loadedCount = 0;
     while (query.next()) {
         int slotNo = query.value(0).toInt();
@@ -8860,48 +9171,32 @@ void tcpClient::loadCurrentShiftRecordsFromDb()
         QString modelCode = query.value(3).toString();
         int count = query.value(4).toInt();
         QString timeStr = query.value(5).toString();
-        const QString recSrc = query.value(6).toString();
         const QVariant stripeVar = query.value(7);
-        // 当前班次表仅展示 PLC 数据；ED/服务端 JSON 写入为 ed；旧数据 record_source 为空视为 PLC
-        if (recSrc == QStringLiteral("ed")) {
-            continue;
-        }
-        
-        // 解析记录时间
+
+        // 解析记录时间并做与原先一致的班次边界校验（防御 VARCHAR 时间格式差异）
         QDateTime recordDateTime = QDateTime::fromString(timeStr, "yyyy-MM-dd HH:mm:ss");
         if (!recordDateTime.isValid()) {
-            // 如果日期格式不正确，跳过该记录
+            recordDateTime = QDateTime::fromString(timeStr, "yyyy-MM-dd hh:mm:ss");
+        }
+        if (!recordDateTime.isValid()) {
             continue;
         }
-        
-        // 判断记录是否在当前班次的时间范围内
-        // 使用更严格的时间范围判断，确保只加载当前班次的数据
+
         bool isInShift = false;
         if (currentShift == "白班") {
-            // 白班：当天 dayShiftStart - dayShiftEnd（不跨天）
-            // 必须同时满足：日期是今天，且时间在范围内
-            isInShift = (recordDateTime.date() == today && 
-                        recordDateTime >= shiftStartTime && 
-                        recordDateTime < shiftEndTime);
+            isInShift = (recordDateTime.date() == today
+                         && recordDateTime >= shiftStartTime
+                         && recordDateTime < shiftEndTime);
         } else {
-            // 夜班：当天 nightShiftStart - 次日 nightShiftEnd（跨天）
-            // 必须满足：时间在范围内，且不能是前一个夜班的数据
-            // 通过比较记录日期和当前日期，确保只加载当前夜班的数据
             QDate recordDate = recordDateTime.date();
             if (recordDate == today || recordDate == today.addDays(1)) {
-                // 记录日期是今天或明天，且时间在范围内
                 isInShift = (recordDateTime >= shiftStartTime && recordDateTime < shiftEndTime);
-            } else {
-                // 记录日期不是今天或明天，肯定不是当前班次的数据
-                isInShift = false;
             }
         }
-        
-        // 只加载当前班次的记录
         if (!isInShift) {
             continue;
         }
-        
+
         // 根据状态选择对应的表格
         QTableWidget* targetTable = nullptr;
         if (status == "实托盘搬入") {
@@ -8916,34 +9211,34 @@ void tcpClient::loadCurrentShiftRecordsFromDb()
             qWarning() << "未知状态，跳过记录:" << status;
             continue;
         }
-        
+
         if (!targetTable) {
             continue;
         }
-        
+
         int row = targetTable->rowCount();
         targetTable->insertRow(row);
-        
+
         // 滑槽号（列0）
         QTableWidgetItem* item0 = new QTableWidgetItem(QString::number(slotNo));
         item0->setTextAlignment(Qt::AlignCenter);
         targetTable->setItem(row, 0, item0);
-        
+
         // 车型代码（列1）
         QTableWidgetItem* item1 = new QTableWidgetItem(modelCode);
         item1->setTextAlignment(Qt::AlignCenter);
         targetTable->setItem(row, 1, item1);
-        
+
         // 车型名称（列2）
         QTableWidgetItem* item2 = new QTableWidgetItem(modelName);
         item2->setTextAlignment(Qt::AlignCenter);
         targetTable->setItem(row, 2, item2);
-        
+
         // 数量（列3）
         QTableWidgetItem* item3 = new QTableWidgetItem(QString::number(count));
         item3->setTextAlignment(Qt::AlignCenter);
         targetTable->setItem(row, 3, item3);
-        
+
         // 时间（列4）
         QTableWidgetItem* item4 = new QTableWidgetItem(timeStr);
         item4->setTextAlignment(Qt::AlignCenter);
@@ -8961,10 +9256,17 @@ void tcpClient::loadCurrentShiftRecordsFromDb()
                 item4->setData(Qt::UserRole, bd);
             }
         }
-        
+
         loadedCount++;
     }
-    
+
+    for (QTableWidget *t : shiftTables) {
+        if (t) {
+            t->setUpdatesEnabled(true);
+        }
+    }
+
+    m_currentShiftRecordsLoaded = true;
     qDebug() << QString("当前班次表格已从数据表格加载（当前班次：%1），共%2条记录").arg(currentShift).arg(loadedCount);
 }
 
@@ -9737,6 +10039,7 @@ void tcpClient::loadDataRecordsFromDb() {
     // 清除筛选条件，加载所有数据
     m_tableFilters.clear();
     applyTableFilter();
+    m_dataRecordsLoaded = true;
 }
 
 /**
@@ -9851,7 +10154,7 @@ void tcpClient::onTableHeaderClicked(int logicalIndex)
 }
 
 /**
- * @brief 应用表格筛选
+ * @brief 应用表格筛选（筛选条件下推到 SQL；无筛选时默认加载近 30 天，避免全表进 UI）
  */
 void tcpClient::applyTableFilter()
 {
@@ -9861,123 +10164,89 @@ void tcpClient::applyTableFilter()
         if (ui && ui->tableWidget) ui->tableWidget->setRowCount(0);
         return;
     }
-    if (m_tableFilters.isEmpty()) {
-        // 如果没有筛选条件，重新加载所有数据（按时间降序，最新记录在上）
-        ui->tableWidget->setRowCount(0);
-        QSqlQuery query("SELECT slot_no, status, model_code, model_name, count, time FROM data_records ORDER BY time DESC");
-        int row = 0;
-        while (query.next()) {
-            ui->tableWidget->insertRow(row);
-            QTableWidgetItem* t0 = new QTableWidgetItem(QString::number(query.value(0).toInt())); // 直接使用数据库中的slotNo值
-            t0->setTextAlignment(Qt::AlignCenter);
-            ui->tableWidget->setItem(row, 0, t0);
-            QTableWidgetItem* t1 = new QTableWidgetItem(query.value(1).toString());
-            t1->setTextAlignment(Qt::AlignCenter);
-            ui->tableWidget->setItem(row, 1, t1);
-            QTableWidgetItem* t2 = new QTableWidgetItem(query.value(2).toString());
-            t2->setTextAlignment(Qt::AlignCenter);
-            ui->tableWidget->setItem(row, 2, t2);
-            QTableWidgetItem* t3 = new QTableWidgetItem(query.value(3).toString());
-            t3->setTextAlignment(Qt::AlignCenter);
-            ui->tableWidget->setItem(row, 3, t3);
-            QTableWidgetItem* t4 = new QTableWidgetItem(query.value(4).toString());
-            t4->setTextAlignment(Qt::AlignCenter);
-            ui->tableWidget->setItem(row, 4, t4);
-            QTableWidgetItem* t5 = new QTableWidgetItem(query.value(5).toString());
-            t5->setTextAlignment(Qt::AlignCenter);
-            ui->tableWidget->setItem(row, 5, t5);
-            ++row;
-        }
+    if (!ui || !ui->tableWidget) {
+        return;
+    }
+
+    QString sql = QStringLiteral(
+        "SELECT slot_no, status, model_code, model_name, count, time FROM data_records WHERE 1=1");
+    QVariantList binds;
+
+    if (m_tableFilters.contains(0)) {
+        sql += QStringLiteral(" AND slot_no = ?");
+        binds << m_tableFilters.value(0).toInt();
+    }
+    if (m_tableFilters.contains(1)) {
+        sql += QStringLiteral(" AND status = ?");
+        binds << m_tableFilters.value(1);
+    }
+    if (m_tableFilters.contains(2)) {
+        sql += QStringLiteral(" AND model_code = ?");
+        binds << m_tableFilters.value(2);
+    }
+    if (m_tableFilters.contains(3)) {
+        sql += QStringLiteral(" AND model_name = ?");
+        binds << m_tableFilters.value(3);
+    }
+    if (m_tableFilters.contains(4)) {
+        sql += QStringLiteral(" AND count = ?");
+        binds << m_tableFilters.value(4).toInt();
+    }
+    if (m_tableFilters.contains(5)) {
+        // 时间列存 VARCHAR，用前缀匹配日期（与原先 split 取日期一致）
+        sql += QStringLiteral(" AND time LIKE ?");
+        binds << (m_tableFilters.value(5) + QStringLiteral("%"));
+    } else if (m_tableFilters.isEmpty()) {
+        // 无筛选：默认近 30 天，避免全表加载；查更早日期请用表头时间筛选
+        const QString fromTime = QDate::currentDate().addDays(-30).toString(QStringLiteral("yyyy-MM-dd"))
+                                 + QStringLiteral(" 00:00:00");
+        sql += QStringLiteral(" AND time >= ?");
+        binds << fromTime;
+    }
+
+    sql += QStringLiteral(" ORDER BY time DESC");
+
+    QSqlQuery query(db);
+    query.prepare(sql);
+    for (const QVariant &v : binds) {
+        query.addBindValue(v);
+    }
+
+    ui->tableWidget->setUpdatesEnabled(false);
+    ui->tableWidget->setRowCount(0);
+
+    if (!query.exec()) {
+        ui->tableWidget->setUpdatesEnabled(true);
+        appendToLog(QStringLiteral("加载数据表格失败: %1").arg(query.lastError().text()), true);
         updateTableHeaderFilterIndicator();
         return;
     }
-    
-    // 重新从数据库加载所有数据并应用筛选（按时间降序，最新记录在上）
-    ui->tableWidget->setRowCount(0);
-    QSqlQuery query("SELECT slot_no, status, model_code, model_name, count, time FROM data_records ORDER BY time DESC");
+
     int row = 0;
     while (query.next()) {
-        QString slotNo = QString::number(query.value(0).toInt()); // 直接使用数据库中的slotNo值
-        QString status = query.value(1).toString();
-        QString modelCode = query.value(2).toString();
-        QString modelName = query.value(3).toString();
-        QString count = query.value(4).toString();
-        QString time = query.value(5).toString();
-        
-        // 检查是否满足筛选条件
-        bool match = true;
-        
-        // 检查滑槽号筛选
-        if (m_tableFilters.contains(0)) {
-            if (slotNo != m_tableFilters[0]) {
-                match = false;
-            }
-        }
-        
-        // 检查状态筛选
-        if (match && m_tableFilters.contains(1)) {
-            if (status != m_tableFilters[1]) {
-                match = false;
-            }
-        }
-        
-        // 检查车型代码筛选
-        if (match && m_tableFilters.contains(2)) {
-            if (modelCode != m_tableFilters[2]) {
-                match = false;
-            }
-        }
-        
-        // 检查车型名称筛选
-        if (match && m_tableFilters.contains(3)) {
-            if (modelName != m_tableFilters[3]) {
-                match = false;
-            }
-        }
-        
-        // 检查数量筛选
-        if (match && m_tableFilters.contains(4)) {
-            if (count != m_tableFilters[4]) {
-                match = false;
-            }
-        }
-        
-        // 检查时间筛选（按天数）
-        if (match && m_tableFilters.contains(5)) {
-            QString filterDate = m_tableFilters[5]; // 格式：yyyy-MM-dd
-            // 提取时间字符串中的日期部分
-            QString timeDate = time.split(" ").first(); // 假设时间格式为 "yyyy-MM-dd hh:mm:ss"
-            if (timeDate != filterDate) {
-                match = false;
-            }
-        }
-        
-        // 如果满足所有筛选条件，添加到表格
-        if (match) {
-            ui->tableWidget->insertRow(row);
-            QTableWidgetItem* t0 = new QTableWidgetItem(slotNo);
-            t0->setTextAlignment(Qt::AlignCenter);
-            ui->tableWidget->setItem(row, 0, t0);
-            QTableWidgetItem* t1 = new QTableWidgetItem(status);
-            t1->setTextAlignment(Qt::AlignCenter);
-            ui->tableWidget->setItem(row, 1, t1);
-            QTableWidgetItem* t2 = new QTableWidgetItem(modelCode);
-            t2->setTextAlignment(Qt::AlignCenter);
-            ui->tableWidget->setItem(row, 2, t2);
-            QTableWidgetItem* t3 = new QTableWidgetItem(modelName);
-            t3->setTextAlignment(Qt::AlignCenter);
-            ui->tableWidget->setItem(row, 3, t3);
-            QTableWidgetItem* t4 = new QTableWidgetItem(count);
-            t4->setTextAlignment(Qt::AlignCenter);
-            ui->tableWidget->setItem(row, 4, t4);
-            QTableWidgetItem* t5 = new QTableWidgetItem(time);
-            t5->setTextAlignment(Qt::AlignCenter);
-            ui->tableWidget->setItem(row, 5, t5);
-            ++row;
-        }
+        ui->tableWidget->insertRow(row);
+        auto *t0 = new QTableWidgetItem(QString::number(query.value(0).toInt()));
+        t0->setTextAlignment(Qt::AlignCenter);
+        ui->tableWidget->setItem(row, 0, t0);
+        auto *t1 = new QTableWidgetItem(query.value(1).toString());
+        t1->setTextAlignment(Qt::AlignCenter);
+        ui->tableWidget->setItem(row, 1, t1);
+        auto *t2 = new QTableWidgetItem(query.value(2).toString());
+        t2->setTextAlignment(Qt::AlignCenter);
+        ui->tableWidget->setItem(row, 2, t2);
+        auto *t3 = new QTableWidgetItem(query.value(3).toString());
+        t3->setTextAlignment(Qt::AlignCenter);
+        ui->tableWidget->setItem(row, 3, t3);
+        auto *t4 = new QTableWidgetItem(query.value(4).toString());
+        t4->setTextAlignment(Qt::AlignCenter);
+        ui->tableWidget->setItem(row, 4, t4);
+        auto *t5 = new QTableWidgetItem(query.value(5).toString());
+        t5->setTextAlignment(Qt::AlignCenter);
+        ui->tableWidget->setItem(row, 5, t5);
+        ++row;
     }
-    
-    // 更新表头显示筛选状态
+
+    ui->tableWidget->setUpdatesEnabled(true);
     updateTableHeaderFilterIndicator();
 }
 
@@ -12288,6 +12557,7 @@ void tcpClient::onServerSocketDisconnected()
     m_visualizationDataTimer->stop();
     m_projectGroupDataTimer->stop();
     m_exceptionDataTimer->stop();
+    m_lastProjectGroupPayload.clear();
     
     // 清空数据缓冲区
     m_serverDataBuffer.clear();
@@ -12423,9 +12693,16 @@ void tcpClient::onServerSocketReadyRead()
             m_serverDataBuffer.remove(0, jsonEndPos);
             
             qDebug() << "提取到完整JSON对象，大小:" << completeJson.size() << "字节，剩余缓冲区:" << m_serverDataBuffer.size() << "字节";
-            
-            // 处理完整的JSON数据
-            processServerJsonData(completeJson);
+
+            // P1：投递工作线程清洗/拆包，主线程串行执行业务
+            if (m_dataProcessWorker) {
+                QMetaObject::invokeMethod(m_dataProcessWorker, "submitJsonPacket", Qt::QueuedConnection,
+                                          Q_ARG(QByteArray, completeJson),
+                                          Q_ARG(bool, true),
+                                          Q_ARG(bool, false));
+            } else {
+                processServerJsonData(completeJson);
+            }
         } else {
             // 没有找到完整的JSON对象，等待更多数据
             // 只有当缓冲区不为空时才输出日志（避免处理完所有数据后输出误导性日志）
@@ -12767,7 +13044,13 @@ bool tcpClient::processVehiclePartsJson(const QJsonObject &obj)
         }
     }
 
+    if (ui && ui->tableWidgetVehicleBinding) {
+        ui->tableWidgetVehicleBinding->setUpdatesEnabled(false);
+    }
     loadModelBindingsFromDb();
+    if (ui && ui->tableWidgetVehicleBinding) {
+        ui->tableWidgetVehicleBinding->setUpdatesEnabled(true);
+    }
     updateProjectGroupStatistics();
 
     const QString ts = obj.value(QStringLiteral("timestamp")).toString();
@@ -15821,9 +16104,16 @@ void tcpClient::onEdSoftwareSocketReadyRead()
     QByteArray data = m_edSoftwareSocket->readAll();
     appendToLog(QString("收到ED软件数据: %1 字节").arg(data.size()), false);
     qDebug() << "ED软件数据:" << data;
-    
-    // 处理接收到的 JSON（标记来自 ED；「空托盘搬出」写入「空托盘返回」表）
-    processServerJsonData(data, true, true);
+
+    // P1：投递工作线程清洗/拆包；标记来自 ED
+    if (m_dataProcessWorker) {
+        QMetaObject::invokeMethod(m_dataProcessWorker, "submitJsonPacket", Qt::QueuedConnection,
+                                  Q_ARG(QByteArray, data),
+                                  Q_ARG(bool, true),
+                                  Q_ARG(bool, true));
+    } else {
+        processServerJsonData(data, true, true);
+    }
 }
 
 /**
@@ -15991,7 +16281,12 @@ QJsonObject tcpClient::buildProjectGroupData()
     }
 
     query.prepare("SELECT model_name, status, time FROM data_records "
-                  "WHERE status IN ('实托盘搬出', '空托盘搬入')");
+                  "WHERE status IN ('实托盘搬出', '空托盘搬入') "
+                  "AND (time LIKE ? OR time LIKE ?)");
+    const QString dayA = shiftStartTime.date().toString(QStringLiteral("yyyy-MM-dd")) + QStringLiteral("%");
+    const QString dayB = shiftEndTime.date().toString(QStringLiteral("yyyy-MM-dd")) + QStringLiteral("%");
+    query.addBindValue(dayA);
+    query.addBindValue(dayB);
     if (!query.exec()) {
         qWarning() << "查询搬运统计数据失败:" << query.lastError().text();
         root["statistics"] = QJsonArray();
@@ -16055,11 +16350,18 @@ void tcpClient::sendProjectGroupDataToServer()
     // 构建JSON数据
     QJsonObject jsonData = buildProjectGroupData();
     QJsonDocument doc(jsonData);
-    QByteArray jsonBytes = doc.toJson();
+    const QByteArray jsonBytes = doc.toJson(QJsonDocument::Compact);
+
+    // P2：内容无变化则跳过发送，避免周期性空转占主线程/带宽
+    if (jsonBytes == m_lastProjectGroupPayload) {
+        qDebug() << "工程组数据无变化，跳过发送";
+        return;
+    }
     
     // 发送数据
     qint64 bytesWritten = m_serverSocket->write(jsonBytes);
     if (bytesWritten > 0) {
+        m_lastProjectGroupPayload = jsonBytes;
         qDebug() << "已发送工程组数据到服务端，大小:" << bytesWritten << "字节";
         // 成功时不写入日志，减少日志量
     } else {
@@ -16452,11 +16754,41 @@ void tcpClient::restoreCurrentShiftDisplay()
 }
 
 /**
- * @brief 重建各车型搬运绿色卡片
+ * @brief 更新各车型搬运绿色卡片（车型列表不变时只改文字，避免反复删建控件）
  */
 void tcpClient::rebuildProjectGroupCards(QGridLayout *layout, const QList<QPair<QString, int>> &items, const QString &unit)
 {
     if (!layout) {
+        return;
+    }
+
+    QList<QLabel *> existing;
+    existing.reserve(layout->count());
+    for (int i = 0; i < layout->count(); ++i) {
+        if (QLayoutItem *li = layout->itemAt(i)) {
+            if (QLabel *lbl = qobject_cast<QLabel *>(li->widget())) {
+                existing.append(lbl);
+            }
+        }
+    }
+
+    bool canReuse = (existing.size() == items.size());
+    if (canReuse) {
+        for (int i = 0; i < items.size(); ++i) {
+            if (existing.at(i)->property("modelName").toString() != items.at(i).first) {
+                canReuse = false;
+                break;
+            }
+        }
+    }
+
+    if (canReuse) {
+        for (int i = 0; i < items.size(); ++i) {
+            existing.at(i)->setText(QStringLiteral("%1\n%2%3")
+                                        .arg(items.at(i).first)
+                                        .arg(items.at(i).second)
+                                        .arg(unit));
+        }
         return;
     }
 
@@ -16473,6 +16805,7 @@ void tcpClient::rebuildProjectGroupCards(QGridLayout *layout, const QList<QPair<
         QLabel *card = new QLabel();
         card->setAlignment(Qt::AlignCenter);
         card->setWordWrap(true);
+        card->setProperty("modelName", pair.first);
         card->setText(QStringLiteral("%1\n%2%3").arg(pair.first).arg(pair.second).arg(unit));
         card->setMinimumHeight(88);
         card->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
@@ -16502,6 +16835,13 @@ void tcpClient::updateProjectGroupStatistics()
     if (!projectGroupRealOutCardsLayout || !projectGroupEmptyInCardsLayout) {
         return;
     }
+
+    // P3：不在「各车型搬运」页时只标记脏数据，进入页面再刷新，避免后台全表统计卡主线程
+    if (!ui || ui->stackedWidget->currentIndex() != 4) {
+        m_projectGroupStatsDirty = true;
+        return;
+    }
+    m_projectGroupStatsDirty = false;
 
     QSqlDatabase db = QSqlDatabase::database();
     if (!db.isOpen()) {
@@ -16555,7 +16895,10 @@ void tcpClient::updateProjectGroupStatistics()
     }
 
     query.prepare("SELECT model_name, status, time FROM data_records "
-                  "WHERE status IN ('实托盘搬出', '空托盘搬入')");
+                  "WHERE status IN ('实托盘搬出', '空托盘搬入') "
+                  "AND (time LIKE ? OR time LIKE ?)");
+    query.addBindValue(shiftStartTime.date().toString(QStringLiteral("yyyy-MM-dd")) + QStringLiteral("%"));
+    query.addBindValue(shiftEndTime.date().toString(QStringLiteral("yyyy-MM-dd")) + QStringLiteral("%"));
     if (!query.exec()) {
         appendToLog(QString("查询搬运统计数据失败: %1").arg(query.lastError().text()), true);
         qWarning() << "查询搬运统计数据失败:" << query.lastError().text();
@@ -18262,6 +18605,7 @@ void tcpClient::loadAssemblyIndicatorFromDb(const QDate& date, const QString& sh
     appendToLog(QString("总装指示表数据已加载（日期：%1，班次：%2，加班时间：%3小时）")
                 .arg(date.toString("yyyy-MM-dd")).arg(shiftType).arg(loadedOvertimeHours), false);
     qDebug() << QString("总装指示表数据已从数据库加载（日期：%1，班次：%2）").arg(date.toString("yyyy-MM-dd")).arg(shiftType);
+    m_assemblyIndicatorLoaded = true;
 }
 
 /**
@@ -19429,6 +19773,9 @@ void tcpClient::updateAssemblyIndicatorActualRow(const QString& vehicleName)
     if (!assemblyIndicatorTable) {
         return;
     }
+
+    // P3：首次实托盘搬出时按需加载总成指示，保证实际行可更新
+    ensureAssemblyIndicatorLoaded();
 
     // 如果是历史表格模式，不更新表格显示（因为显示的是历史数据，不应该被新数据干扰）
     // 但仍然需要保存数据到当前班次表和历史表（因为保存的是当前班次的数据）
