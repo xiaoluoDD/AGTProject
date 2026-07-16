@@ -243,16 +243,27 @@ private:
     void onProductionInstructionServerRowConfirmed(int row); ///< 左侧服务端行确认（待对比）
     void onProductionInstructionServerCellDoubleClicked(int row, int column); ///< 未确认行双击修改车型
     void onProductionInstructionPlcCellDoubleClicked(int row, int column); ///< PLC空托盘行双击修改车型
+    void onProductionInstructionServerInTransitCellDoubleClicked(int row, int column); ///< 实托盘搬出双击修改车型
+    void onProductionInstructionPlcInTransitCellDoubleClicked(int row, int column); ///< 空托盘返回双击修改车型
+    void onProductionInstructionServerInTransitClearClicked(); ///< 密码验证后清空实托盘搬出车型
+    void onProductionInstructionPlcInTransitClearClicked(); ///< 密码验证后清空空托盘返回车型
+    void clearProductionInstructionServerInTransitTable(); ///< 清空实托盘搬出上路途表车型
+    void clearProductionInstructionPlcInTransitTable(); ///< 清空空托盘返回上路途表车型
     void applyProductionInstructionServerRowStatus(int row); ///< 刷新单行确认/不可编辑显示
     void refreshProductionInstructionServerRowStatuses(); ///< 刷新全部行确认/不可编辑显示
     int moveProductionInstructionServerRowToPlc(int row); ///< 确认后将服务端行复制到PLC表同序号行，返回目标行（-1失败）
-    void applyProductionInstructionPlcRowStatus(int row); ///< 刷新PLC单行待对比/匹配显示
-    void refreshProductionInstructionPlcRowStatuses(); ///< 刷新PLC全部行待对比/匹配显示
+    void applyProductionInstructionPlcRowStatus(int row); ///< 刷新PLC工作表单行待对比/匹配显示
+    void applyProductionInstructionPlcInTransitRowStatus(int row); ///< 刷新PLC路上区单行对比色
+    void applyProductionInstructionServerInTransitRowStatus(int row); ///< 刷新服务端路上区底色
+    void refreshProductionInstructionPlcRowStatuses(); ///< 刷新PLC工作表全部行状态
+    void refreshProductionInstructionInTransitRowStatuses(); ///< 刷新两侧上路途区全部行状态
+    void appendProductionInstructionInTransitRow(QTableWidget *table, const QStringList &vehicles,
+                                                 bool isPlcSide); ///< 上路途区追加一行（未满往下写，满则挤掉第1行）
+    void appendRealTrayOutToInTransit(const QStringList &vehicles); ///< 左侧「实托盘搬出」表写入
     void clearProductionInstructionServerRow(int row); ///< 清空生产指示指定工作行
     void clearProductionInstructionPlcWorkRow(int row); ///< 清空PLC指定工作行及对比状态
     void saveProductionInstructionServerRowToHistory(int row); ///< 保存单行生产指示到历史
     void saveProductionInstructionPlcRowToHistory(int row, int compareStatus); ///< 保存单行PLC到历史
-    void pushPlcRowToInTransitArea(int sourceRow); ///< 将工作行写入路上空托盘区（前7行）
     void setProductionInstructionPlcInTransitCompareStatus(int row, int compareStatus); ///< 设置路上区对比颜色状态
     void shiftProductionInstructionPlcInTransitCompareStatusesUp(); ///< 路上区满时上移对比状态
     int productionInstructionPlcSourceCompareStatus(int sourceRow) const; ///< 读取工作行当前对比状态
@@ -261,8 +272,8 @@ private:
                                             const QString &productionLine = QString()); ///< 按车型代码/产线更新绑定表
     bool ensureCamryBindingRowExists(const QString &vehicleCode, const QString &modelName,
                                      const QString &targetAssembly); ///< 确保凯美瑞1L/2L绑定行存在
-    void handleProductionInstructionCompareSuccess(int workRow); ///< 对比成功后入库、上移并移入路上区
-    void handleProductionInstructionCompareFailure(int workRow); ///< 对比失败后移入路上区，保留当前行
+    void handleProductionInstructionCompareSuccess(int workRow); ///< 对比成功后入库并上移工作区
+    void handleProductionInstructionCompareFailure(int workRow); ///< 对比失败后保留当前工作行并刷新状态
     void shiftProductionInstructionServerRowsUp(int fromRow); ///< 工作区从指定行起上移一行
     void shiftProductionInstructionPlcWorkRowsUp(int fromRow); ///< PLC工作区从指定行起上移一行
     void refreshProductionInstructionServerConfirmButtonBindings(); ///< 刷新确认按钮与行号绑定
@@ -371,8 +382,9 @@ private:
     void loadShiftConfig(); ///< 从数据库加载班次设置
     void updateServerConnectionStatus(bool connected); ///< 更新服务端连接状态显示
     int findCompleteJsonObject(const QByteArray &buffer); ///< 查找缓冲区中第一个完整的JSON对象
-    void processServerJsonData(const QByteArray &data, bool saveToTable = true); ///< 处理服务端JSON数据（支持多个连续的JSON对象）
-    bool processSingleJsonObject(const QString &jsonString, bool saveToTable = true); ///< 处理单个JSON对象
+    void processServerJsonData(const QByteArray &data, bool saveToTable = true, bool fromEdSoftware = false); ///< 处理服务端/ED JSON数据
+    bool processSingleJsonObject(const QString &jsonString, bool saveToTable = true, bool fromEdSoftware = false); ///< 处理单个JSON对象
+    void handleEdEmptyTrayReturnForInTransit(const QString &modelName, int slotNumber); ///< ED「空托盘搬出」写入空托盘返回（对齐原空滑槽搬出：按slot填列，新批次推进，满则挤出）
     bool processProductionDataJson(const QJsonObject &obj, bool saveToTable = true); ///< 处理生产数据上报JSON
     bool processVehiclePartsJson(const QJsonObject &obj); ///< 服务端整包同步车型绑定（vehicle_parts）
     bool processAssemblyPlanJson(const QJsonObject &obj); ///< 服务端 assembly_plan：更新当前托数
@@ -475,8 +487,10 @@ private:
     QTableWidget* assemblyIndicatorTable; ///< 总成指示表表格
     QPushButton* pushButtonProductionInstructionComparePage; ///< 生产指示对比页面按钮
     QWidget* productionInstructionComparePage; ///< 生产指示对比页面
-    QTableWidget* m_productionInstructionServerTable; ///< 生产指示对比-左侧服务端（序号+3车型+确认）
-    QTableWidget* m_productionInstructionPlcTable; ///< 生产指示对比-中间PLC空托盘（序号+3车型）
+    QTableWidget* m_productionInstructionServerInTransitTable; ///< 生产指示-服务端路上区（序号+3车型）
+    QTableWidget* m_productionInstructionPlcInTransitTable; ///< 生产指示-PLC路上区（序号+3车型）
+    QTableWidget* m_productionInstructionServerTable; ///< 生产指示-服务端工作区（序号+产线+3车型+确认）
+    QTableWidget* m_productionInstructionPlcTable; ///< 生产指示-PLC工作区（序号+产线+3车型）
     QTableWidget* m_productionInstructionErrorTable; ///< 生产指示对比-右侧报错记录（序号+时间+信息）
     QPushButton* m_productionInstructionPlcSaveToHistoryButton; ///< 空托盘保存到历史（已禁用）
     QDialog* m_productionInstructionHistoryRecordDialog; ///< 生产指示对比-历史记录查看界面
@@ -489,9 +503,11 @@ private:
     QMap<QString, int> m_modelBindingLastPalletCount; ///< 车型代码->上次当前托数（手动改托数等）
     QMap<QString, int> m_assemblyPlanLastPlanQtyByLine; ///< 车型代码|产线->上次 assembly_plan plan_qty
     QSet<int> m_productionInstructionServerConfirmedRows; ///< 生产指示已确认行（0-based，左侧灰色不可编辑）
-    QSet<int> m_productionInstructionPlcPendingCompareRows; ///< PLC待对比行（0-based，黄色）
-    QSet<int> m_productionInstructionPlcMatchSuccessRows; ///< PLC对比成功行（绿色）
-    QSet<int> m_productionInstructionPlcMatchFailedRows; ///< PLC对比失败行（红色）
+    QSet<int> m_productionInstructionPlcPendingCompareRows; ///< PLC工作区待对比行（0-based，黄色）
+    QSet<int> m_productionInstructionPlcMatchSuccessRows; ///< PLC工作区对比成功行（绿色）
+    QSet<int> m_productionInstructionPlcMatchFailedRows; ///< PLC工作区对比失败行（红色）
+    QSet<int> m_productionInstructionPlcInTransitSuccessRows; ///< PLC路上区对比成功行（0-6）
+    QSet<int> m_productionInstructionPlcInTransitFailedRows; ///< PLC路上区对比失败行（0-6）
     QMap<int, QString> m_productionInstructionServerRowTimes; ///< 生产指示行记录时间（最后收到车型时间）
     QMap<int, QString> m_productionInstructionPlcRowTimes; ///< PLC行记录时间（左侧确认时间）
     static constexpr int kProductionInstructionRowCount = 500; ///< 生产指示/PLC表格固定行数
@@ -598,6 +614,8 @@ private:
 
     // 空托盘批次处理相关
     int m_emptyTrayBatchCount;    ///< 当前批次已搬出的车型数量（0-3），0表示新批次开始
+    int m_edEmptyReturnBatchCount; ///< 空托盘返回当前批次已写入数量（0-3），0表示下一条需先推进新行
+    int m_edEmptyReturnCurrentRow; ///< 空托盘返回当前批次写入行（上路途表行号）
     QTimer *m_realEntranceLongPressTimer;  ///< 实滑槽入口标签长按3秒定时器
     QTimer *m_emptyEntranceLongPressTimer; ///< 空滑槽入口标签长按3秒定时器
 
