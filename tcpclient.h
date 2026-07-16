@@ -251,7 +251,9 @@ private:
     void clearProductionInstructionPlcInTransitTable(); ///< 清空空托盘返回上路途表车型
     void applyProductionInstructionServerRowStatus(int row); ///< 刷新单行确认/不可编辑显示
     void refreshProductionInstructionServerRowStatuses(); ///< 刷新全部行确认/不可编辑显示
-    int moveProductionInstructionServerRowToPlc(int row); ///< 确认后将服务端行复制到PLC表同序号行，返回目标行（-1失败）
+    int moveProductionInstructionServerRowToPlc(int row); ///< 确认后按序写入PLC表并填写映射序号，返回目标行（-1失败）
+    int findProductionInstructionServerRowBySeq(int seqNo) const; ///< 按序号查找左侧工作行
+    void adjustProductionInstructionPlcMappingsAfterServerShift(int fromServerRow); ///< 左侧上移后校正右侧映射序号
     void applyProductionInstructionPlcRowStatus(int row); ///< 刷新PLC工作表单行待对比/匹配显示
     void applyProductionInstructionPlcInTransitRowStatus(int row); ///< 刷新PLC路上区单行对比色
     void applyProductionInstructionServerInTransitRowStatus(int row); ///< 刷新服务端路上区底色

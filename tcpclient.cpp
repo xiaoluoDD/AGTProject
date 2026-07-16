@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <QSqlDatabase>
 #include <QSqlQuery>
+#include <QSqlRecord>
 #include <QSqlDriver>
 #include <QCoreApplication>
 #include <QScreen>
@@ -92,6 +93,14 @@ constexpr int kVehicle3 = 4;
 constexpr int kServerConfirm = 5;
 constexpr int kVehicleFirst = kVehicle1;
 constexpr int kVehicleLast = kVehicle3;
+// 右侧空托盘工作表：序号 | 映射 | 产线 | 车型1 | 车型2 | 车型3
+constexpr int kPlcMapping = 1;
+constexpr int kPlcProductionLine = 2;
+constexpr int kPlcVehicle1 = 3;
+constexpr int kPlcVehicle2 = 4;
+constexpr int kPlcVehicle3 = 5;
+constexpr int kPlcVehicleFirst = kPlcVehicle1;
+constexpr int kPlcVehicleLast = kPlcVehicle3;
 constexpr int kInTransitRowCount = 7;
 constexpr int kDataStartRow = 0; ///< 工作表从第0行开始
 constexpr int kWorkDbSeqOffset = 8; ///< 工作表 row0 对应库 seq_no=8（1-7 为路上区）
@@ -2257,6 +2266,41 @@ void tcpClient::setupProductionInstructionComparePage()
         }
     };
 
+    auto initPlcWorkVehicleTable = [kWorkRowCount, makeSeqItem, configureTableRows](QTableWidget **outTable,
+                                                                                   QWidget *parent) {
+        *outTable = new QTableWidget(parent);
+        (*outTable)->setColumnCount(6);
+        (*outTable)->setRowCount(kWorkRowCount);
+        (*outTable)->setHorizontalHeaderLabels(
+            QStringList() << QStringLiteral("序号") << QStringLiteral("映射") << QStringLiteral("产线")
+                          << QStringLiteral("车型1") << QStringLiteral("车型2") << QStringLiteral("车型3"));
+        (*outTable)->verticalHeader()->setVisible(false);
+        (*outTable)->setAlternatingRowColors(true);
+        (*outTable)->setEditTriggers(QAbstractItemView::NoEditTriggers);
+        (*outTable)->setSelectionMode(QAbstractItemView::NoSelection);
+        (*outTable)->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Fixed);
+        (*outTable)->setColumnWidth(0, 50);
+        (*outTable)->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Fixed);
+        (*outTable)->setColumnWidth(1, 50);
+        (*outTable)->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Fixed);
+        (*outTable)->setColumnWidth(2, 50);
+        (*outTable)->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
+        (*outTable)->horizontalHeader()->setSectionResizeMode(4, QHeaderView::Stretch);
+        (*outTable)->horizontalHeader()->setSectionResizeMode(5, QHeaderView::Stretch);
+        configureTableRows(*outTable);
+        (*outTable)->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+        for (int row = 0; row < kWorkRowCount; ++row) {
+            (*outTable)->setItem(row, 0, makeSeqItem(row));
+            for (int c = ProductionInstructionColumn::kPlcMapping;
+                 c <= ProductionInstructionColumn::kPlcVehicleLast;
+                 ++c) {
+                QTableWidgetItem *item = new QTableWidgetItem(QString());
+                item->setTextAlignment(Qt::AlignCenter);
+                (*outTable)->setItem(row, c, item);
+            }
+        }
+    };
+
     // —— 左侧：路上区 + 生产指示发送 ——
     QGroupBox *serverGroup = new QGroupBox(QStringLiteral("生产指示（服务端）"), productionInstructionComparePage);
     QVBoxLayout *serverLayout = new QVBoxLayout(serverGroup);
@@ -2322,7 +2366,7 @@ void tcpClient::setupProductionInstructionComparePage()
     plcSaveToHistoryButton->setEnabled(false);
     m_productionInstructionPlcSaveToHistoryButton = plcSaveToHistoryButton;
     plcLayout->addWidget(plcSaveToHistoryButton);
-    initWorkVehicleTable(&m_productionInstructionPlcTable, plcGroup, false);
+    initPlcWorkVehicleTable(&m_productionInstructionPlcTable, plcGroup);
     connect(m_productionInstructionPlcTable, &QTableWidget::cellDoubleClicked, this,
             &tcpClient::onProductionInstructionPlcCellDoubleClicked);
     connect(plcSaveToHistoryButton, &QPushButton::clicked, this,
@@ -2489,7 +2533,8 @@ void tcpClient::shiftProductionInstructionPlcWorkRowsUp(int fromRow)
     }
 
     auto copyPlcWorkRowCells = [this](int srcRow, int dstRow) {
-        for (int col = ProductionInstructionColumn::kProductionLine; col <= ProductionInstructionColumn::kVehicleLast;
+        for (int col = ProductionInstructionColumn::kPlcMapping;
+             col <= ProductionInstructionColumn::kPlcVehicleLast;
              ++col) {
             QTableWidgetItem *srcItem = m_productionInstructionPlcTable->item(srcRow, col);
             const QString text = srcItem ? srcItem->text().trimmed() : QString();
@@ -2600,6 +2645,49 @@ void tcpClient::applyProductionInstructionServerInTransitRowStatus(int row)
     }
 }
 
+int tcpClient::findProductionInstructionServerRowBySeq(int seqNo) const
+{
+    if (!m_productionInstructionServerTable || seqNo <= 0) {
+        return -1;
+    }
+
+    const int rowCount = m_productionInstructionServerTable->rowCount();
+    for (int row = ProductionInstructionColumn::kDataStartRow; row < rowCount; ++row) {
+        int rowSeq = row + 1;
+        if (QTableWidgetItem *seqItem = m_productionInstructionServerTable->item(row, 0)) {
+            const int parsed = seqItem->text().trimmed().toInt();
+            if (parsed > 0) {
+                rowSeq = parsed;
+            }
+        }
+        if (rowSeq == seqNo) {
+            return row;
+        }
+    }
+    return -1;
+}
+
+void tcpClient::adjustProductionInstructionPlcMappingsAfterServerShift(int fromServerRow)
+{
+    if (!m_productionInstructionPlcTable || fromServerRow < ProductionInstructionColumn::kDataStartRow) {
+        return;
+    }
+
+    const int removedSeq = fromServerRow + 1;
+    const int rowCount = m_productionInstructionPlcTable->rowCount();
+    for (int row = ProductionInstructionColumn::kDataStartRow; row < rowCount; ++row) {
+        QTableWidgetItem *mapItem =
+            m_productionInstructionPlcTable->item(row, ProductionInstructionColumn::kPlcMapping);
+        if (!mapItem) {
+            continue;
+        }
+        const int mappedSeq = mapItem->text().trimmed().toInt();
+        if (mappedSeq > removedSeq) {
+            mapItem->setText(QString::number(mappedSeq - 1));
+        }
+    }
+}
+
 int tcpClient::moveProductionInstructionServerRowToPlc(int row)
 {
     if (!m_productionInstructionServerTable || !m_productionInstructionPlcTable || row < 0
@@ -2608,13 +2696,39 @@ int tcpClient::moveProductionInstructionServerRowToPlc(int row)
         return -1;
     }
 
-    const int targetRow = row;
+    // 按序落到右侧第一个空行（不再与左侧同行号对应）
+    int targetRow = -1;
+    const int plcRowCount = m_productionInstructionPlcTable->rowCount();
+    for (int r = ProductionInstructionColumn::kDataStartRow; r < plcRowCount; ++r) {
+        bool hasData = false;
+        for (int col = ProductionInstructionColumn::kPlcVehicleFirst;
+             col <= ProductionInstructionColumn::kPlcVehicleLast;
+             ++col) {
+            QTableWidgetItem *item = m_productionInstructionPlcTable->item(r, col);
+            if (item && !item->text().trimmed().isEmpty()) {
+                hasData = true;
+                break;
+            }
+        }
+        if (!hasData) {
+            targetRow = r;
+            break;
+        }
+    }
+    if (targetRow < 0) {
+        appendToLog(QStringLiteral("生产指示对比：空托盘车型表已满，无法写入确认行"), true);
+        return -1;
+    }
 
-    for (int col = ProductionInstructionColumn::kProductionLine; col <= ProductionInstructionColumn::kVehicleLast;
-         ++col) {
-        QTableWidgetItem *serverItem = m_productionInstructionServerTable->item(row, col);
-        const QString text = serverItem ? serverItem->text().trimmed() : QString();
+    int mappedSeq = row + 1;
+    if (QTableWidgetItem *seqItem = m_productionInstructionServerTable->item(row, 0)) {
+        const int parsed = seqItem->text().trimmed().toInt();
+        if (parsed > 0) {
+            mappedSeq = parsed;
+        }
+    }
 
+    auto setPlcCell = [this, targetRow](int col, const QString &text) {
         QTableWidgetItem *plcItem = m_productionInstructionPlcTable->item(targetRow, col);
         if (!plcItem) {
             plcItem = new QTableWidgetItem();
@@ -2622,6 +2736,22 @@ int tcpClient::moveProductionInstructionServerRowToPlc(int row)
             m_productionInstructionPlcTable->setItem(targetRow, col, plcItem);
         }
         plcItem->setText(text);
+    };
+
+    setPlcCell(ProductionInstructionColumn::kPlcMapping, QString::number(mappedSeq));
+
+    if (QTableWidgetItem *lineItem =
+            m_productionInstructionServerTable->item(row, ProductionInstructionColumn::kProductionLine)) {
+        setPlcCell(ProductionInstructionColumn::kPlcProductionLine, lineItem->text().trimmed());
+    } else {
+        setPlcCell(ProductionInstructionColumn::kPlcProductionLine, QString());
+    }
+
+    for (int i = 0; i < 3; ++i) {
+        QTableWidgetItem *serverItem =
+            m_productionInstructionServerTable->item(row, ProductionInstructionColumn::kVehicleFirst + i);
+        setPlcCell(ProductionInstructionColumn::kPlcVehicleFirst + i,
+                   serverItem ? serverItem->text().trimmed() : QString());
     }
 
     m_productionInstructionPlcPendingCompareRows.insert(targetRow);
@@ -2664,7 +2794,7 @@ void tcpClient::clearProductionInstructionPlcWorkRow(int row)
         return;
     }
 
-    for (int col = ProductionInstructionColumn::kProductionLine; col <= ProductionInstructionColumn::kVehicleLast;
+    for (int col = ProductionInstructionColumn::kPlcMapping; col <= ProductionInstructionColumn::kPlcVehicleLast;
          ++col) {
         QTableWidgetItem *item = m_productionInstructionPlcTable->item(row, col);
         if (!item) {
@@ -2745,9 +2875,9 @@ void tcpClient::saveProductionInstructionPlcRowToHistory(int row, int compareSta
         return item ? item->text().trimmed() : QString();
     };
 
-    const QString v1 = cellText(ProductionInstructionColumn::kVehicle1);
-    const QString v2 = cellText(ProductionInstructionColumn::kVehicle2);
-    const QString v3 = cellText(ProductionInstructionColumn::kVehicle3);
+    const QString v1 = cellText(ProductionInstructionColumn::kPlcVehicle1);
+    const QString v2 = cellText(ProductionInstructionColumn::kPlcVehicle2);
+    const QString v3 = cellText(ProductionInstructionColumn::kPlcVehicle3);
     if (v1.isEmpty() && v2.isEmpty() && v3.isEmpty()) {
         return;
     }
@@ -2757,12 +2887,13 @@ void tcpClient::saveProductionInstructionPlcRowToHistory(int row, int compareSta
     QSqlQuery query(db);
     query.prepare(QStringLiteral(
         "INSERT INTO production_instruction_plc_history "
-        "(archive_time, record_time, seq_no, production_line, vehicle1, vehicle2, vehicle3, pending_compare, "
-        "compare_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"));
+        "(archive_time, record_time, seq_no, mapped_seq, production_line, vehicle1, vehicle2, vehicle3, "
+        "pending_compare, compare_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"));
     query.addBindValue(archiveTime);
     query.addBindValue(m_productionInstructionPlcRowTimes.value(row));
     query.addBindValue(row + 1);
-    query.addBindValue(cellText(ProductionInstructionColumn::kProductionLine));
+    query.addBindValue(cellText(ProductionInstructionColumn::kPlcMapping));
+    query.addBindValue(cellText(ProductionInstructionColumn::kPlcProductionLine));
     query.addBindValue(v1);
     query.addBindValue(v2);
     query.addBindValue(v3);
@@ -3094,30 +3225,47 @@ void tcpClient::handleProductionInstructionCompareSuccess(int workRow)
         return;
     }
 
-    int seqNo = workRow + 1;
+    int plcSeqNo = workRow + 1;
     if (QTableWidgetItem *seqItem = m_productionInstructionPlcTable->item(workRow, 0)) {
         const int parsedSeq = seqItem->text().trimmed().toInt();
         if (parsedSeq > 0) {
-            seqNo = parsedSeq;
+            plcSeqNo = parsedSeq;
         }
     }
 
+    int mappedSeq = 0;
+    if (QTableWidgetItem *mapItem =
+            m_productionInstructionPlcTable->item(workRow, ProductionInstructionColumn::kPlcMapping)) {
+        mappedSeq = mapItem->text().trimmed().toInt();
+    }
+    int serverRow = findProductionInstructionServerRowBySeq(mappedSeq);
+    if (serverRow < 0 && mappedSeq > 0) {
+        serverRow = mappedSeq - 1;
+    }
+
     QStringList plcModels;
-    for (int col = ProductionInstructionColumn::kVehicleFirst; col <= ProductionInstructionColumn::kVehicleLast;
+    for (int col = ProductionInstructionColumn::kPlcVehicleFirst;
+         col <= ProductionInstructionColumn::kPlcVehicleLast;
          ++col) {
         QTableWidgetItem *item = m_productionInstructionPlcTable->item(workRow, col);
         plcModels << (item ? item->text().trimmed() : QString());
     }
 
-    saveProductionInstructionServerRowToHistory(workRow);
+    if (serverRow >= ProductionInstructionColumn::kDataStartRow) {
+        saveProductionInstructionServerRowToHistory(serverRow);
+    }
     saveProductionInstructionPlcRowToHistory(workRow, 2);
-    shiftProductionInstructionServerRowsUp(workRow);
+    if (serverRow >= ProductionInstructionColumn::kDataStartRow) {
+        shiftProductionInstructionServerRowsUp(serverRow);
+        adjustProductionInstructionPlcMappingsAfterServerShift(serverRow);
+    }
     shiftProductionInstructionPlcWorkRowsUp(workRow);
     saveProductionInstructionServerToDb();
     saveProductionInstructionPlcToDb();
 
-    appendToLog(QStringLiteral("生产指示对比：空托盘序号 %1 三车型对比成功（%2 / %3 / %4），已入库并上移后续工作行")
-                    .arg(seqNo)
+    appendToLog(QStringLiteral("生产指示对比：空托盘序号 %1（映射%2）三车型对比成功（%3 / %4 / %5），已入库并上移后续工作行")
+                    .arg(plcSeqNo)
+                    .arg(mappedSeq > 0 ? QString::number(mappedSeq) : QStringLiteral("-"))
                     .arg(plcModels.value(0))
                     .arg(plcModels.value(1))
                     .arg(plcModels.value(2)),
@@ -3158,7 +3306,7 @@ void tcpClient::applyProductionInstructionPlcRowStatus(int row)
         hasRowBrush = true;
     }
 
-    for (int col = ProductionInstructionColumn::kProductionLine; col <= ProductionInstructionColumn::kVehicleLast;
+    for (int col = ProductionInstructionColumn::kPlcMapping; col <= ProductionInstructionColumn::kPlcVehicleLast;
          ++col) {
         QTableWidgetItem *item = m_productionInstructionPlcTable->item(row, col);
         if (!item) {
@@ -3266,7 +3414,8 @@ void tcpClient::compareProductionInstructionPlcWithEmptyTrayIn(const QStringList
 
     QStringList rowModels;
     rowModels.reserve(3);
-    for (int col = ProductionInstructionColumn::kVehicleFirst; col <= ProductionInstructionColumn::kVehicleLast;
+    for (int col = ProductionInstructionColumn::kPlcVehicleFirst;
+         col <= ProductionInstructionColumn::kPlcVehicleLast;
          ++col) {
         QTableWidgetItem *item = m_productionInstructionPlcTable->item(targetRow, col);
         rowModels << (item ? item->text().trimmed() : QString());
@@ -3289,6 +3438,11 @@ void tcpClient::compareProductionInstructionPlcWithEmptyTrayIn(const QStringList
         if (parsedSeq > 0) {
             seqNo = parsedSeq;
         }
+    }
+    int mappedSeq = 0;
+    if (QTableWidgetItem *mapItem =
+            m_productionInstructionPlcTable->item(targetRow, ProductionInstructionColumn::kPlcMapping)) {
+        mappedSeq = mapItem->text().trimmed().toInt();
     }
 
     m_productionInstructionPlcPendingCompareRows.remove(targetRow);
@@ -3315,8 +3469,9 @@ void tcpClient::compareProductionInstructionPlcWithEmptyTrayIn(const QStringList
     };
 
     const QString errorMessage =
-        QStringLiteral("空托盘 序号%1 对比失败：plc发送车型为%2，生产指示确定车型为%3")
+        QStringLiteral("空托盘 序号%1（映射%2）对比失败：plc发送车型为%3，生产指示确定车型为%4")
             .arg(seqNo)
+            .arg(mappedSeq > 0 ? QString::number(mappedSeq) : QStringLiteral("-"))
             .arg(formatThreeModels(plcModelNames))
             .arg(formatThreeModels(rowModels));
     const QString errorTime = QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"));
@@ -3391,9 +3546,10 @@ void tcpClient::onProductionInstructionServerRowConfirmed(int row)
     saveProductionInstructionServerToDb();
     saveProductionInstructionPlcToDb();
 
-    appendToLog(QStringLiteral("生产指示对比：序号 %1 已确认，已写入空托盘车型第 %2 行待对比（产线 %3 / %4 / %5 / %6）")
+    appendToLog(QStringLiteral("生产指示对比：序号 %1 已确认，按序写入空托盘车型第 %2 行（映射=%3，产线 %4 / %5 / %6 / %7）")
                     .arg(sequenceNo)
                     .arg(plcTargetRow + 1)
+                    .arg(sequenceNo)
                     .arg(productionLine.isEmpty() ? QStringLiteral("（空）") : productionLine)
                     .arg(names.value(0, QString()))
                     .arg(names.value(1, QString()))
@@ -3412,8 +3568,10 @@ void tcpClient::onProductionInstructionServerCellDoubleClicked(int row, int colu
         return;
     }
 
-    if (column < ProductionInstructionColumn::kVehicleFirst
-        || column > ProductionInstructionColumn::kVehicleLast) {
+    const bool isProductionLine = (column == ProductionInstructionColumn::kProductionLine);
+    const bool isVehicle = (column >= ProductionInstructionColumn::kVehicleFirst
+                            && column <= ProductionInstructionColumn::kVehicleLast);
+    if (!isProductionLine && !isVehicle) {
         return;
     }
 
@@ -3428,16 +3586,7 @@ void tcpClient::onProductionInstructionServerCellDoubleClicked(int row, int colu
         m_productionInstructionServerTable->setItem(row, column, cellItem);
     }
 
-    const QString oldModel = cellItem->text().trimmed();
-    const QStringList modelList = getVehicleModelList();
-
-    QDialog dialog(this);
-    dialog.setWindowTitle(QStringLiteral("修改生产指示车型"));
-    dialog.setMinimumWidth(320);
-
-    QVBoxLayout *layout = new QVBoxLayout(&dialog);
-    const QString columnName =
-        QStringLiteral("车型%1").arg(column - ProductionInstructionColumn::kVehicleFirst + 1);
+    const QString oldValue = cellItem->text().trimmed();
     int seqNo = row + 1;
     if (QTableWidgetItem *seqItem = m_productionInstructionServerTable->item(row, 0)) {
         const int parsedSeq = seqItem->text().trimmed().toInt();
@@ -3446,25 +3595,39 @@ void tcpClient::onProductionInstructionServerCellDoubleClicked(int row, int colu
         }
     }
 
-    QLabel *infoLabel = new QLabel(
-        QStringLiteral("序号 %1 %2，请选择车型或清空：").arg(seqNo).arg(columnName), &dialog);
-    layout->addWidget(infoLabel);
-
+    QDialog dialog(this);
+    dialog.setMinimumWidth(320);
+    QVBoxLayout *layout = new QVBoxLayout(&dialog);
     QComboBox *comboBox = new QComboBox(&dialog);
     comboBox->setEditable(false);
-    comboBox->addItem(QStringLiteral("（清空）"), QString());
 
-    for (const QString &model : modelList) {
-        comboBox->addItem(model, model);
+    QString columnName;
+    if (isProductionLine) {
+        dialog.setWindowTitle(QStringLiteral("修改生产指示产线"));
+        columnName = QStringLiteral("产线");
+        layout->addWidget(new QLabel(
+            QStringLiteral("序号 %1 产线，请选择：").arg(seqNo), &dialog));
+        comboBox->addItem(QStringLiteral("1L"), QStringLiteral("1L"));
+        comboBox->addItem(QStringLiteral("2L"), QStringLiteral("2L"));
+    } else {
+        dialog.setWindowTitle(QStringLiteral("修改生产指示车型"));
+        columnName =
+            QStringLiteral("车型%1").arg(column - ProductionInstructionColumn::kVehicleFirst + 1);
+        layout->addWidget(new QLabel(
+            QStringLiteral("序号 %1 %2，请选择车型或清空：").arg(seqNo).arg(columnName), &dialog));
+        comboBox->addItem(QStringLiteral("（清空）"), QString());
+        for (const QString &model : getVehicleModelList()) {
+            comboBox->addItem(model, model);
+        }
     }
 
     int currentIndex = 0;
-    if (!oldModel.isEmpty()) {
-        const int foundIndex = comboBox->findData(oldModel);
+    if (!oldValue.isEmpty()) {
+        const int foundIndex = comboBox->findData(oldValue);
         if (foundIndex >= 0) {
             currentIndex = foundIndex;
-        } else {
-            comboBox->addItem(oldModel, oldModel);
+        } else if (!isProductionLine) {
+            comboBox->addItem(oldValue, oldValue);
             currentIndex = comboBox->count() - 1;
         }
     }
@@ -3481,23 +3644,23 @@ void tcpClient::onProductionInstructionServerCellDoubleClicked(int row, int colu
         return;
     }
 
-    const QString newModel = comboBox->currentData().toString().trimmed();
-    if (newModel == oldModel) {
+    const QString newValue = comboBox->currentData().toString().trimmed();
+    if (newValue == oldValue) {
         return;
     }
 
-    cellItem->setText(newModel);
+    cellItem->setText(newValue);
     saveProductionInstructionServerToDb();
 
-    const auto displayModel = [](const QString &model) {
-        return model.isEmpty() ? QStringLiteral("（空）") : model;
+    const auto displayValue = [](const QString &value) {
+        return value.isEmpty() ? QStringLiteral("（空）") : value;
     };
     const QString errorMessage =
         QStringLiteral("序号%1 %2：由 %3 修改为 %4")
             .arg(seqNo)
             .arg(columnName)
-            .arg(displayModel(oldModel))
-            .arg(displayModel(newModel));
+            .arg(displayValue(oldValue))
+            .arg(displayValue(newValue));
     const QString errorTime = QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"));
     appendProductionInstructionErrorRecord(seqNo, errorTime, errorMessage);
 
@@ -3515,8 +3678,10 @@ void tcpClient::onProductionInstructionPlcCellDoubleClicked(int row, int column)
         return;
     }
 
-    if (column < ProductionInstructionColumn::kVehicleFirst
-        || column > ProductionInstructionColumn::kVehicleLast) {
+    const bool isProductionLine = (column == ProductionInstructionColumn::kPlcProductionLine);
+    const bool isVehicle = (column >= ProductionInstructionColumn::kPlcVehicleFirst
+                            && column <= ProductionInstructionColumn::kPlcVehicleLast);
+    if (!isProductionLine && !isVehicle) {
         return;
     }
 
@@ -3527,16 +3692,7 @@ void tcpClient::onProductionInstructionPlcCellDoubleClicked(int row, int column)
         m_productionInstructionPlcTable->setItem(row, column, cellItem);
     }
 
-    const QString oldModel = cellItem->text().trimmed();
-    const QStringList modelList = getVehicleModelList();
-
-    QDialog dialog(this);
-    dialog.setWindowTitle(QStringLiteral("修改空托盘车型"));
-    dialog.setMinimumWidth(320);
-
-    QVBoxLayout *layout = new QVBoxLayout(&dialog);
-    const QString columnName =
-        QStringLiteral("车型%1").arg(column - ProductionInstructionColumn::kVehicleFirst + 1);
+    const QString oldValue = cellItem->text().trimmed();
     int seqNo = row + 1;
     if (QTableWidgetItem *seqItem = m_productionInstructionPlcTable->item(row, 0)) {
         const int parsedSeq = seqItem->text().trimmed().toInt();
@@ -3545,25 +3701,40 @@ void tcpClient::onProductionInstructionPlcCellDoubleClicked(int row, int column)
         }
     }
 
-    QLabel *infoLabel = new QLabel(
-        QStringLiteral("空托盘 序号 %1 %2，请选择车型或清空：").arg(seqNo).arg(columnName), &dialog);
-    layout->addWidget(infoLabel);
-
+    QDialog dialog(this);
+    dialog.setMinimumWidth(320);
+    QVBoxLayout *layout = new QVBoxLayout(&dialog);
     QComboBox *comboBox = new QComboBox(&dialog);
     comboBox->setEditable(false);
-    comboBox->addItem(QStringLiteral("（清空）"), QString());
 
-    for (const QString &model : modelList) {
-        comboBox->addItem(model, model);
+    QString columnName;
+    if (isProductionLine) {
+        dialog.setWindowTitle(QStringLiteral("修改空托盘产线"));
+        columnName = QStringLiteral("产线");
+        layout->addWidget(new QLabel(
+            QStringLiteral("空托盘 序号 %1 产线，请选择：").arg(seqNo), &dialog));
+        comboBox->addItem(QStringLiteral("1L"), QStringLiteral("1L"));
+        comboBox->addItem(QStringLiteral("2L"), QStringLiteral("2L"));
+    } else {
+        dialog.setWindowTitle(QStringLiteral("修改空托盘车型"));
+        columnName =
+            QStringLiteral("车型%1").arg(column - ProductionInstructionColumn::kPlcVehicleFirst + 1);
+        layout->addWidget(new QLabel(
+            QStringLiteral("空托盘 序号 %1 %2，请选择车型或清空：").arg(seqNo).arg(columnName),
+            &dialog));
+        comboBox->addItem(QStringLiteral("（清空）"), QString());
+        for (const QString &model : getVehicleModelList()) {
+            comboBox->addItem(model, model);
+        }
     }
 
     int currentIndex = 0;
-    if (!oldModel.isEmpty()) {
-        const int foundIndex = comboBox->findData(oldModel);
+    if (!oldValue.isEmpty()) {
+        const int foundIndex = comboBox->findData(oldValue);
         if (foundIndex >= 0) {
             currentIndex = foundIndex;
-        } else {
-            comboBox->addItem(oldModel, oldModel);
+        } else if (!isProductionLine) {
+            comboBox->addItem(oldValue, oldValue);
             currentIndex = comboBox->count() - 1;
         }
     }
@@ -3580,24 +3751,24 @@ void tcpClient::onProductionInstructionPlcCellDoubleClicked(int row, int column)
         return;
     }
 
-    const QString newModel = comboBox->currentData().toString().trimmed();
-    if (newModel == oldModel) {
+    const QString newValue = comboBox->currentData().toString().trimmed();
+    if (newValue == oldValue) {
         return;
     }
 
-    cellItem->setText(newModel);
+    cellItem->setText(newValue);
     applyProductionInstructionPlcRowStatus(row);
     saveProductionInstructionPlcToDb();
 
-    const auto displayModel = [](const QString &model) {
-        return model.isEmpty() ? QStringLiteral("（空）") : model;
+    const auto displayValue = [](const QString &value) {
+        return value.isEmpty() ? QStringLiteral("（空）") : value;
     };
     const QString errorMessage =
         QStringLiteral("空托盘 序号%1 %2：由 %3 修改为 %4")
             .arg(seqNo)
             .arg(columnName)
-            .arg(displayModel(oldModel))
-            .arg(displayModel(newModel));
+            .arg(displayValue(oldValue))
+            .arg(displayValue(newValue));
     const QString errorTime = QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"));
     appendProductionInstructionErrorRecord(seqNo, errorTime, errorMessage);
 
@@ -3928,7 +4099,8 @@ bool tcpClient::isProductionInstructionPlcTableFull() const
     const int rowCount = m_productionInstructionPlcTable->rowCount();
     for (int row = ProductionInstructionColumn::kDataStartRow; row < rowCount; ++row) {
         bool hasData = false;
-        for (int col = ProductionInstructionColumn::kVehicleFirst; col <= ProductionInstructionColumn::kVehicleLast;
+        for (int col = ProductionInstructionColumn::kPlcVehicleFirst;
+             col <= ProductionInstructionColumn::kPlcVehicleLast;
              ++col) {
             QTableWidgetItem *item = m_productionInstructionPlcTable->item(row, col);
             if (item && !item->text().trimmed().isEmpty()) {
@@ -4020,8 +4192,8 @@ void tcpClient::saveProductionInstructionPlcToHistory()
     QSqlQuery query(db);
     query.prepare(QStringLiteral(
         "INSERT INTO production_instruction_plc_history "
-        "(archive_time, record_time, seq_no, production_line, vehicle1, vehicle2, vehicle3, pending_compare, "
-        "compare_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"));
+        "(archive_time, record_time, seq_no, mapped_seq, production_line, vehicle1, vehicle2, vehicle3, "
+        "pending_compare, compare_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"));
 
     int savedCount = 0;
     const int rowCount = m_productionInstructionPlcTable->rowCount();
@@ -4031,9 +4203,9 @@ void tcpClient::saveProductionInstructionPlcToHistory()
             return item ? item->text().trimmed() : QString();
         };
 
-        const QString v1 = cellText(ProductionInstructionColumn::kVehicle1);
-        const QString v2 = cellText(ProductionInstructionColumn::kVehicle2);
-        const QString v3 = cellText(ProductionInstructionColumn::kVehicle3);
+        const QString v1 = cellText(ProductionInstructionColumn::kPlcVehicle1);
+        const QString v2 = cellText(ProductionInstructionColumn::kPlcVehicle2);
+        const QString v3 = cellText(ProductionInstructionColumn::kPlcVehicle3);
         if (v1.isEmpty() && v2.isEmpty() && v3.isEmpty()) {
             continue;
         }
@@ -4051,7 +4223,8 @@ void tcpClient::saveProductionInstructionPlcToHistory()
         query.addBindValue(archiveTime);
         query.addBindValue(recordTime);
         query.addBindValue(row + 1);
-        query.addBindValue(cellText(ProductionInstructionColumn::kProductionLine));
+        query.addBindValue(cellText(ProductionInstructionColumn::kPlcMapping));
+        query.addBindValue(cellText(ProductionInstructionColumn::kPlcProductionLine));
         query.addBindValue(v1);
         query.addBindValue(v2);
         query.addBindValue(v3);
@@ -4153,36 +4326,71 @@ void tcpClient::archiveReadyProductionInstructionRowsToHistory()
         return false;
     };
 
-    QVector<int> eligibleRows;
-    const int rowCount = m_productionInstructionServerTable->rowCount();
-    for (int row = ProductionInstructionColumn::kDataStartRow; row < rowCount; ++row) {
-        if (!m_productionInstructionServerConfirmedRows.contains(row)) {
+    // 以右侧已对比行为准，通过映射列定位左侧行
+    struct EligiblePair {
+        int plcRow = -1;
+        int compareStatus = 0;
+    };
+    QVector<EligiblePair> eligiblePairs;
+    const int plcRowCount = m_productionInstructionPlcTable->rowCount();
+    for (int plcRow = ProductionInstructionColumn::kDataStartRow; plcRow < plcRowCount; ++plcRow) {
+        const bool compared = m_productionInstructionPlcMatchSuccessRows.contains(plcRow)
+                              || m_productionInstructionPlcMatchFailedRows.contains(plcRow);
+        if (!compared) {
             continue;
         }
-        const bool compared = m_productionInstructionPlcMatchSuccessRows.contains(row)
-                              || m_productionInstructionPlcMatchFailedRows.contains(row);
-        if (!compared || !serverRowHasData(row)) {
+
+        int mappedSeq = 0;
+        if (QTableWidgetItem *mapItem =
+                m_productionInstructionPlcTable->item(plcRow, ProductionInstructionColumn::kPlcMapping)) {
+            mappedSeq = mapItem->text().trimmed().toInt();
+        }
+        int serverRow = findProductionInstructionServerRowBySeq(mappedSeq);
+        if (serverRow < 0 && mappedSeq > 0) {
+            serverRow = mappedSeq - 1;
+        }
+        if (serverRow < ProductionInstructionColumn::kDataStartRow
+            || !m_productionInstructionServerConfirmedRows.contains(serverRow)
+            || !serverRowHasData(serverRow)) {
             continue;
         }
-        eligibleRows.append(row);
+
+        EligiblePair pair;
+        pair.plcRow = plcRow;
+        pair.compareStatus = m_productionInstructionPlcMatchSuccessRows.contains(plcRow) ? 2 : 3;
+        eligiblePairs.append(pair);
     }
 
-    if (eligibleRows.isEmpty()) {
+    if (eligiblePairs.isEmpty()) {
         appendToLog(QStringLiteral("生产指示对比：无已确认且已对比的工作行可保存到历史（未确认/待对比行已跳过，路上7行未处理）"),
                     false);
         return;
     }
 
-    std::sort(eligibleRows.begin(), eligibleRows.end(), std::greater<int>());
+    std::sort(eligiblePairs.begin(), eligiblePairs.end(), [](const EligiblePair &a, const EligiblePair &b) {
+        return a.plcRow > b.plcRow;
+    });
 
     int savedCount = 0;
-    for (int row : eligibleRows) {
-        const int compareStatus =
-            m_productionInstructionPlcMatchSuccessRows.contains(row) ? 2 : 3;
-        saveProductionInstructionServerRowToHistory(row);
-        saveProductionInstructionPlcRowToHistory(row, compareStatus);
-        shiftProductionInstructionServerRowsUp(row);
-        shiftProductionInstructionPlcWorkRowsUp(row);
+    for (const EligiblePair &pair : eligiblePairs) {
+        int mappedSeq = 0;
+        if (QTableWidgetItem *mapItem =
+                m_productionInstructionPlcTable->item(pair.plcRow, ProductionInstructionColumn::kPlcMapping)) {
+            mappedSeq = mapItem->text().trimmed().toInt();
+        }
+        int serverRow = findProductionInstructionServerRowBySeq(mappedSeq);
+        if (serverRow < 0 && mappedSeq > 0) {
+            serverRow = mappedSeq - 1;
+        }
+        if (serverRow < ProductionInstructionColumn::kDataStartRow) {
+            continue;
+        }
+
+        saveProductionInstructionServerRowToHistory(serverRow);
+        saveProductionInstructionPlcRowToHistory(pair.plcRow, pair.compareStatus);
+        shiftProductionInstructionServerRowsUp(serverRow);
+        adjustProductionInstructionPlcMappingsAfterServerShift(serverRow);
+        shiftProductionInstructionPlcWorkRowsUp(pair.plcRow);
         ++savedCount;
     }
 
@@ -4587,10 +4795,10 @@ void tcpClient::saveProductionInstructionPlcToDb()
 
     QSqlQuery insQuery(db);
     insQuery.prepare(QStringLiteral(
-        "INSERT INTO production_instruction_plc (seq_no, production_line, vehicle1, vehicle2, vehicle3, "
-        "pending_compare, record_time, compare_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"));
+        "INSERT INTO production_instruction_plc (seq_no, mapped_seq, production_line, vehicle1, vehicle2, "
+        "vehicle3, pending_compare, record_time, compare_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"));
 
-    // 路上区：seq 1-7
+    // 路上区：seq 1-7（无映射）
     for (int row = 0; row < ProductionInstructionColumn::kInTransitRowCount; ++row) {
         auto cellText = [this, row](int col) {
             QTableWidgetItem *item = m_productionInstructionPlcInTransitTable->item(row, col);
@@ -4605,6 +4813,7 @@ void tcpClient::saveProductionInstructionPlcToDb()
         }
 
         insQuery.addBindValue(row + 1);
+        insQuery.addBindValue(QVariant());
         insQuery.addBindValue(QString());
         insQuery.addBindValue(cellText(ProductionInstructionColumn::kInTransitVehicle1));
         insQuery.addBindValue(cellText(ProductionInstructionColumn::kInTransitVehicle2));
@@ -4639,11 +4848,17 @@ void tcpClient::saveProductionInstructionPlcToDb()
         }
 
         const int seqNo = row + ProductionInstructionColumn::kWorkDbSeqOffset;
+        const QString mappedText = cellText(ProductionInstructionColumn::kPlcMapping);
         insQuery.addBindValue(seqNo);
-        insQuery.addBindValue(cellText(ProductionInstructionColumn::kProductionLine));
-        insQuery.addBindValue(cellText(ProductionInstructionColumn::kVehicle1));
-        insQuery.addBindValue(cellText(ProductionInstructionColumn::kVehicle2));
-        insQuery.addBindValue(cellText(ProductionInstructionColumn::kVehicle3));
+        if (mappedText.isEmpty()) {
+            insQuery.addBindValue(QVariant());
+        } else {
+            insQuery.addBindValue(mappedText.toInt());
+        }
+        insQuery.addBindValue(cellText(ProductionInstructionColumn::kPlcProductionLine));
+        insQuery.addBindValue(cellText(ProductionInstructionColumn::kPlcVehicle1));
+        insQuery.addBindValue(cellText(ProductionInstructionColumn::kPlcVehicle2));
+        insQuery.addBindValue(cellText(ProductionInstructionColumn::kPlcVehicle3));
         insQuery.addBindValue(compareStatus == 1 ? 1 : 0);
         insQuery.addBindValue(m_productionInstructionPlcRowTimes.value(row));
         insQuery.addBindValue(compareStatus);
@@ -4684,11 +4899,20 @@ void tcpClient::loadProductionInstructionPlcFromDb()
             }
         }
     }
+    for (int row = 0; row < m_productionInstructionPlcTable->rowCount(); ++row) {
+        for (int col = ProductionInstructionColumn::kPlcMapping;
+             col <= ProductionInstructionColumn::kPlcVehicleLast;
+             ++col) {
+            if (QTableWidgetItem *item = m_productionInstructionPlcTable->item(row, col)) {
+                item->setText(QString());
+            }
+        }
+    }
 
     QSqlQuery query(db);
     if (!query.exec(QStringLiteral(
             "SELECT seq_no, production_line, vehicle1, vehicle2, vehicle3, pending_compare, record_time, "
-            "compare_status FROM production_instruction_plc ORDER BY seq_no"))) {
+            "compare_status, mapped_seq FROM production_instruction_plc ORDER BY seq_no"))) {
         qWarning() << "加载生产指示PLC表失败:" << query.lastError().text();
         return;
     }
@@ -4698,6 +4922,9 @@ void tcpClient::loadProductionInstructionPlcFromDb()
         refreshProductionInstructionInTransitRowStatuses();
         return;
     }
+
+    const QSqlRecord rec = query.record();
+    const int mappedSeqIdx = rec.indexOf(QStringLiteral("mapped_seq"));
 
     do {
         const int seqNo = query.value(0).toInt();
@@ -4738,25 +4965,28 @@ void tcpClient::loadProductionInstructionPlcFromDb()
             continue;
         }
 
-        QTableWidgetItem *lineItem =
-            m_productionInstructionPlcTable->item(row, ProductionInstructionColumn::kProductionLine);
-        if (!lineItem) {
-            lineItem = new QTableWidgetItem();
-            lineItem->setTextAlignment(Qt::AlignCenter);
-            m_productionInstructionPlcTable->setItem(row, ProductionInstructionColumn::kProductionLine,
-                                                     lineItem);
-        }
-        lineItem->setText(query.value(1).toString());
-
-        for (int i = 0; i < 3; ++i) {
-            const int col = ProductionInstructionColumn::kVehicleFirst + i;
+        auto setPlcCell = [this, row](int col, const QString &text) {
             QTableWidgetItem *item = m_productionInstructionPlcTable->item(row, col);
             if (!item) {
                 item = new QTableWidgetItem();
                 item->setTextAlignment(Qt::AlignCenter);
                 m_productionInstructionPlcTable->setItem(row, col, item);
             }
-            item->setText(query.value(2 + i).toString());
+            item->setText(text);
+        };
+
+        if (mappedSeqIdx >= 0 && !query.value(mappedSeqIdx).isNull()) {
+            const int mappedSeq = query.value(mappedSeqIdx).toInt();
+            setPlcCell(ProductionInstructionColumn::kPlcMapping,
+                       mappedSeq > 0 ? QString::number(mappedSeq) : QString());
+        } else {
+            // 兼容旧数据：无映射时默认同行号
+            setPlcCell(ProductionInstructionColumn::kPlcMapping, QString::number(row + 1));
+        }
+
+        setPlcCell(ProductionInstructionColumn::kPlcProductionLine, query.value(1).toString());
+        for (int i = 0; i < 3; ++i) {
+            setPlcCell(ProductionInstructionColumn::kPlcVehicleFirst + i, query.value(2 + i).toString());
         }
 
         if (compareStatus == 2) {
@@ -5255,13 +5485,13 @@ void tcpClient::loadProductionInstructionHistoryRecords()
             "SELECT seq_no, record_time, production_line, vehicle1, vehicle2, vehicle3 "
             "FROM production_instruction_server_history");
     } else if (typeKey == QStringLiteral("plc")) {
-        headers << QStringLiteral("序号") << QStringLiteral("时间") << QStringLiteral("状态")
-                << QStringLiteral("产线") << QStringLiteral("车型1") << QStringLiteral("车型2")
-                << QStringLiteral("车型3");
+        headers << QStringLiteral("序号") << QStringLiteral("映射") << QStringLiteral("时间")
+                << QStringLiteral("状态") << QStringLiteral("产线") << QStringLiteral("车型1")
+                << QStringLiteral("车型2") << QStringLiteral("车型3");
         dateFilterColumn = QStringLiteral("record_time");
         sql = QStringLiteral(
-            "SELECT seq_no, record_time, compare_status, production_line, vehicle1, vehicle2, vehicle3 "
-            "FROM production_instruction_plc_history");
+            "SELECT seq_no, mapped_seq, record_time, compare_status, production_line, vehicle1, vehicle2, "
+            "vehicle3 FROM production_instruction_plc_history");
     } else {
         headers << QStringLiteral("序号") << QStringLiteral("时间") << QStringLiteral("报错信息");
         dateFilterColumn = QStringLiteral("error_time");
@@ -5331,16 +5561,17 @@ void tcpClient::loadProductionInstructionHistoryRecords()
         m_productionInstructionHistoryTable->insertRow(row);
 
         if (typeKey == QStringLiteral("plc")) {
-            const int compareStatus = query.value(2).toInt();
+            const int compareStatus = query.value(3).toInt();
 
             const QStringList cellTexts = {
                 query.value(0).toString(),
-                query.value(1).toString(),
+                query.value(1).isNull() ? QString() : query.value(1).toString(),
+                query.value(2).toString(),
                 plcCompareStatusText(compareStatus),
-                query.value(3).toString(),
                 query.value(4).toString(),
                 query.value(5).toString(),
                 query.value(6).toString(),
+                query.value(7).toString(),
             };
 
             const QBrush statusBrush = plcCompareStatusBrush(compareStatus);
@@ -5349,7 +5580,7 @@ void tcpClient::loadProductionInstructionHistoryRecords()
             for (int col = 0; col < cellTexts.size(); ++col) {
                 QTableWidgetItem *item = new QTableWidgetItem(cellTexts.value(col));
                 item->setTextAlignment(Qt::AlignCenter);
-                if (hasStatusBrush && col >= 4) {
+                if (hasStatusBrush && col >= 5) {
                     item->setBackground(statusBrush);
                 }
                 m_productionInstructionHistoryTable->setItem(row, col, item);
@@ -7774,6 +8005,15 @@ void tcpClient::initDatabase() {
                 qWarning() << "production_instruction_plc 增加 production_line 列失败:" << e.text();
             }
         }
+        QSqlQuery alterPlcMappedSeq;
+        if (!alterPlcMappedSeq.exec(
+                "ALTER TABLE production_instruction_plc ADD COLUMN mapped_seq INT NULL")) {
+            const QSqlError e = alterPlcMappedSeq.lastError();
+            if (e.type() != QSqlError::StatementError
+                || !e.text().contains(QStringLiteral("Duplicate column"), Qt::CaseInsensitive)) {
+                qWarning() << "production_instruction_plc 增加 mapped_seq 列失败:" << e.text();
+            }
+        }
     }
 
     // 生产指示对比-历史记录表
@@ -7849,6 +8089,15 @@ void tcpClient::initDatabase() {
             if (e.type() != QSqlError::StatementError
                 || !e.text().contains(QStringLiteral("Duplicate column"), Qt::CaseInsensitive)) {
                 qWarning() << "production_instruction_plc_history 增加 production_line 列失败:" << e.text();
+            }
+        }
+        QSqlQuery alterPlcHistoryMappedSeq;
+        if (!alterPlcHistoryMappedSeq.exec(
+                "ALTER TABLE production_instruction_plc_history ADD COLUMN mapped_seq INT NULL")) {
+            const QSqlError e = alterPlcHistoryMappedSeq.lastError();
+            if (e.type() != QSqlError::StatementError
+                || !e.text().contains(QStringLiteral("Duplicate column"), Qt::CaseInsensitive)) {
+                qWarning() << "production_instruction_plc_history 增加 mapped_seq 列失败:" << e.text();
             }
         }
     }
