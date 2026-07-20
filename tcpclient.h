@@ -120,11 +120,14 @@ private slots:
     void onProductionInstructionServerSaveToHistoryClicked(); ///< 生产指示保存到历史
     void onProductionInstructionPlcSaveToHistoryClicked(); ///< 空托盘车型保存到历史
     void onProductionInstructionErrorsSaveToHistoryClicked(); ///< 报错记录保存到历史
+    void onProductionInstructionServerWorkClearClicked(); ///< 一键清空生产指示工作区（产线+车型）
+    void onProductionInstructionPlcWorkClearClicked(); ///< 一键清空空托盘车型工作区（产线+车型）
     void onProductionInstructionHistoryViewClicked(); ///< 历史记录查看
     void onProductionInstructionHistoryDeleteClicked(); ///< 删除历史记录
     void onVehicleBindingPageClicked(); ///< 切换到车型绑定界面
     void updateProjectGroupStatistics(); ///< 刷新各车型搬运数据（实托盘搬出 / 空托盘搬入）卡片
     void rebuildProjectGroupCards(QGridLayout *layout, const QList<QPair<QString, int>> &items, const QString &unit); ///< 更新绿色卡片（同结构则改文字，否则重建）
+    void clearProjectGroupSideCounts(const QString &status, const QString &sideTitle); ///< 清空各车型搬运一侧数量（删库+刷卡片）
     void loadVehicleModelsToAssemblyIndicator(); ///< 加载绑定车型到总成指示表
     void onOvertimeTimeButtonClicked(); ///< 加班时间选择按钮点击处理
     void addOvertimeColumns(double hours); ///< 添加加班时间列到总成指示表（插在合计列之前）
@@ -236,6 +239,8 @@ private slots:
     void onRealEntranceLongPressTimeout();  ///< 实滑槽「三车间滑槽出口」长按3秒超时：弹出清空确认
     void onEmptyEntranceLongPressTimeout(); ///< 空滑槽「三车间滑槽入口」长按3秒超时：弹出清空确认
     void onProjectGroupShiftButtonClicked(); ///< 各车型搬运数据界面班次按钮点击处理
+    void onProjectGroupRealOutClearClicked(); ///< 左侧实件搬运数据一键清空
+    void onProjectGroupEmptyInClearClicked(); ///< 右侧空托盘搬运数据一键清空
     void onProjectGroupShiftAutoReset(); ///< 各车型搬运数据界面班次自动恢复处理
 
 private:

@@ -1068,12 +1068,39 @@ void tcpClient::setupUI()
         "padding: 0 8px;"
         "}";
 
-    auto makeCardsPanel = [&panelStyle](QWidget *parent, const QString &title, QGridLayout **outCardsLayout) -> QGroupBox* {
+    auto makeCardsPanel = [&panelStyle](QWidget *parent, const QString &title, QGridLayout **outCardsLayout,
+                                        QPushButton **outClearButton) -> QGroupBox* {
         QGroupBox *box = new QGroupBox(title, parent);
         box->setStyleSheet(panelStyle);
         QVBoxLayout *boxLayout = new QVBoxLayout(box);
         boxLayout->setContentsMargins(12, 20, 12, 12);
-        boxLayout->setSpacing(0);
+        boxLayout->setSpacing(8);
+
+        QHBoxLayout *toolRow = new QHBoxLayout();
+        toolRow->setContentsMargins(0, 0, 0, 0);
+        toolRow->addStretch();
+        QPushButton *clearBtn = new QPushButton(QStringLiteral("一键清空"), box);
+        clearBtn->setMinimumSize(100, 32);
+        clearBtn->setMaximumHeight(32);
+        clearBtn->setStyleSheet(
+            "QPushButton {"
+            "font-size: 10pt;"
+            "font-weight: bold;"
+            "padding: 4px 12px;"
+            "border: 2px solid #E53935;"
+            "border-radius: 4px;"
+            "background-color: #FFEBEE;"
+            "color: #C62828;"
+            "}"
+            "QPushButton:hover {"
+            "background-color: #FFCDD2;"
+            "border: 2px solid #D32F2F;"
+            "}"
+            "QPushButton:pressed {"
+            "background-color: #EF9A9A;"
+            "}");
+        toolRow->addWidget(clearBtn);
+        boxLayout->addLayout(toolRow);
 
         QScrollArea *scroll = new QScrollArea(box);
         scroll->setWidgetResizable(true);
@@ -1092,6 +1119,9 @@ void tcpClient::setupUI()
         boxLayout->addWidget(scroll, 1);
 
         *outCardsLayout = cardsLayout;
+        if (outClearButton) {
+            *outClearButton = clearBtn;
+        }
         return box;
     };
 
@@ -1101,8 +1131,18 @@ void tcpClient::setupUI()
 
     projectGroupRealOutCardsLayout = nullptr;
     projectGroupEmptyInCardsLayout = nullptr;
-    QGroupBox *realOutBox = makeCardsPanel(projectGroupPage, QStringLiteral("各部品实件搬运数据"), &projectGroupRealOutCardsLayout);
-    QGroupBox *emptyInBox = makeCardsPanel(projectGroupPage, QStringLiteral("各部品空托盘搬运数据"), &projectGroupEmptyInCardsLayout);
+    QPushButton *realOutClearButton = nullptr;
+    QPushButton *emptyInClearButton = nullptr;
+    QGroupBox *realOutBox = makeCardsPanel(projectGroupPage, QStringLiteral("各部品实件搬运数据"),
+                                           &projectGroupRealOutCardsLayout, &realOutClearButton);
+    QGroupBox *emptyInBox = makeCardsPanel(projectGroupPage, QStringLiteral("各部品空托盘搬运数据"),
+                                           &projectGroupEmptyInCardsLayout, &emptyInClearButton);
+    if (realOutClearButton) {
+        connect(realOutClearButton, &QPushButton::clicked, this, &tcpClient::onProjectGroupRealOutClearClicked);
+    }
+    if (emptyInClearButton) {
+        connect(emptyInClearButton, &QPushButton::clicked, this, &tcpClient::onProjectGroupEmptyInClearClicked);
+    }
     panelsLayout->addWidget(realOutBox, 1);
     panelsLayout->addWidget(emptyInBox, 1);
     projectGroupLayout->addLayout(panelsLayout, 1);
@@ -2328,9 +2368,15 @@ void tcpClient::setupProductionInstructionComparePage()
     connect(serverInTransitClearButton, &QPushButton::clicked, this,
             &tcpClient::onProductionInstructionServerInTransitClearClicked);
 
+    QHBoxLayout *serverWorkHeader = new QHBoxLayout();
     QLabel *serverWorkLabel = new QLabel(QStringLiteral("生产指示发送"), serverGroup);
     serverWorkLabel->setStyleSheet(QStringLiteral("font-weight: bold;"));
-    serverLayout->addWidget(serverWorkLabel);
+    QPushButton *serverWorkClearButton = new QPushButton(QStringLiteral("一键清空"), serverGroup);
+    serverWorkClearButton->setMinimumHeight(28);
+    serverWorkHeader->addWidget(serverWorkLabel);
+    serverWorkHeader->addStretch();
+    serverWorkHeader->addWidget(serverWorkClearButton);
+    serverLayout->addLayout(serverWorkHeader);
     QPushButton *serverSaveToHistoryButton =
         new QPushButton(QStringLiteral("保存到历史"), serverGroup);
     serverSaveToHistoryButton->setMinimumHeight(32);
@@ -2341,6 +2387,8 @@ void tcpClient::setupProductionInstructionComparePage()
             &tcpClient::onProductionInstructionServerCellDoubleClicked);
     connect(serverSaveToHistoryButton, &QPushButton::clicked, this,
             &tcpClient::onProductionInstructionServerSaveToHistoryClicked);
+    connect(serverWorkClearButton, &QPushButton::clicked, this,
+            &tcpClient::onProductionInstructionServerWorkClearClicked);
     serverLayout->addWidget(m_productionInstructionServerTable, 1);
 
     // —— 中间：空托盘返回 + 空托盘工作区 ——
@@ -2364,9 +2412,15 @@ void tcpClient::setupProductionInstructionComparePage()
     connect(plcInTransitClearButton, &QPushButton::clicked, this,
             &tcpClient::onProductionInstructionPlcInTransitClearClicked);
 
+    QHBoxLayout *plcWorkHeader = new QHBoxLayout();
     QLabel *plcWorkLabel = new QLabel(QStringLiteral("空托盘车型"), plcGroup);
     plcWorkLabel->setStyleSheet(QStringLiteral("font-weight: bold;"));
-    plcLayout->addWidget(plcWorkLabel);
+    QPushButton *plcWorkClearButton = new QPushButton(QStringLiteral("一键清空"), plcGroup);
+    plcWorkClearButton->setMinimumHeight(28);
+    plcWorkHeader->addWidget(plcWorkLabel);
+    plcWorkHeader->addStretch();
+    plcWorkHeader->addWidget(plcWorkClearButton);
+    plcLayout->addLayout(plcWorkHeader);
     QPushButton *plcSaveToHistoryButton = new QPushButton(QStringLiteral("保存到历史"), plcGroup);
     plcSaveToHistoryButton->setMinimumHeight(32);
     plcSaveToHistoryButton->setEnabled(false);
@@ -2377,6 +2431,8 @@ void tcpClient::setupProductionInstructionComparePage()
             &tcpClient::onProductionInstructionPlcCellDoubleClicked);
     connect(plcSaveToHistoryButton, &QPushButton::clicked, this,
             &tcpClient::onProductionInstructionPlcSaveToHistoryClicked);
+    connect(plcWorkClearButton, &QPushButton::clicked, this,
+            &tcpClient::onProductionInstructionPlcWorkClearClicked);
     plcLayout->addWidget(m_productionInstructionPlcTable, 1);
 
     refreshProductionInstructionInTransitRowStatuses();
@@ -3999,6 +4055,45 @@ void tcpClient::onProductionInstructionPlcInTransitClearClicked()
     }
     clearProductionInstructionPlcInTransitTable();
     appendToLog(QStringLiteral("已清空空托盘返回上路途表全部车型"), false);
+}
+
+void tcpClient::onProductionInstructionServerWorkClearClicked()
+{
+    if (!showPasswordDialog(QStringLiteral("清空生产指示发送"),
+                            QStringLiteral("请输入密码以清空「生产指示发送」全部产线与车型："))) {
+        return;
+    }
+    if (QMessageBox::question(this, QStringLiteral("确认清空"),
+                              QStringLiteral("确定清空「生产指示发送」工作区全部产线与车型数据吗？\n"
+                                             "（序号保留，对应数据表同步清空）"),
+                              QMessageBox::Yes | QMessageBox::No,
+                              QMessageBox::No)
+        != QMessageBox::Yes) {
+        return;
+    }
+    clearProductionInstructionServerTable();
+    saveProductionInstructionServerToDb();
+    refreshProductionInstructionServerConfirmButtonBindings();
+    appendToLog(QStringLiteral("已清空生产指示发送工作区全部产线与车型，并同步清空数据表"), false);
+}
+
+void tcpClient::onProductionInstructionPlcWorkClearClicked()
+{
+    if (!showPasswordDialog(QStringLiteral("清空空托盘车型"),
+                            QStringLiteral("请输入密码以清空「空托盘车型」全部产线与车型："))) {
+        return;
+    }
+    if (QMessageBox::question(this, QStringLiteral("确认清空"),
+                              QStringLiteral("确定清空「空托盘车型」工作区全部产线与车型数据吗？\n"
+                                             "（序号保留，对应数据表同步清空）"),
+                              QMessageBox::Yes | QMessageBox::No,
+                              QMessageBox::No)
+        != QMessageBox::Yes) {
+        return;
+    }
+    clearProductionInstructionPlcTable();
+    saveProductionInstructionPlcToDb();
+    appendToLog(QStringLiteral("已清空空托盘车型工作区全部产线与车型，并同步清空数据表"), false);
 }
 
 void tcpClient::clearProductionInstructionServerInTransitTable()
@@ -16946,6 +17041,148 @@ void tcpClient::updateProjectGroupStatistics()
     rebuildProjectGroupCards(projectGroupEmptyInCardsLayout, emptyInItems, QStringLiteral("个"));
 
     qDebug() << QString("各车型搬运数据已更新，共%1个车型").arg(modelNames.size());
+}
+
+/**
+ * @brief 左侧「各部品实件搬运数据」一键清空
+ */
+void tcpClient::onProjectGroupRealOutClearClicked()
+{
+    if (!showPasswordDialog(QStringLiteral("清空实件搬运数据"),
+                            QStringLiteral("请输入密码以清空左侧各车型实件搬运数量："))) {
+        return;
+    }
+    if (QMessageBox::question(this, QStringLiteral("确认清空"),
+                              QStringLiteral("确定清空当前显示班次下「各部品实件搬运数据」全部车型数量吗？\n"
+                                             "（将删除对应「实托盘搬出」记录）"),
+                              QMessageBox::Yes | QMessageBox::No,
+                              QMessageBox::No)
+        != QMessageBox::Yes) {
+        return;
+    }
+    clearProjectGroupSideCounts(QStringLiteral("实托盘搬出"), QStringLiteral("各部品实件搬运数据"));
+}
+
+/**
+ * @brief 右侧「各部品空托盘搬运数据」一键清空
+ */
+void tcpClient::onProjectGroupEmptyInClearClicked()
+{
+    if (!showPasswordDialog(QStringLiteral("清空空托盘搬运数据"),
+                            QStringLiteral("请输入密码以清空右侧各车型空托盘搬运数量："))) {
+        return;
+    }
+    if (QMessageBox::question(this, QStringLiteral("确认清空"),
+                              QStringLiteral("确定清空当前显示班次下「各部品空托盘搬运数据」全部车型数量吗？\n"
+                                             "（将删除对应「空托盘搬入」记录）"),
+                              QMessageBox::Yes | QMessageBox::No,
+                              QMessageBox::No)
+        != QMessageBox::Yes) {
+        return;
+    }
+    clearProjectGroupSideCounts(QStringLiteral("空托盘搬入"), QStringLiteral("各部品空托盘搬运数据"));
+}
+
+/**
+ * @brief 清空各车型搬运一侧在当前显示班次内的数量
+ */
+void tcpClient::clearProjectGroupSideCounts(const QString &status, const QString &sideTitle)
+{
+    QSqlDatabase db = QSqlDatabase::database();
+    if (!db.isOpen()) {
+        appendToLog(QStringLiteral("数据库未打开，无法清空%1").arg(sideTitle), true);
+        return;
+    }
+
+    const QString currentShift = getCurrentShift();
+    const QString displayShift = m_projectGroupDisplayShift == QStringLiteral("previous")
+        ? ((currentShift == QStringLiteral("白班")) ? QStringLiteral("夜班") : QStringLiteral("白班"))
+        : currentShift;
+
+    const QDateTime now = QDateTime::currentDateTime();
+    QDateTime shiftStartTime;
+    QDateTime shiftEndTime;
+    if (displayShift == QStringLiteral("白班")) {
+        shiftStartTime = QDateTime(now.date(), QTime(7, 15, 0));
+        shiftEndTime = QDateTime(now.date(), QTime(17, 30, 0));
+    } else {
+        shiftStartTime = QDateTime(now.date().addDays(-1), QTime(17, 30, 0));
+        shiftEndTime = QDateTime(now.date(), QTime(7, 15, 0));
+    }
+    if (m_projectGroupDisplayShift == QStringLiteral("previous")) {
+        if (displayShift == QStringLiteral("白班")) {
+            shiftStartTime = QDateTime(now.date().addDays(-1), QTime(7, 15, 0));
+            shiftEndTime = QDateTime(now.date().addDays(-1), QTime(17, 30, 0));
+        } else {
+            shiftStartTime = QDateTime(now.date().addDays(-2), QTime(17, 30, 0));
+            shiftEndTime = QDateTime(now.date().addDays(-1), QTime(7, 15, 0));
+        }
+    }
+
+    QSqlQuery query(db);
+    query.prepare(QStringLiteral(
+        "SELECT id, time FROM data_records WHERE status = ? AND (time LIKE ? OR time LIKE ?)"));
+    query.addBindValue(status);
+    query.addBindValue(shiftStartTime.date().toString(QStringLiteral("yyyy-MM-dd")) + QStringLiteral("%"));
+    query.addBindValue(shiftEndTime.date().toString(QStringLiteral("yyyy-MM-dd")) + QStringLiteral("%"));
+    if (!query.exec()) {
+        appendToLog(QStringLiteral("查询待清空记录失败: %1").arg(query.lastError().text()), true);
+        return;
+    }
+
+    QList<int> idsToDelete;
+    while (query.next()) {
+        const int id = query.value(0).toInt();
+        const QString timeStr = query.value(1).toString();
+        QDateTime recordTime = QDateTime::fromString(timeStr, QStringLiteral("yyyy-MM-dd HH:mm:ss"));
+        if (!recordTime.isValid()) {
+            recordTime = QDateTime::fromString(timeStr, QStringLiteral("yyyy-MM-dd hh:mm:ss"));
+        }
+        if (!recordTime.isValid()) {
+            continue;
+        }
+        if (recordTime >= shiftStartTime && recordTime < shiftEndTime) {
+            idsToDelete.append(id);
+        }
+    }
+
+    int deleted = 0;
+    if (!idsToDelete.isEmpty()) {
+        QStringList idPlaceholders;
+        idPlaceholders.reserve(idsToDelete.size());
+        for (int i = 0; i < idsToDelete.size(); ++i) {
+            idPlaceholders.append(QStringLiteral("?"));
+        }
+        QSqlQuery delQuery(db);
+        delQuery.prepare(QStringLiteral("DELETE FROM data_records WHERE id IN (%1)")
+                             .arg(idPlaceholders.join(QLatin1Char(','))));
+        for (int id : idsToDelete) {
+            delQuery.addBindValue(id);
+        }
+        if (!delQuery.exec()) {
+            appendToLog(QStringLiteral("清空%1失败: %2").arg(sideTitle, delQuery.lastError().text()), true);
+            return;
+        }
+        deleted = delQuery.numRowsAffected();
+    }
+
+    // 若清空的是当前班次，同步清空对应当前班次表 UI
+    if (m_projectGroupDisplayShift == QStringLiteral("current")) {
+        if (status == QStringLiteral("实托盘搬出") && realTrayOutTableWidget) {
+            realTrayOutTableWidget->setRowCount(0);
+        } else if (status == QStringLiteral("空托盘搬入") && emptyTrayInTableWidget) {
+            emptyTrayInTableWidget->setRowCount(0);
+        }
+    }
+
+    m_lastProjectGroupPayload.clear(); // 让下次上报重新推送
+    m_projectGroupStatsDirty = false;
+    updateProjectGroupStatistics();
+
+    appendToLog(QStringLiteral("已清空%1（班次：%2），删除记录 %3 条")
+                    .arg(sideTitle, displayShift)
+                    .arg(deleted),
+                false);
 }
 
 /**
