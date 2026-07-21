@@ -466,6 +466,7 @@ tcpClient::tcpClient(QWidget *parent)
     , m_edSoftwareAutoReconnectTimer(new QTimer(this))
     , m_currentShiftTableDailyClearTimer(new QTimer(this))
     , m_projectGroupShiftAutoResetTimer(new QTimer(this))
+    , m_projectGroupStatsRefreshTimer(new QTimer(this))
     , m_isConnected(false)
     , m_isServerConnected(false)
     , m_isEdSoftwareConnected(false)
@@ -715,6 +716,17 @@ tcpClient::tcpClient(QWidget *parent)
         connect(m_projectGroupShiftAutoResetTimer, &QTimer::timeout, this, &tcpClient::onProjectGroupShiftAutoReset);
         m_projectGroupShiftAutoResetTimer->setSingleShot(true);
         m_projectGroupShiftAutoResetTimer->setInterval(60000); // 60秒 = 1分钟
+
+        // 异步写库完成后防抖刷新各车型搬运卡片（同一条 PLC 多行插入只刷一次）
+        m_projectGroupStatsRefreshTimer->setSingleShot(true);
+        m_projectGroupStatsRefreshTimer->setInterval(80);
+        connect(m_projectGroupStatsRefreshTimer, &QTimer::timeout, this, [this]() {
+            if (ui && ui->stackedWidget->currentIndex() == 4 && m_projectGroupDisplayShift == QStringLiteral("current")) {
+                updateProjectGroupStatistics();
+            } else {
+                m_projectGroupStatsDirty = true;
+            }
+        });
         
         // 初始化可视化数据发送定时器（周期性发送便次统计，并链式触发工程组上报）
         connect(m_visualizationDataTimer, &QTimer::timeout, this, &tcpClient::sendVisualizationDataToServer);
@@ -6809,6 +6821,18 @@ void tcpClient::onDbWorkerOpened(bool ok, const QString &error)
 }
 
 /**
+ * @brief DbWorker 插入成功：延迟刷新各车型搬运统计（等异步写库落库后再查）
+ */
+void tcpClient::onDbRecordInserted()
+{
+    if (!m_projectGroupStatsRefreshTimer) {
+        return;
+    }
+    // 多条连续插入合并为一次刷新
+    m_projectGroupStatsRefreshTimer->start();
+}
+
+/**
  * @brief 连接超时处理
  */
 void tcpClient::onConnectionTimeout()
@@ -8641,6 +8665,7 @@ void tcpClient::startDbWorker()
 
     connect(m_dbWorker, &DbWorker::databaseOpened, this, &tcpClient::onDbWorkerOpened, Qt::QueuedConnection);
     connect(m_dbWorker, &DbWorker::writeFailed, this, &tcpClient::onDbWriteFailed, Qt::QueuedConnection);
+    connect(m_dbWorker, &DbWorker::insertCompleted, this, &tcpClient::onDbRecordInserted, Qt::QueuedConnection);
 
     m_dbThread->start();
     QMetaObject::invokeMethod(m_dbWorker, "openDatabase", Qt::QueuedConnection,

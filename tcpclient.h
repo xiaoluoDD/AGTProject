@@ -185,6 +185,7 @@ private slots:
     void onApplyJsonObjects(const QStringList &jsonObjects, bool saveToTable, bool fromEdSoftware); ///< 串行调度：主线程处理已拆好的 JSON
     void onDbWriteFailed(const QString &error); ///< DbWorker 写库失败回主线程打日志
     void onDbWorkerOpened(bool ok, const QString &error); ///< DbWorker 连接打开结果
+    void onDbRecordInserted(); ///< DbWorker 插入成功后防抖刷新各车型搬运统计
     void onConnectionTimeout();   ///< 连接超时处理
     void onPlcAutoReconnect();    ///< PLC自动重连处理
     void onCurrentShiftTableDailyClear(); ///< 当前班次表格每日清空处理（每天凌晨6点）
@@ -671,6 +672,7 @@ private:
     bool m_currentShiftRecordsLoaded = false;  ///< 当前班次表是否已加载
     bool m_assemblyIndicatorLoaded = false;    ///< 总成指示表是否已加载
     bool m_projectGroupStatsDirty = true;      ///< 工程组卡片待刷新（非当前页时置位）
+    QTimer *m_projectGroupStatsRefreshTimer = nullptr; ///< 写库完成后防抖刷新各车型搬运卡片
 
     // 日志系统成员变量
     QString m_logDirectory;       ///< 日志目录路径
