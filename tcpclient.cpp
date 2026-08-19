@@ -748,6 +748,12 @@ tcpClient::tcpClient(QWidget *parent)
         m_logFlushTimer->setSingleShot(true);
         m_logFlushTimer->setInterval(300);
         connect(m_logFlushTimer, &QTimer::timeout, this, &tcpClient::flushPendingLogs);
+
+        // 数据库健康检查定时器：周期探测，断线自动重连（失败时在 onDbHealthCheck 中放慢到 30 秒）
+        m_dbHealthTimer = new QTimer(this);
+        m_dbHealthTimer->setInterval(5000);
+        connect(m_dbHealthTimer, &QTimer::timeout, this, &tcpClient::onDbHealthCheck);
+        m_dbHealthTimer->start();
         
         // 初始化可视化数组（21个槽位，3列7行，位置0-20）
         m_realTraySlots.resize(21);
@@ -8040,7 +8046,15 @@ void tcpClient::initDatabase() {
     }
 
     qInfo() << "MySQL数据库连接成功";
+    m_dbLastConnected = true; // 供健康检查判断“断线-恢复”状态变化
+    createDatabaseTables();
+}
 
+/**
+ * @brief 创建/补齐数据库表结构（initDatabase 与断线自动重连后共用；CREATE TABLE IF NOT EXISTS 幂等，可安全重复执行）
+ */
+void tcpClient::createDatabaseTables()
+{
     QSqlQuery query;
     // 数据记录表
     if (query.exec("CREATE TABLE IF NOT EXISTS data_records ("
@@ -8535,6 +8549,78 @@ void tcpClient::initDatabase() {
 
     qInfo() << "数据库初始化完成";
     startDbWorker();
+    m_databaseTablesCreated = true;
+}
+
+/**
+ * @brief 检查并修复主线程默认数据库连接（断线自动重连）
+ * @return true 表示连接可用
+ */
+bool tcpClient::ensureDatabaseConnected()
+{
+    if (!QSqlDatabase::drivers().contains(QStringLiteral("QMYSQL"))) {
+        return false;
+    }
+
+    // 连接不存在（如 initDatabase 未执行成功）时按当前配置建立
+    if (!QSqlDatabase::contains(QSqlDatabase::defaultConnection)) {
+        QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QMYSQL"));
+        db.setHostName(m_dbHost);
+        db.setPort(m_dbPort);
+        db.setDatabaseName(m_dbName);
+        db.setUserName(m_dbUsername);
+        db.setPassword(m_dbPassword);
+    }
+
+    QSqlDatabase db = QSqlDatabase::database();
+    if (db.isOpen()) {
+        QSqlQuery ping(db);
+        if (ping.exec(QStringLiteral("SELECT 1"))) {
+            return true;
+        }
+        qWarning() << "数据库连接已失效，准备自动重连:" << ping.lastError().text();
+    }
+
+    // 复用同一连接名 close + open，避免 removeDatabase 与旧句柄冲突；
+    // 设置短连接超时，防止 MySQL 不可达时阻塞主线程过久
+    db.close();
+    db.setConnectOptions(QStringLiteral("MYSQL_OPT_CONNECT_TIMEOUT=3"));
+    if (!db.open()) {
+        qWarning() << "数据库自动重连失败:" << db.lastError().text();
+        return false;
+    }
+    qInfo() << "MySQL 自动重连成功";
+    return true;
+}
+
+/**
+ * @brief 数据库健康检查定时器槽：周期探测并自动重连
+ */
+void tcpClient::onDbHealthCheck()
+{
+    const bool ok = ensureDatabaseConnected();
+    if (ok) {
+        if (!m_dbLastConnected) {
+            appendToLog(QStringLiteral("数据库连接已自动恢复"), false);
+            // 启动时建表失败（DB 当时不可用）则补齐表结构，并确保写库线程运行
+            if (!m_databaseTablesCreated) {
+                createDatabaseTables();
+            }
+            startDbWorker(); // 已启动则无操作（幂等）
+        }
+        if (m_dbHealthTimer && m_dbHealthTimer->interval() != 5000) {
+            m_dbHealthTimer->setInterval(5000);
+        }
+    } else {
+        if (m_dbLastConnected) {
+            appendToLog(QStringLiteral("数据库连接中断，正在自动重连..."), true);
+        }
+        // 失败时放慢重试频率，避免 MySQL 不可达时反复阻塞主线程
+        if (m_dbHealthTimer && m_dbHealthTimer->interval() != 30000) {
+            m_dbHealthTimer->setInterval(30000);
+        }
+    }
+    m_dbLastConnected = ok;
 }
 
 /**

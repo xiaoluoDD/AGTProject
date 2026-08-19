@@ -206,6 +206,7 @@ private slots:
     // 数据库配置槽函数
     void onSaveDatabaseConfigClicked(); ///< 保存数据库配置按钮点击处理
     void onTestDatabaseConnectionClicked(); ///< 测试数据库连接按钮点击处理
+    void onDbHealthCheck();       ///< 数据库健康检查（周期探测，断线自动重连）
 
     // 班次设置槽函数
     void onSaveShiftConfigClicked(); ///< 保存班次设置按钮点击处理
@@ -361,6 +362,8 @@ private:
                                     int plcStripeBatchId = -1); ///< plcStripeBatchId>=0 时同值表示同一条 PLC 报文，用于行底色分组；-1 表示不设置（如从库加载时用行号回退）
 
     void initDatabase();
+    bool ensureDatabaseConnected(); ///< 检查/修复主线程默认数据库连接（断线自动重连）
+    void createDatabaseTables();    ///< 创建/补齐数据库表结构（启动与断线自动重连后共用）
     void loadDatabaseConfig(); ///< 从配置文件加载数据库配置
     void saveDatabaseConfig(); ///< 保存数据库配置到配置文件
     bool testDatabaseConnection(const QString &host, int port, const QString &database,
@@ -661,6 +664,9 @@ private:
     QString m_dbName;             ///< 数据库名称
     QString m_dbUsername;         ///< 数据库用户名
     QString m_dbPassword;         ///< 数据库密码
+    QTimer *m_dbHealthTimer = nullptr;      ///< 数据库健康检查定时器（断线自动重连）
+    bool m_dbLastConnected = false;         ///< 上次健康检查时数据库是否可用（用于状态变化日志）
+    bool m_databaseTablesCreated = false;   ///< 表结构是否已创建（启动建表失败时，重连后补齐）
 
     // P0：写库 / PLC 报文调度工作线程
     QThread *m_dbThread = nullptr;
